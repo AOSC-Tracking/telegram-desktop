@@ -2384,6 +2384,8 @@ EntityInText::EntityInText(
 , _data(data) {
 }
 
+EntityInText::EntityInText() {}
+
 int EntityInText::FirstMonospaceOffset(
 		const EntitiesInText &entities,
 		int textLength) {

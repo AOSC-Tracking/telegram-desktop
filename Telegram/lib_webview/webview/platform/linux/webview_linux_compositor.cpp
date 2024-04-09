@@ -53,6 +53,7 @@ private:
 };
 
 class Compositor::Output : public QWaylandQuickOutput {
+	Q_OBJECT
 public:
 	Output(Compositor *compositor, QObject *parent = nullptr)
 	: _xdg(this, &compositor->_private->xdgOutput) {
@@ -302,3 +303,5 @@ void Compositor::setWidget(QQuickWidget *widget) {
 }
 
 } // namespace Webview
+
+#include "webview_linux_compositor.moc"
