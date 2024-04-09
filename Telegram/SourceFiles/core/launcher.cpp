@@ -342,7 +342,9 @@ void Launcher::initHighDpi() {
 #endif // Qt < 6.2.0
 
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-	QApplication::setAttribute(Qt::AA_EnableHighDpiScaling, true);
+	QApplication::setAttribute(Qt::AA_DisableHighDpiScaling, true);
+	QApplication::setHighDpiScaleFactorRoundingPolicy(
+		Qt::HighDpiScaleFactorRoundingPolicy::Floor);
 #endif // Qt < 6.0.0
 
 	if (OptionFractionalScalingEnabled.value()) {
