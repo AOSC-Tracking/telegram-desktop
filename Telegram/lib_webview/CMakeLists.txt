@@ -7,6 +7,7 @@
 add_library(lib_webview STATIC)
 add_library(desktop-app::lib_webview ALIAS lib_webview)
 init_target(lib_webview)
+set_target_properties(lib_webview PROPERTIES AUTOMOC TRUE)
 
 get_filename_component(src_loc . REALPATH)
 
