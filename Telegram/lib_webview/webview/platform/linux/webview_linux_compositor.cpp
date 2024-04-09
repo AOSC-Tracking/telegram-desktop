@@ -42,6 +42,7 @@ private:
 };
 
 class Output : public QWaylandQuickOutput {
+	Q_OBJECT
 public:
 	Output(
 			QWaylandCompositor *compositor,
@@ -260,3 +261,5 @@ void Compositor::setWidget(QQuickWidget *widget) {
 }
 
 } // namespace Webview
+
+#include "webview_linux_compositor.moc"

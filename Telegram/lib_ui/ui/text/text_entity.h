@@ -70,6 +70,8 @@ public:
 		int length,
 		const QString &data = QString());
 
+	EntityInText();
+
 	[[nodiscard]] EntityType type() const {
 		return _type;
 	}
