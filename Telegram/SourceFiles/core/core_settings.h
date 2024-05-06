@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "dialogs/ui/dialogs_quick_action.h"
 #include "window/themes/window_themes_embedded.h"
 #include "ui/chat/attach/attach_send_files_way.h"
+#include "ui/style/style_core_font.h"
 #include "base/flags.h"
 #include "emoji.h"
 
@@ -1071,7 +1072,7 @@ private:
 	rpl::variable<bool> _storiesClickTooltipHidden = false;
 	rpl::variable<bool> _ttlVoiceClickTooltipHidden = false;
 	WindowPosition _ivPosition;
-	QString _customFontFamily;
+	QString _customFontFamily = style::SystemFontTag();
 	bool _systemUnlockEnabled = false;
 	std::optional<bool> _weatherInCelsius;
 	QByteArray _tonsiteStorageToken;
