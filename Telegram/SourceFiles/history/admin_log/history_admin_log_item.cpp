@@ -738,8 +738,8 @@ void GenerateItems(
 	using LogPromote = MTPDchannelAdminLogEventActionParticipantToggleAdmin;
 	using LogSticker = MTPDchannelAdminLogEventActionChangeStickerSet;
 	using LogEmoji = MTPDchannelAdminLogEventActionChangeEmojiStickerSet;
-	using LogPreHistory =
-		MTPDchannelAdminLogEventActionTogglePreHistoryHidden;
+	using LogPreHistory
+		= MTPDchannelAdminLogEventActionTogglePreHistoryHidden;
 	using LogPermissions = MTPDchannelAdminLogEventActionDefaultBannedRights;
 	using LogPoll = MTPDchannelAdminLogEventActionStopPoll;
 	using LogDiscussion = MTPDchannelAdminLogEventActionChangeLinkedChat;
@@ -749,19 +749,19 @@ void GenerateItems(
 	using LogDiscardCall = MTPDchannelAdminLogEventActionDiscardGroupCall;
 	using LogMute = MTPDchannelAdminLogEventActionParticipantMute;
 	using LogUnmute = MTPDchannelAdminLogEventActionParticipantUnmute;
-	using LogCallSetting =
-		MTPDchannelAdminLogEventActionToggleGroupCallSetting;
-	using LogJoinByInvite =
-		MTPDchannelAdminLogEventActionParticipantJoinByInvite;
-	using LogInviteDelete =
-		MTPDchannelAdminLogEventActionExportedInviteDelete;
-	using LogInviteRevoke =
-		MTPDchannelAdminLogEventActionExportedInviteRevoke;
+	using LogCallSetting
+		= MTPDchannelAdminLogEventActionToggleGroupCallSetting;
+	using LogJoinByInvite
+		= MTPDchannelAdminLogEventActionParticipantJoinByInvite;
+	using LogInviteDelete
+		= MTPDchannelAdminLogEventActionExportedInviteDelete;
+	using LogInviteRevoke
+		= MTPDchannelAdminLogEventActionExportedInviteRevoke;
 	using LogInviteEdit = MTPDchannelAdminLogEventActionExportedInviteEdit;
 	using LogVolume = MTPDchannelAdminLogEventActionParticipantVolume;
 	using LogTTL = MTPDchannelAdminLogEventActionChangeHistoryTTL;
-	using LogJoinByRequest =
-		MTPDchannelAdminLogEventActionParticipantJoinByRequest;
+	using LogJoinByRequest
+		= MTPDchannelAdminLogEventActionParticipantJoinByRequest;
 	using LogNoForwards = MTPDchannelAdminLogEventActionToggleNoForwards;
 	using LogSendMessage = MTPDchannelAdminLogEventActionSendMessage;
 	using LogChangeAvailableReactions = MTPDchannelAdminLogEventActionChangeAvailableReactions;
@@ -953,13 +953,11 @@ void GenerateItems(
 					Ui::Text::WithEntities);
 			addSimpleServiceMessage(text, realId);
 
-			const auto detachExistingItem = false;
 			addPart(
 				history->createItem(
 					history->nextNonHistoryEntryId(),
 					PrepareLogMessage(action.vmessage(), date),
-					MessageFlag::AdminLogEntry,
-					detachExistingItem),
+					MessageFlag::AdminLogEntry),
 				ExtractSentDate(action.vmessage()),
 				realId);
 		}, [&](const auto &) {
@@ -1008,12 +1006,10 @@ void GenerateItems(
 				Ui::Text::WithEntities);
 		addSimpleServiceMessage(text, realId);
 
-		const auto detachExistingItem = false;
 		const auto body = history->createItem(
 			history->nextNonHistoryEntryId(),
 			PrepareLogMessage(action.vnew_message(), date),
-			MessageFlag::AdminLogEntry,
-			detachExistingItem);
+			MessageFlag::AdminLogEntry);
 		if (oldValue.text.isEmpty()) {
 			oldValue = PrepareText(
 				QString(),
@@ -1038,13 +1034,11 @@ void GenerateItems(
 			Ui::Text::WithEntities);
 		addSimpleServiceMessage(text, realId);
 
-		const auto detachExistingItem = false;
 		addPart(
 			history->createItem(
 				history->nextNonHistoryEntryId(),
 				PrepareLogMessage(action.vmessage(), date),
-				MessageFlag::AdminLogEntry,
-				detachExistingItem),
+				MessageFlag::AdminLogEntry),
 			ExtractSentDate(action.vmessage()),
 			realId);
 	};
@@ -1218,13 +1212,11 @@ void GenerateItems(
 			Ui::Text::WithEntities);
 		addSimpleServiceMessage(text, realId);
 
-		const auto detachExistingItem = false;
 		addPart(
 			history->createItem(
 				history->nextNonHistoryEntryId(),
 				PrepareLogMessage(action.vmessage(), date),
-				MessageFlag::AdminLogEntry,
-				detachExistingItem),
+				MessageFlag::AdminLogEntry),
 			ExtractSentDate(action.vmessage()),
 			realId);
 	};
@@ -1604,13 +1596,11 @@ void GenerateItems(
 			Ui::Text::WithEntities);
 		addSimpleServiceMessage(text, realId);
 
-		const auto detachExistingItem = false;
 		addPart(
 			history->createItem(
 				history->nextNonHistoryEntryId(),
 				PrepareLogMessage(data.vmessage(), date),
-				MessageFlag::AdminLogEntry,
-				detachExistingItem),
+				MessageFlag::AdminLogEntry),
 			ExtractSentDate(data.vmessage()),
 			realId);
 	};

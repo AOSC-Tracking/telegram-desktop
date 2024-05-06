@@ -2086,7 +2086,7 @@ bool InputField::isRedoAvailable() const {
 void InputField::processFormatting(int insertPosition, int insertEnd) {
 	// Tilde formatting.
 	const auto tildeFormatting = (_st.font->f.pixelSize() * style::DevicePixelRatio() == 13)
-		&& (_st.font->f.family() == qstr("DAOpenSansRegular"));
+		&& (_st.font->f.family() == qstr("Open Sans"));
 	auto isTildeFragment = false;
 	auto tildeFixedFont = _st.font->semibold()->f;
 
@@ -3912,7 +3912,9 @@ void InputField::refreshPlaceholder(const QString &text) {
 		_placeholder = metrics.elidedText(text, Qt::ElideRight, availableWidth);
 		_placeholderPath = QPainterPath();
 		if (!_placeholder.isEmpty()) {
-			_placeholderPath.addText(0, QFontMetrics(placeholderFont).ascent(), placeholderFont, _placeholder);
+			const auto result = style::FindAdjustResult(placeholderFont);
+			const auto ascent = result ? result->iascent : metrics.ascent();
+			_placeholderPath.addText(0, ascent, placeholderFont, _placeholder);
 		}
 	} else {
 		_placeholder = _st.placeholderFont->elided(text, availableWidth);
