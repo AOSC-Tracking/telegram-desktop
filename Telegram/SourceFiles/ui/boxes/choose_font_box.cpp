@@ -531,7 +531,7 @@ std::vector<Selector::Entry> Selector::FullList(const QString &now) {
 	auto database = QFontDatabase();
 	auto families = database.families();
 	auto result = std::vector<Entry>();
-	result.reserve(families.size() + 3);
+	result.reserve(families.size() + 2);
 	const auto add = [&](const QString &text, const QString &id = {}) {
 		result.push_back({
 			.id = id,
@@ -539,7 +539,6 @@ std::vector<Selector::Entry> Selector::FullList(const QString &now) {
 			.keywords = PrepareSearchWords(text),
 		});
 	};
-	add(tr::lng_font_default(tr::now));
 	add(tr::lng_font_system(tr::now), style::SystemFontTag());
 	for (const auto &family : families) {
 		if (database.isScalable(family)) {
@@ -549,12 +548,12 @@ std::vector<Selector::Entry> Selector::FullList(const QString &now) {
 	if (!ranges::contains(result, now, &Entry::id)) {
 		result.push_back({ .id = now });
 	}
-	for (auto i = begin(result) + 2; i != end(result); ++i) {
+	for (auto i = begin(result) + 1; i != end(result); ++i) {
 		i->key = TextUtilities::RemoveAccents(i->id).toLower();
 		i->text = i->id;
 		i->keywords = TextUtilities::PrepareSearchWords(i->id);
 	}
-	ranges::sort(begin(result) + 2, end(result), std::less<>(), &Entry::key);
+	ranges::sort(begin(result) + 1, end(result), std::less<>(), &Entry::key);
 	return result;
 }
 
