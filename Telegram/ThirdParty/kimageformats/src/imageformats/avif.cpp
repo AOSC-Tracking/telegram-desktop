@@ -16,9 +16,34 @@
 
 #include <cfloat>
 
+/*
+Quality range - compression/subsampling
+100 - lossless RGB compression
+< KIMG_AVIF_QUALITY_BEST, 100 ) - YUV444 color subsampling
+< KIMG_AVIF_QUALITY_HIGH, KIMG_AVIF_QUALITY_BEST ) - YUV422 color subsampling
+< 0, KIMG_AVIF_QUALITY_HIGH ) - YUV420 color subsampling
+< 0, KIMG_AVIF_QUALITY_LOW ) - lossy compression of alpha channel
+*/
+
+#ifndef KIMG_AVIF_DEFAULT_QUALITY
+#define KIMG_AVIF_DEFAULT_QUALITY 68
+#endif
+
+#ifndef KIMG_AVIF_QUALITY_BEST
+#define KIMG_AVIF_QUALITY_BEST 90
+#endif
+
+#ifndef KIMG_AVIF_QUALITY_HIGH
+#define KIMG_AVIF_QUALITY_HIGH 80
+#endif
+
+#ifndef KIMG_AVIF_QUALITY_LOW
+#define KIMG_AVIF_QUALITY_LOW 51
+#endif
+
 QAVIFHandler::QAVIFHandler()
     : m_parseState(ParseAvifNotParsed)
-    , m_quality(52)
+    , m_quality(KIMG_AVIF_DEFAULT_QUALITY)
     , m_container_width(0)
     , m_container_height(0)
     , m_rawAvifData(AVIF_DATA_EMPTY)
@@ -330,6 +355,10 @@ bool QAVIFHandler::decode_one_frame()
     avifRGBImage rgb;
     avifRGBImageSetDefaults(&rgb, m_decoder->image);
 
+#if AVIF_VERSION >= 1000000
+    rgb.maxThreads = m_decoder->maxThreads;
+#endif
+
     if (m_decoder->image->depth > 8) {
         rgb.depth = 16;
         rgb.format = AVIF_RGB_FORMAT_RGBA;
@@ -515,9 +544,17 @@ bool QAVIFHandler::write(const QImage &image)
         }
     }
 
+    if (m_quality > 100) {
+        m_quality = 100;
+    } else if (m_quality < 0) {
+        m_quality = KIMG_AVIF_DEFAULT_QUALITY;
+    }
+
+#if AVIF_VERSION < 1000000
     int maxQuantizer = AVIF_QUANTIZER_WORST_QUALITY * (100 - qBound(0, m_quality, 100)) / 100;
     int minQuantizer = 0;
     int maxQuantizerAlpha = 0;
+#endif
     avifResult res;
 
     bool save_grayscale; // true - monochrome, false - colors
@@ -563,13 +600,15 @@ bool QAVIFHandler::write(const QImage &image)
         break;
     }
 
-    // quality settings
+#if AVIF_VERSION < 1000000
+    // deprecated quality settings
     if (maxQuantizer > 20) {
         minQuantizer = maxQuantizer - 20;
         if (maxQuantizer > 40) { // we decrease quality of alpha channel here
             maxQuantizerAlpha = maxQuantizer - 40;
         }
     }
+#endif
 
     if (save_grayscale && !image.hasAlphaChannel()) { // we are going to save grayscale image without alpha channel
         if (save_depth > 8) {
@@ -642,8 +681,8 @@ bool QAVIFHandler::write(const QImage &image)
         QImage tmpcolorimage = image.convertToFormat(tmpformat);
 
         avifPixelFormat pixel_format = AVIF_PIXEL_FORMAT_YUV420;
-        if (maxQuantizer < 20) {
-            if (maxQuantizer < 10) {
+        if (m_quality >= KIMG_AVIF_QUALITY_HIGH) {
+            if (m_quality >= KIMG_AVIF_QUALITY_BEST) {
                 pixel_format = AVIF_PIXEL_FORMAT_YUV444; // best quality
             } else {
                 pixel_format = AVIF_PIXEL_FORMAT_YUV422; // high quality
@@ -714,9 +753,9 @@ bool QAVIFHandler::write(const QImage &image)
                     if (save_depth == 8) {
                         save_depth = 10;
                         if (tmpcolorimage.hasAlphaChannel()) {
-                            tmpcolorimage = tmpcolorimage.convertToFormat(QImage::Format_RGBA64);
+                            tmpcolorimage.convertTo(QImage::Format_RGBA64);
                         } else {
-                            tmpcolorimage = tmpcolorimage.convertToFormat(QImage::Format_RGBX64);
+                            tmpcolorimage.convertTo(QImage::Format_RGBX64);
                         }
                     }
 
@@ -803,6 +842,8 @@ bool QAVIFHandler::write(const QImage &image)
     avifRWData raw = AVIF_DATA_EMPTY;
     avifEncoder *encoder = avifEncoderCreate();
     encoder->maxThreads = qBound(1, QThread::idealThreadCount(), 64);
+
+#if AVIF_VERSION < 1000000
     encoder->minQuantizer = minQuantizer;
     encoder->maxQuantizer = maxQuantizer;
 
@@ -810,6 +851,17 @@ bool QAVIFHandler::write(const QImage &image)
         encoder->minQuantizerAlpha = AVIF_QUANTIZER_LOSSLESS;
         encoder->maxQuantizerAlpha = maxQuantizerAlpha;
     }
+#else
+    encoder->quality = m_quality;
+
+    if (image.hasAlphaChannel()) {
+        if (m_quality >= KIMG_AVIF_QUALITY_LOW) {
+            encoder->qualityAlpha = 100;
+        } else {
+            encoder->qualityAlpha = 100 - (KIMG_AVIF_QUALITY_LOW - m_quality) / 2;
+        }
+    }
+#endif
 
     encoder->speed = 6;
 
@@ -866,7 +918,7 @@ void QAVIFHandler::setOption(ImageOption option, const QVariant &value)
         if (m_quality > 100) {
             m_quality = 100;
         } else if (m_quality < 0) {
-            m_quality = 52;
+            m_quality = KIMG_AVIF_DEFAULT_QUALITY;
         }
         return;
     default:
@@ -1039,6 +1091,11 @@ int QAVIFHandler::loopCount() const
         return 0;
     }
 
+#if AVIF_VERSION >= 1000000
+    if (m_decoder->repetitionCount >= 0) {
+        return m_decoder->repetitionCount;
+    }
+#endif
     // Endless loop to work around https://github.com/AOMediaCodec/libavif/issues/347
     return -1;
 }

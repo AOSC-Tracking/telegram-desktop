@@ -323,11 +323,7 @@ void PopupMenu::validateCompositingSupport() {
 			std::max(_st.shadow.extend.bottom(), additional.bottom()));
 		_margins = _padding - (additional - _additionalMenuMargins);
 	}
-	if (_margins.isNull()) {
-		Platform::UnsetWindowMargins(this);
-	} else {
-		Platform::SetWindowMargins(this, _margins);
-	}
+	Platform::SetWindowMargins(this, _margins);
 	_scroll->moveToLeft(_padding.left(), _padding.top());
 	handleMenuResize();
 	updateRoundingOverlay();
@@ -900,12 +896,6 @@ void PopupMenu::deleteOnHide(bool del) {
 }
 
 void PopupMenu::popup(const QPoint &p) {
-	if (_clearLastSeparator) {
-		_menu->clearLastSeparator();
-		for (const auto &[action, submenu] : _submenus) {
-			submenu->menu()->clearLastSeparator();
-		}
-	}
 	if (prepareGeometryFor(p)) {
 		popupPrepared();
 		return;
@@ -957,23 +947,36 @@ bool PopupMenu::prepareGeometryFor(const QPoint &p) {
 }
 
 bool PopupMenu::prepareGeometryFor(const QPoint &p, PopupMenu *parent) {
-	const auto usingScreenGeometry = !::Platform::IsWayland();
-	const auto screen = QGuiApplication::screenAt(p);
-	if ((usingScreenGeometry && !screen)
-		|| (!parent
+	if (_clearLastSeparator) {
+		_menu->clearLastSeparator();
+		for (const auto &[action, submenu] : _submenus) {
+			submenu->menu()->clearLastSeparator();
+		}
+	}
+
+	if (!parent
 			&& ::Platform::IsMac()
-			&& !Platform::IsApplicationActive())) {
+			&& !Platform::IsApplicationActive()) {
 		return false;
 	}
 	_parent = parent;
+	const auto screen = QGuiApplication::screenAt(p);
 
 	createWinId();
 	windowHandle()->removeEventFilter(this);
 	windowHandle()->installEventFilter(this);
 	if (_parent) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+		setScreen(_parent->screen());
+#else // Qt >= 6.0.0
 		windowHandle()->setScreen(_parent->screen());
+#endif // Qt < 6.0.0
 	} else if (screen) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+		setScreen(screen);
+#else // Qt >= 6.0.0
 		windowHandle()->setScreen(screen);
+#endif // Qt < 6.0.0
 	}
 	validateCompositingSupport();
 
@@ -1000,7 +1003,7 @@ bool PopupMenu::prepareGeometryFor(const QPoint &p, PopupMenu *parent) {
 			_additionalMenuPadding.left() - _st.shadow.extend.left(),
 			0),
 		_padding.top() - _topShift);
-	auto r = usingScreenGeometry ? screen->availableGeometry() : QRect();
+	auto r = screen ? screen->availableGeometry() : QRect();
 	const auto parentWidth = _parent ? _parent->inner().width() : 0;
 	if (style::RightToLeft()) {
 		const auto badLeft = !r.isNull() && w.x() - width() < r.x() - _margins.left();
@@ -1058,8 +1061,6 @@ bool PopupMenu::prepareGeometryFor(const QPoint &p, PopupMenu *parent) {
 }
 
 void PopupMenu::showPrepared(TriggeredSource source) {
-	Expects(windowHandle() != nullptr);
-
 	_menu->setShowSource(source);
 
 	startShowAnimation();

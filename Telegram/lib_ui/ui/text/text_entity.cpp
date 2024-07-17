@@ -2025,6 +2025,29 @@ QString TagWithAdded(const QString &tag, const QString &added) {
 	return JoinTag(list);
 }
 
+TextWithTags::Tags SimplifyTags(TextWithTags::Tags tags) {
+	for (auto i = tags.begin(); i != tags.end();) {
+		const auto j = i + 1;
+		if (j == tags.end()) {
+			break;
+		} else if (j->offset > i->offset + i->length) {
+			++i;
+			continue;
+		}
+		auto il = SplitTags(i->id);
+		std::sort(il.begin(), il.end());
+		auto jl = SplitTags(j->id);
+		std::sort(jl.begin(), jl.end());
+		if (JoinTag(il) == JoinTag(jl)) {
+			i->length = j->offset + j->length - i->offset;
+			i = tags.erase(j) - 1;
+		} else {
+			++i;
+		}
+	}
+	return tags;
+}
+
 EntitiesInText ConvertTextTagsToEntities(const TextWithTags::Tags &tags) {
 	auto result = EntitiesInText();
 	if (tags.isEmpty()) {
@@ -2044,7 +2067,8 @@ EntitiesInText ConvertTextTagsToEntities(const TextWithTags::Tags &tags) {
 	struct State {
 		QString link;
 		QString language;
-		uint32 mask = 0;
+		uint32 mask : 31 = 0;
+		uint32 collapsed : 1 = 0;
 
 		void set(EntityType type) {
 			mask |= (1 << int(type));
@@ -2127,7 +2151,11 @@ EntitiesInText ConvertTextTagsToEntities(const TextWithTags::Tags &tags) {
 		}
 		for (const auto type : kInMaskTypes | ranges::views::reverse) {
 			if (nextState.has(type) && !state.has(type)) {
-				openType(type, nextState.language);
+				openType(type, (type == EntityType::Pre)
+					? nextState.language
+					: (type == EntityType::Blockquote && nextState.collapsed)
+					? u"1"_q
+					: QString());
 			}
 		}
 		if (openCustomEmoji) {
@@ -2163,6 +2191,10 @@ EntitiesInText ConvertTextTagsToEntities(const TextWithTags::Tags &tags) {
 				result.language = single.mid(languageStart).toString();
 			} else if (single == Tags::kTagBlockquote) {
 				result.set(EntityType::Blockquote);
+				result.collapsed = 0;
+			} else if (single == Tags::kTagBlockquoteCollapsed) {
+				result.set(EntityType::Blockquote);
+				result.collapsed = 1;
 			} else if (single == Tags::kTagSpoiler) {
 				result.set(EntityType::Spoiler);
 			} else {
@@ -2262,7 +2294,7 @@ TextWithTags::Tags ConvertEntitiesToTextTags(
 		case EntityType::Code: push(Ui::InputField::kTagCode); break;
 		case EntityType::Pre: {
 			if (!entity.data().isEmpty()) {
-				static const auto Language = QRegularExpression("^[a-z0-9\\-]+$");
+				static const auto Language = QRegularExpression("^[a-zA-Z0-9\\-\\+]+$");
 				if (Language.match(entity.data()).hasMatch()) {
 					push(Ui::InputField::kTagPre + entity.data());
 					break;
@@ -2271,7 +2303,9 @@ TextWithTags::Tags ConvertEntitiesToTextTags(
 			push(Ui::InputField::kTagPre);
 		} break;
 		case EntityType::Blockquote:
-			push(Ui::InputField::kTagBlockquote);
+			push(entity.data().isEmpty()
+				? Ui::InputField::kTagBlockquote
+				: Ui::InputField::kTagBlockquoteCollapsed);
 			break;
 		case EntityType::Spoiler: push(Ui::InputField::kTagSpoiler); break;
 		}

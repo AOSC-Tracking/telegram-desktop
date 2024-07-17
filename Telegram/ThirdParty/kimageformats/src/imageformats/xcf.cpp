@@ -2048,7 +2048,7 @@ bool XCFImageFormat::loadLevel(QDataStream &xcf_io, Layer &layer, qint32 bpp, co
 
             switch (layer.compression) {
             case COMPRESS_NONE: {
-                if (xcf_io.version() > 11) {
+                if (xcf_io.version() > 11 || size_t(bpp) > sizeof(QRgba64)) {
                     qCDebug(XCFPLUGIN) << "Component reading not supported yet";
                     return false;
                 }
@@ -2784,7 +2784,10 @@ void XCFImageFormat::copyLayerToImage(XCFImage &xcf_image)
                 QPainter painter(&image);
                 painter.setOpacity(layer.opacity / 255.0);
                 painter.setCompositionMode(QPainter::CompositionMode_Source);
-                painter.drawImage(x + layer.x_offset, y + layer.y_offset, layer.image_tiles[j][i]);
+                if (x + layer.x_offset < MAX_IMAGE_WIDTH &&
+                    y + layer.y_offset < MAX_IMAGE_HEIGHT) {
+                    painter.drawImage(x + layer.x_offset, y + layer.y_offset, layer.image_tiles[j][i]);
+                }
                 continue;
             }
 
@@ -3184,7 +3187,10 @@ void XCFImageFormat::mergeLayerIntoImage(XCFImage &xcf_image)
                     uint x = i * TILE_WIDTH;
 
                     QImage &tile = layer.image_tiles[j][i];
-                    painter.drawImage(x + layer.x_offset, y + layer.y_offset, tile);
+                    if (x + layer.x_offset < MAX_IMAGE_WIDTH &&
+                        y + layer.y_offset < MAX_IMAGE_HEIGHT) {
+                        painter.drawImage(x + layer.x_offset, y + layer.y_offset, tile);
+                    }
                 }
             }
 
@@ -3233,7 +3239,10 @@ void XCFImageFormat::mergeLayerIntoImage(XCFImage &xcf_image)
                 QPainter painter(&image);
                 painter.setOpacity(layer.opacity / 255.0);
                 painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
-                painter.drawImage(x + layer.x_offset, y + layer.y_offset, layer.image_tiles[j][i]);
+                if (x + layer.x_offset < MAX_IMAGE_WIDTH &&
+                    y + layer.y_offset < MAX_IMAGE_HEIGHT) {
+                    painter.drawImage(x + layer.x_offset, y + layer.y_offset, layer.image_tiles[j][i]);
+                }
                 continue;
             }
 
