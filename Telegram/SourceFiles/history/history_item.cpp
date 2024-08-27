@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/history_item.h"
 
+#include "api/api_sensitive_content.h"
 #include "lang/lang_keys.h"
 #include "mainwidget.h"
 #include "calls/calls_instance.h" // Core::App().calls().joinGroupCall.
@@ -23,6 +24,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/format_values.h"
 #include "ui/text/text_isolated_emoji.h"
 #include "ui/text/text_utilities.h"
+#include "settings/settings_credits_graphics.h" // ShowRefundInfoBox.
 #include "storage/file_upload.h"
 #include "storage/storage_shared_media.h"
 #include "main/main_account.h"
@@ -38,8 +40,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/click_handler_types.h"
 #include "base/unixtime.h"
 #include "base/timer_rpl.h"
+#include "boxes/send_credits_box.h"
 #include "api/api_text_entities.h"
 #include "api/api_updates.h"
+#include "data/business/data_shortcut_messages.h"
 #include "data/components/scheduled_messages.h"
 #include "data/components/sponsored_messages.h"
 #include "data/notify/data_notify_settings.h"
@@ -136,6 +140,17 @@ template <typename T>
 	return fields;
 }
 
+[[nodiscard]] TextWithEntities AmountAndStarCurrency(
+		not_null<Main::Session*> session,
+		int64 amount,
+		const QString &currency) {
+	if (currency == Ui::kCreditsCurrency) {
+		return Ui::CreditsEmojiSmall(session).append(
+			Lang::FormatCountDecimal(std::abs(amount)));
+	}
+	return { Ui::FillAmountAndCurrency(amount, currency) };
+}
+
 } // namespace
 
 void HistoryItem::HistoryItem::Destroyer::operator()(HistoryItem *value) {
@@ -177,6 +192,8 @@ struct HistoryItem::CreateConfig {
 
 	// For messages created from existing messages (forwarded).
 	const HistoryMessageReplyMarkup *inlineMarkup = nullptr;
+
+	std::vector<Data::UnavailableReason> restrictions;
 };
 
 void HistoryItem::FillForwardedInfo(
@@ -654,9 +671,7 @@ HistoryItem::HistoryItem(
 	.flags = (MessageFlag::Local
 		| MessageFlag::Sponsored
 		| (history->peer->isChannel() ? MessageFlag::Post : MessageFlag(0))),
-	.date = HistoryItem::NewMessageDate(injectedAfter
-		? injectedAfter->date()
-		: 0),
+	.date = NewMessageDate(injectedAfter ? injectedAfter->date() : 0),
 }) {
 	const auto webpage = history->peer->owner().webpage(
 		history->peer->owner().nextLocalMessageId().bare,
@@ -698,6 +713,10 @@ HistoryItem::HistoryItem(
 , _date(fields.date)
 , _shortcutId(fields.shortcutId)
 , _effectId(fields.effectId) {
+	Expects(!_shortcutId
+		|| isSending()
+		|| _history->owner().shortcutMessages().lookupId(this));
+
 	if (isHistoryEntry() && IsClientMsgId(id)) {
 		_history->registerClientSideMessage(this);
 	}
@@ -738,15 +757,6 @@ HistoryItem::~HistoryItem() {
 
 TimeId HistoryItem::date() const {
 	return _date;
-}
-
-TimeId HistoryItem::NewMessageDate(TimeId scheduled) {
-	return scheduled ? scheduled : base::unixtime::now();
-}
-
-TimeId HistoryItem::NewMessageDate(
-		const Api::SendOptions &options) {
-	return options.shortcutId ? 1 : NewMessageDate(options.scheduled);
 }
 
 HistoryServiceDependentData *HistoryItem::GetServiceDependentData() {
@@ -1212,10 +1222,19 @@ PeerData *HistoryItem::computeDisplayFrom() const {
 }
 
 PeerData *HistoryItem::displayFrom() const {
-	if (!(_flags & MessageFlag::DisplayFromChecked)) {
-		_flags |= MessageFlag::DisplayFromChecked;
-		_displayFrom = computeDisplayFrom();
+	if (_flags & MessageFlag::DisplayFromChecked) {
+		const auto showing = isPostShowingAuthor();
+		const auto flag = (_flags & MessageFlag::DisplayFromProfiles);
+		if (showing && !flag) {
+			_flags |= MessageFlag::DisplayFromProfiles;
+		} else if (!showing && flag) {
+			_flags &= ~MessageFlag::DisplayFromProfiles;
+		} else {
+			return _displayFrom;
+		}
 	}
+	_flags |= MessageFlag::DisplayFromChecked;
+	_displayFrom = computeDisplayFrom();
 	return _displayFrom;
 }
 
@@ -2128,7 +2147,7 @@ QString HistoryItem::notificationHeader() const {
 		return QString();
 	} else if (out() && isFromScheduled() && !_history->peer->isSelf()) {
 		return tr::lng_from_you(tr::now);
-	} else if (!_history->peer->isUser() && !isPost()) {
+	} else if (!_history->peer->isUser() && !isPostHidingAuthor()) {
 		return from()->name();
 	}
 	return QString();
@@ -2501,9 +2520,47 @@ bool HistoryItem::canReact() const {
 	return true;
 }
 
+void HistoryItem::addPaidReaction(int count, bool anonymous) {
+	Expects(count >= 0);
+	Expects(_history->peer->isBroadcast() || isDiscussionPost());
+
+	if (!_reactions) {
+		_reactions = std::make_unique<Data::MessageReactions>(this);
+	}
+	_reactions->scheduleSendPaid(count, anonymous);
+	if (count > 0) {
+		_history->owner().notifyItemDataChange(this);
+	}
+}
+
+void HistoryItem::cancelScheduledPaidReaction() {
+	if (_reactions) {
+		_reactions->cancelScheduledPaid();
+		_history->owner().notifyItemDataChange(this);
+	}
+}
+
+Data::PaidReactionSend HistoryItem::startPaidReactionSending() {
+	return _reactions
+		? _reactions->startPaidSending()
+		: Data::PaidReactionSend();
+}
+
+void HistoryItem::finishPaidReactionSending(
+		Data::PaidReactionSend send,
+		bool success) {
+	Expects(_reactions != nullptr);
+
+	_reactions->finishPaidSending(send, success);
+	_history->owner().notifyItemDataChange(this);
+}
+
 void HistoryItem::toggleReaction(
 		const Data::ReactionId &reaction,
-		ReactionSource source) {
+		HistoryReactionSource source) {
+	Expects(!reaction.paid());
+
+	const auto addToRecent = (source == HistoryReactionSource::Selector);
 	if (!_reactions) {
 		_reactions = std::make_unique<Data::MessageReactions>(this);
 		const auto canViewReactions = !isDiscussionPost()
@@ -2511,16 +2568,15 @@ void HistoryItem::toggleReaction(
 		if (canViewReactions) {
 			_flags |= MessageFlag::CanViewReactions;
 		}
-		_reactions->add(reaction, (source == ReactionSource::Selector));
+		_reactions->add(reaction, addToRecent);
 	} else if (ranges::contains(_reactions->chosen(), reaction)) {
 		_reactions->remove(reaction);
-		if (_reactions->empty()) {
+		if (_reactions->empty() && !_reactions->localPaidData()) {
 			_reactions = nullptr;
 			_flags &= ~MessageFlag::CanViewReactions;
-			_history->owner().notifyItemDataChange(this);
 		}
 	} else {
-		_reactions->add(reaction, (source == ReactionSource::Selector));
+		_reactions->add(reaction, addToRecent);
 	}
 	_history->owner().notifyItemDataChange(this);
 }
@@ -2532,6 +2588,39 @@ void HistoryItem::updateReactionsUnknown() {
 const std::vector<Data::MessageReaction> &HistoryItem::reactions() const {
 	static const auto kEmpty = std::vector<Data::MessageReaction>();
 	return _reactions ? _reactions->list() : kEmpty;
+}
+
+std::vector<Data::MessageReaction> HistoryItem::reactionsWithLocal() const {
+	if (!_reactions) {
+		return {};
+	}
+	auto result = _reactions->list();
+	const auto i = ranges::find(
+		result,
+		Data::ReactionId::Paid(),
+		&Data::MessageReaction::id);
+	if (const auto local = _reactions->localPaidCount()) {
+		if (i != end(result)) {
+			i->my = true;
+			i->count += local;
+			if (i != begin(result)) {
+				std::rotate(begin(result), i, i + 1);
+			}
+		} else {
+			result.insert(begin(result), Data::MessageReaction{
+				.id = Data::ReactionId::Paid(),
+				.count = local,
+				.my = true,
+			});
+		}
+	} else if (i != end(result) && i != begin(result)) {
+		std::rotate(begin(result), i, i + 1);
+	}
+	return result;
+}
+
+int HistoryItem::reactionsPaidScheduled() const {
+	return _reactions ? _reactions->scheduledPaid() : 0;
 }
 
 bool HistoryItem::reactionsAreTags() const {
@@ -2546,6 +2635,43 @@ auto HistoryItem::recentReactions() const
 		Data::ReactionId,
 		std::vector<Data::RecentReaction>>();
 	return _reactions ? _reactions->recent() : kEmpty;
+}
+
+auto HistoryItem::topPaidReactionsWithLocal() const
+-> std::vector<Data::MessageReactionsTopPaid> {
+	if (!_reactions) {
+		return {};
+	}
+	using TopPaid = Data::MessageReactionsTopPaid;
+	auto result = _reactions->topPaid();
+	const auto i = ranges::find_if(
+		result,
+		[](const TopPaid &entry) { return entry.my != 0; });
+	const auto peer = _reactions->localPaidAnonymous()
+		? nullptr
+		: history()->session().user().get();
+	if (const auto local = _reactions->localPaidCount()) {
+		const auto top = [&](int mine) {
+			return ranges::count_if(result, [&](const TopPaid &entry) {
+				return !entry.my && entry.count >= mine;
+			}) < 3;
+		};
+		if (i != end(result)) {
+			i->count += local;
+			i->peer = peer;
+			i->top = top(i->count) ? 1 : 0;
+		} else {
+			result.push_back({
+				.peer = peer,
+				.count = uint32(local),
+				.top = uint32(top(local) ? 1 : 0),
+				.my = uint32(1),
+			});
+		}
+	} else if (i != end(result)) {
+		i->peer = peer;
+	}
+	return result;
 }
 
 bool HistoryItem::canViewReactions() const {
@@ -2619,7 +2745,9 @@ bool HistoryItem::inThread(MsgId rootId) const {
 }
 
 not_null<PeerData*> HistoryItem::author() const {
-	return (isPost() && !isSponsored()) ? _history->peer : from();
+	return (isPostHidingAuthor() && !isSponsored())
+		? _history->peer
+		: from();
 }
 
 TimeId HistoryItem::originalDate() const {
@@ -2965,6 +3093,23 @@ bool HistoryItem::isUploading() const {
 	return _media && _media->uploading();
 }
 
+bool HistoryItem::hasRealFromId() const {
+	return !isPost() || (_flags & MessageFlag::HasFromId);
+}
+
+bool HistoryItem::isPostHidingAuthor() const {
+	if (!isPost()) {
+		return false;
+	} else if (const auto channel = _history->peer->asBroadcast()) {
+		return !channel->signatureProfiles();
+	}
+	return false; // Should not happen, I guess.
+}
+
+bool HistoryItem::isPostShowingAuthor() const {
+	return isPost() && !isPostHidingAuthor();
+}
+
 bool HistoryItem::isRegular() const {
 	return isHistoryEntry() && !isLocal();
 }
@@ -3199,6 +3344,32 @@ EffectId HistoryItem::effectId() const {
 	return _effectId;
 }
 
+QString HistoryItem::computeUnavailableReason() const {
+	if (const auto restrictions = Get<HistoryMessageRestrictions>()) {
+		_flags |= MessageFlag::HasRestrictions;
+		_history->owner().registerRestricted(this, restrictions->reasons);
+		return Data::UnavailableReason::Compute(
+			&history()->session(),
+			restrictions->reasons);
+	}
+	return QString();
+}
+
+bool HistoryItem::isMediaSensitive() const {
+	if (!(_flags & MessageFlag::SensitiveContent)
+		&& !_history->peer->hasSensitiveContent()) {
+		return false;
+	}
+	_flags |= MessageFlag::HasRestrictions;
+	_history->owner().registerRestricted(this, u"sensitive"_q);
+	return !Data::UnavailableReason::IgnoreSensitiveMark(
+		&_history->session());
+}
+
+bool HistoryItem::hasPossibleRestrictions() const {
+	return _flags & MessageFlag::HasRestrictions;
+}
+
 bool HistoryItem::isEmpty() const {
 	return _text.empty()
 		&& !_media
@@ -3319,7 +3490,7 @@ ItemPreview HistoryItem::toPreview(ToPreviewOptions options) const {
 		return {};
 	};
 	const auto sender = [&]() -> std::optional<QString> {
-		if (options.hideSender || isPost() || isEmpty()) {
+		if (options.hideSender || isPostHidingAuthor() || isEmpty()) {
 			return {};
 		} else if (!_history->peer->isUser()) {
 			if (const auto from = displayFrom()) {
@@ -3407,6 +3578,12 @@ void HistoryItem::createComponents(CreateConfig &&config) {
 	if (_history->peer->isSelf()) {
 		mask |= HistoryMessageSaved::Bit();
 	}
+	if (!config.restrictions.empty()) {
+		if (config.restrictions.size() > 1
+			|| !config.restrictions.front().sensitive()) {
+			mask |= HistoryMessageRestrictions::Bit();
+		}
+	}
 
 	UpdateComponents(mask);
 
@@ -3479,12 +3656,30 @@ void HistoryItem::createComponents(CreateConfig &&config) {
 	} else {
 		_flags &= ~MessageFlag::HasReplyMarkup;
 	}
+	if (const auto restrictions = Get<HistoryMessageRestrictions>()) {
+		restrictions->reasons = std::move(config.restrictions);
+		const auto i = ranges::find(
+			restrictions->reasons,
+			true,
+			&Data::UnavailableReason::sensitive);
+		if (i != end(restrictions->reasons)) {
+			restrictions->reasons.erase(i);
+			flagSensitiveContent();
+		}
+	} else if (!config.restrictions.empty()) {
+		flagSensitiveContent();
+	}
 
 	if (out() && isSending()) {
 		if (const auto channel = _history->peer->asMegagroup()) {
 			_boostsApplied = channel->mgInfo->boostsApplied;
 		}
 	}
+}
+
+void HistoryItem::flagSensitiveContent() {
+	_flags |= MessageFlag::SensitiveContent;
+	_history->session().api().sensitiveContent().preload();
 }
 
 bool HistoryItem::checkRepliesPts(
@@ -3707,12 +3902,21 @@ bool HistoryItem::changeReactions(const MTPMessageReactions *reactions) {
 	if (reactions || _reactionsLastRefreshed) {
 		_reactionsLastRefreshed = crl::now();
 	}
+	const auto changeToEmpty = [&] {
+		if (!_reactions) {
+			return false;
+		} else if (!_reactions->localPaidData()) {
+			_reactions = nullptr;
+			return true;
+		}
+		return _reactions->clearCloudData();
+	};
 	if (!reactions) {
 		_flags &= ~MessageFlag::CanViewReactions;
 		if (_history->peer->isSelf()) {
 			_flags |= MessageFlag::ReactionsAreTags;
 		}
-		return (base::take(_reactions) != nullptr);
+		return changeToEmpty();
 	}
 	const auto &data = reactions->data();
 	const auto empty = data.vresults().v.isEmpty();
@@ -3728,13 +3932,14 @@ bool HistoryItem::changeReactions(const MTPMessageReactions *reactions) {
 		_flags &= ~MessageFlag::CanViewReactions;
 	}
 	if (empty) {
-		return (base::take(_reactions) != nullptr);
+		return changeToEmpty();
 	} else if (!_reactions) {
 		_reactions = std::make_unique<Data::MessageReactions>(this);
 	}
 	const auto min = data.is_min();
 	const auto &list = data.vresults().v;
 	const auto &recent = data.vrecent_reactions().value_or_empty();
+	const auto &top = data.vtop_reactors().value_or_empty();
 	if (min && hasUnreadReaction()) {
 		// We can't update reactions from min if we have unread.
 		if (_reactions->checkIfChanged(list, recent, min)) {
@@ -3742,7 +3947,7 @@ bool HistoryItem::changeReactions(const MTPMessageReactions *reactions) {
 		}
 		return false;
 	}
-	return _reactions->change(list, recent, min);
+	return _reactions->change(list, recent, top, min);
 }
 
 void HistoryItem::applyTTL(const MTPDmessage &data) {
@@ -3784,6 +3989,8 @@ void HistoryItem::createComponents(const MTPDmessage &data) {
 	config.markup = HistoryMessageMarkupData(data.vreply_markup());
 	config.editDate = data.vedit_date().value_or_empty();
 	config.postAuthor = qs(data.vpost_author().value_or_empty());
+	config.restrictions = Data::UnavailableReason::Extract(
+		data.vrestriction_reason());
 	createComponents(std::move(config));
 }
 
@@ -3956,7 +4163,10 @@ void HistoryItem::createServiceFromMtp(const MTPDmessageService &message) {
 		payment->recurringInit = data.is_recurring_init();
 		payment->recurringUsed = data.is_recurring_used();
 		payment->isCreditsCurrency = (currency == Ui::kCreditsCurrency);
-		payment->amount = Ui::FillAmountAndCurrency(amount, currency);
+		payment->amount = AmountAndStarCurrency(
+			&_history->session(),
+			amount,
+			currency);
 		payment->invoiceLink = std::make_shared<LambdaClickHandler>([=](
 				ClickContext context) {
 			using namespace Payments;
@@ -4028,6 +4238,22 @@ void HistoryItem::createServiceFromMtp(const MTPDmessageService &message) {
 		}
 	} else if (type == mtpc_messageActionGiveawayResults) {
 		UpdateComponents(HistoryServiceGiveawayResults::Bit());
+	} else if (type == mtpc_messageActionPaymentRefunded) {
+		const auto &data = action.c_messageActionPaymentRefunded();
+		UpdateComponents(HistoryServicePaymentRefund::Bit());
+		const auto refund = Get<HistoryServicePaymentRefund>();
+		refund->peer = _history->owner().peer(peerFromMTP(data.vpeer()));
+		refund->amount = data.vtotal_amount().v;
+		refund->currency = qs(data.vcurrency());
+		refund->transactionId = qs(data.vcharge().data().vid());
+		const auto id = fullId();
+		refund->link = std::make_shared<LambdaClickHandler>([=](
+				ClickContext context) {
+			const auto my = context.other.value<ClickHandlerContext>();
+			if (const auto window = my.sessionWindow.get()) {
+				Settings::ShowRefundInfoBox(window, id);
+			}
+		});
 	}
 	if (const auto replyTo = message.vreply_to()) {
 		replyTo->match([&](const MTPDmessageReplyHeader &data) {
@@ -4662,21 +4888,32 @@ void HistoryItem::setServiceMessageByAction(const MTPmessageAction &action) {
 	auto prepareGiftPremium = [&](
 			const MTPDmessageActionGiftPremium &action) {
 		auto result = PreparedServiceText();
-		const auto isSelf = (_from->id == _from->session().userPeerId());
+		const auto session = &_history->session();
+		const auto isSelf = _from->isSelf();
 		const auto peer = isSelf ? _history->peer : _from;
-		_history->session().giftBoxStickersPacks().load();
+		session->giftBoxStickersPacks().load();
 		const auto amount = action.vamount().v;
 		const auto currency = qs(action.vcurrency());
-		result.links.push_back(peer->createOpenLink());
-		result.text = (isSelf
-			? tr::lng_action_gift_received_me
-			: tr::lng_action_gift_received)(
+		const auto cost = AmountAndStarCurrency(session, amount, currency);
+		const auto anonymous = _from->isServiceUser();
+		if (anonymous) {
+			result.text = tr::lng_action_gift_received_anonymous(
 				tr::now,
-				lt_user,
-				Ui::Text::Link(peer->name(), 1), // Link 1.
 				lt_cost,
-				{ Ui::FillAmountAndCurrency(amount, currency) },
+				cost,
 				Ui::Text::WithEntities);
+		} else {
+			result.links.push_back(peer->createOpenLink());
+			result.text = (isSelf
+				? tr::lng_action_gift_received_me
+				: tr::lng_action_gift_received)(
+					tr::now,
+					lt_user,
+					Ui::Text::Link(peer->name(), 1), // Link 1.
+					lt_cost,
+					cost,
+					Ui::Text::WithEntities);
+		}
 		return result;
 	};
 
@@ -4888,9 +5125,10 @@ void HistoryItem::setServiceMessageByAction(const MTPmessageAction &action) {
 					lt_user,
 					Ui::Text::Link(peer->name(), 1), // Link 1.
 					lt_cost,
-					{ Ui::FillAmountAndCurrency(
+					AmountAndStarCurrency(
+						&_history->session(),
 						action.vamount().value_or_empty(),
-						qs(action.vcurrency().value_or_empty())) },
+						qs(action.vcurrency().value_or_empty())),
 					Ui::Text::WithEntities);
 
 		}
@@ -4940,6 +5178,48 @@ void HistoryItem::setServiceMessageByAction(const MTPmessageAction &action) {
 			Ui::Text::WithEntities);
 		return result;
 	};
+	auto preparePaymentRefunded = [&](const MTPDmessageActionPaymentRefunded &action) {
+		auto result = PreparedServiceText();
+		const auto refund = Get<HistoryServicePaymentRefund>();
+		Assert(refund != nullptr);
+		Assert(refund->peer != nullptr);
+
+		const auto amount = refund->amount;
+		const auto currency = refund->currency;
+		result.links.push_back(refund->peer->createOpenLink());
+		result.text = tr::lng_action_payment_refunded(
+			tr::now,
+			lt_peer,
+			Ui::Text::Link(refund->peer->name(), 1), // Link 1.
+			lt_amount,
+			AmountAndStarCurrency(&_history->session(), amount, currency),
+			Ui::Text::WithEntities);
+		return result;
+	};
+
+	auto prepareGiftStars = [&](
+			const MTPDmessageActionGiftStars &action) {
+		auto result = PreparedServiceText();
+		const auto isSelf = (_from->id == _from->session().userPeerId());
+		const auto peer = isSelf ? _history->peer : _from;
+		_history->session().giftBoxStickersPacks().load();
+		const auto amount = action.vamount().v;
+		const auto currency = qs(action.vcurrency());
+		result.links.push_back(peer->createOpenLink());
+		result.text = (isSelf
+			? tr::lng_action_gift_received_me
+			: tr::lng_action_gift_received)(
+				tr::now,
+				lt_user,
+				Ui::Text::Link(peer->name(), 1), // Link 1.
+				lt_cost,
+				AmountAndStarCurrency(
+					&_history->session(),
+					amount,
+					currency),
+				Ui::Text::WithEntities);
+		return result;
+	};
 
 	setServiceText(action.match(
 		prepareChatAddUserText,
@@ -4983,6 +5263,8 @@ void HistoryItem::setServiceMessageByAction(const MTPmessageAction &action) {
 		prepareGiveawayLaunch,
 		prepareGiveawayResults,
 		prepareBoostApply,
+		preparePaymentRefunded,
+		prepareGiftStars,
 		PrepareEmptyText<MTPDmessageActionRequestedPeerSentMe>,
 		PrepareErrorText<MTPDmessageActionEmpty>));
 
@@ -5035,6 +5317,7 @@ void HistoryItem::applyAction(const MTPMessageAction &action) {
 		_media = std::make_unique<Data::MediaGiftBox>(
 			this,
 			_from,
+			Data::GiftType::Premium,
 			data.vmonths().v);
 	}, [&](const MTPDmessageActionSuggestProfilePhoto &data) {
 		data.vphoto().match([&](const MTPDphoto &photo) {
@@ -5069,10 +5352,17 @@ void HistoryItem::applyAction(const MTPMessageAction &action) {
 				.channel = (boostedId
 					? history()->owner().channel(boostedId).get()
 					: nullptr),
-				.months = data.vmonths().v,
+				.count = data.vmonths().v,
+				.type = Data::GiftType::Premium,
 				.viaGiveaway = data.is_via_giveaway(),
 				.unclaimed = data.is_unclaimed(),
 			});
+	}, [&](const MTPDmessageActionGiftStars &data) {
+		_media = std::make_unique<Data::MediaGiftBox>(
+			this,
+			_from,
+			Data::GiftType::Stars,
+			data.vstars().v);
 	}, [](const auto &) {
 	});
 }
@@ -5345,7 +5635,7 @@ PreparedServiceText HistoryItem::preparePaymentSentText() {
 			result.text = tr::lng_action_payment_used_recurring(
 				tr::now,
 				lt_amount,
-				{ .text = payment->amount },
+				payment->amount,
 				Ui::Text::WithEntities);
 		} else {
 			result.text = (payment->recurringInit
@@ -5353,7 +5643,7 @@ PreparedServiceText HistoryItem::preparePaymentSentText() {
 				: tr::lng_action_payment_done)(
 					tr::now,
 					lt_amount,
-					{ .text = payment->amount },
+					payment->amount,
 					lt_user,
 					{ .text = _history->peer->name() },
 					Ui::Text::WithEntities);
@@ -5364,7 +5654,7 @@ PreparedServiceText HistoryItem::preparePaymentSentText() {
 			: tr::lng_action_payment_done_for)(
 				tr::now,
 				lt_amount,
-				{ .text = payment->amount },
+				payment->amount,
 				lt_user,
 				{ .text = _history->peer->name() },
 				lt_invoice,

@@ -242,7 +242,8 @@ template <typename MediaType>
 		ImageRoundRadius radius,
 		bool spoiler) {
 	auto result = PreparePhotoPreviewImage(item, media, radius, spoiler);
-	if (media->owner()->extendedMediaVideoDuration().has_value()) {
+	if (!result.data.isNull()
+		&& media->owner()->extendedMediaVideoDuration().has_value()) {
 		result.data = PutPlayIcon(std::move(result.data));
 	}
 	return result;
@@ -2266,7 +2267,6 @@ ClickHandlerPtr MediaDice::MakeHandler(
 			.text = { tr::lng_about_random(tr::now, lt_emoji, emoji) },
 			.st = &st::historyDiceToast,
 			.duration = Ui::Toast::kDefaultDuration * 2,
-			.multiline = true,
 		};
 		if (CanSend(history->peer, ChatRestriction::SendOther)) {
 			auto link = Ui::Text::Link(tr::lng_about_random_send(tr::now));
@@ -2295,7 +2295,7 @@ ClickHandlerPtr MediaDice::MakeHandler(
 		if (const auto strong = weak.get()) {
 			ShownToast = strong->showToast(std::move(config));
 		} else {
-			ShownToast = Ui::Toast::Show(config);
+			ShownToast = Ui::Toast::Show(std::move(config));
 		}
 	});
 }
@@ -2303,8 +2303,9 @@ ClickHandlerPtr MediaDice::MakeHandler(
 MediaGiftBox::MediaGiftBox(
 	not_null<HistoryItem*> parent,
 	not_null<PeerData*> from,
-	int months)
-: MediaGiftBox(parent, from, GiftCode{ .months = months }) {
+	GiftType type,
+	int count)
+: MediaGiftBox(parent, from, GiftCode{ .count = count, .type = type }) {
 }
 
 MediaGiftBox::MediaGiftBox(
@@ -2631,7 +2632,11 @@ const GiveawayResults *MediaGiveawayResults::giveawayResults() const {
 }
 
 TextWithEntities MediaGiveawayResults::notificationText() const {
-	return Ui::Text::Colorized({ tr::lng_prizes_results_title(tr::now) });
+	return Ui::Text::Colorized({
+		((_data.winnersCount == 1)
+			? tr::lng_prizes_results_title_one
+			: tr::lng_prizes_results_title)(tr::now)
+	});
 }
 
 QString MediaGiveawayResults::pinnedTextSubstring() const {

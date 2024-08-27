@@ -30,6 +30,13 @@
 #define WEBKIT_TYPE_WEB_VIEW (webkit_web_view_get_type())
 #define WEBKIT_WEB_VIEW(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), WEBKIT_TYPE_WEB_VIEW, WebKitWebView))
 
+struct _GdkRGBA {
+	float red;
+	float green;
+	float blue;
+	float alpha;
+};
+
 typedef struct _GdkDisplay GdkDisplay;
 typedef struct _GdkScreen GdkScreen;
 typedef struct _GdkRGBA GdkRGBA;
@@ -41,13 +48,6 @@ typedef struct _GtkAdjustment GtkAdjustment;
 typedef struct _GtkStyleContext GtkStyleContext;
 typedef struct _GtkStyleProvider GtkStyleProvider;
 typedef struct _GtkCssProvider GtkCssProvider;
-
-struct _GdkRGBA {
-	float red;
-	float green;
-	float blue;
-	float alpha;
-};
 
 typedef struct _JSCValue JSCValue;
 
@@ -97,7 +97,7 @@ typedef enum {
     WEBKIT_SCRIPT_DIALOG_ALERT,
     WEBKIT_SCRIPT_DIALOG_CONFIRM,
     WEBKIT_SCRIPT_DIALOG_PROMPT,
-    WEBKIT_SCRIPT_DIALOG_BEFORE_UNLOAD_CONFIRM
+    WEBKIT_SCRIPT_DIALOG_BEFORE_UNLOAD_CONFIRM,
 } WebKitScriptDialogType;
 
 namespace Webview::WebKitGTK::Library {
@@ -185,6 +185,10 @@ inline GtkWidget *(*webkit_web_view_new_with_context)(WebKitWebContext *context)
 inline GType (*webkit_web_view_get_type)(void);
 inline WebKitUserContentManager *(*webkit_web_view_get_user_content_manager)(
 	WebKitWebView *web_view);
+inline const gchar *(*webkit_web_view_get_uri)(WebKitWebView *web_view);
+inline const gchar *(*webkit_web_view_get_title)(WebKitWebView *web_view);
+inline gboolean (*webkit_web_view_can_go_back)(WebKitWebView *web_view);
+inline gboolean (*webkit_web_view_can_go_forward)(WebKitWebView *web_view);
 inline gboolean (*webkit_user_content_manager_register_script_message_handler)(
 	WebKitUserContentManager *manager,
 	const gchar *name,

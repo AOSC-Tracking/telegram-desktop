@@ -45,6 +45,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/profile/info_profile_text.h"
 #include "info/profile/info_profile_values.h"
 #include "info/profile/info_profile_widget.h"
+#include "inline_bots/bot_attach_web_view.h"
+#include "iv/iv_instance.h"
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "menu/menu_mute.h"
@@ -776,6 +778,7 @@ private:
 	object_ptr<Ui::RpWidget> setupPersonalChannel(not_null<UserData*> user);
 	object_ptr<Ui::RpWidget> setupInfo();
 	object_ptr<Ui::RpWidget> setupMuteToggle();
+	void setupMainApp();
 	void setupMainButtons();
 	Ui::MultiSlideTracker fillTopicButtons();
 	Ui::MultiSlideTracker fillUserButtons(
@@ -1209,10 +1212,21 @@ object_ptr<Ui::RpWidget> DetailsFiller::setupInfo() {
 	}
 	if (!_peer->isSelf()) {
 		// No notifications toggle for Self => no separator.
+
+		const auto user = _peer->asUser();
+		const auto app = user && user->botInfo && user->botInfo->hasMainApp;
+		const auto padding = app
+			? QMargins(
+				st::infoOpenAppMargin.left(),
+				st::infoProfileSeparatorPadding.top(),
+				st::infoOpenAppMargin.right(),
+				0)
+			: st::infoProfileSeparatorPadding;
+
 		result->add(object_ptr<Ui::SlideWrap<>>(
 			result,
 			object_ptr<Ui::PlainShadow>(result),
-			st::infoProfileSeparatorPadding)
+			padding)
 		)->setDuration(
 			st::infoSlideDuration
 		)->toggleOn(
@@ -1548,6 +1562,42 @@ object_ptr<Ui::RpWidget> DetailsFiller::setupMuteToggle() {
 	return result;
 }
 
+void DetailsFiller::setupMainApp() {
+	const auto button = _wrap->add(
+		object_ptr<Ui::RoundButton>(
+			_wrap,
+			tr::lng_profile_open_app(),
+			st::infoOpenApp),
+		st::infoOpenAppMargin);
+	button->setTextTransform(Ui::RoundButton::TextTransform::NoTransform);
+
+	const auto user = _peer->asUser();
+	const auto controller = _controller->parentController();
+	button->setClickedCallback([=] {
+		user->session().attachWebView().open({
+			.bot = user,
+			.context = {
+				.controller = controller,
+				.maySkipConfirmation = true,
+			},
+			.source = InlineBots::WebViewSourceBotProfile(),
+		});
+	});
+
+	const auto url = tr::lng_mini_apps_tos_url(tr::now);
+	Ui::AddDividerText(
+		_wrap,
+		tr::lng_profile_open_app_about(
+			lt_terms,
+			tr::lng_profile_open_app_terms() | Ui::Text::ToLink(url),
+			Ui::Text::WithEntities)
+	)->setClickHandlerFilter([=](const auto &...) {
+		UrlClickHandler::Open(url);
+		return false;
+	});
+	Ui::AddSkip(_wrap);
+}
+
 void DetailsFiller::setupMainButtons() {
 	auto wrapButtons = [=](auto &&callback) {
 		auto topSkip = _wrap->add(CreateSlideSkipWidget(_wrap));
@@ -1737,6 +1787,13 @@ object_ptr<Ui::RpWidget> DetailsFiller::fill() {
 	add(object_ptr<Ui::BoxContentDivider>(_wrap));
 	add(CreateSkipWidget(_wrap));
 	add(setupInfo());
+	if (const auto user = _peer->asUser()) {
+		if (const auto info = user->botInfo.get()) {
+			if (info->hasMainApp) {
+				setupMainApp();
+			}
+		}
+	}
 	if (!_peer->isSelf()) {
 		add(setupMuteToggle());
 	}
@@ -1811,7 +1868,8 @@ void ActionsFiller::addDeleteContactAction(not_null<UserData*> user) {
 }
 
 void ActionsFiller::addBotCommandActions(not_null<UserData*> user) {
-	auto findBotCommand = [user](const QString &command) {
+	const auto window = _controller->parentController();
+	const auto findBotCommand = [user](const QString &command) {
 		if (!user->isBot()) {
 			return QString();
 		}
@@ -1825,7 +1883,7 @@ void ActionsFiller::addBotCommandActions(not_null<UserData*> user) {
 		}
 		return QString();
 	};
-	auto hasBotCommandValue = [=](const QString &command) {
+	const auto hasBotCommandValue = [=](const QString &command) {
 		return user->session().changes().peerFlagsValue(
 			user,
 			Data::PeerUpdate::Flag::BotCommands
@@ -1833,21 +1891,24 @@ void ActionsFiller::addBotCommandActions(not_null<UserData*> user) {
 			return !findBotCommand(command).isEmpty();
 		});
 	};
-	auto sendBotCommand = [=, window = _controller->parentController()](
-			const QString &command) {
+	const auto makeOtherContext = [=] {
+		return QVariant::fromValue(ClickHandlerContext{
+			.sessionWindow = base::make_weak(window),
+			.peer = user,
+		});
+	};
+	const auto sendBotCommand = [=](const QString &command) {
 		const auto original = findBotCommand(command);
 		if (original.isEmpty()) {
-			return;
+			return false;
 		}
 		BotCommandClickHandler('/' + original).onClick(ClickContext{
 			Qt::LeftButton,
-			QVariant::fromValue(ClickHandlerContext{
-				.sessionWindow = base::make_weak(window),
-				.peer = user,
-			})
+			makeOtherContext()
 		});
+		return true;
 	};
-	auto addBotCommand = [=](
+	const auto addBotCommand = [=](
 			rpl::producer<QString> text,
 			const QString &command,
 			const style::icon *icon = nullptr) {
@@ -1863,7 +1924,31 @@ void ActionsFiller::addBotCommandActions(not_null<UserData*> user) {
 		u"help"_q,
 		&st::infoIconInformation);
 	addBotCommand(tr::lng_profile_bot_settings(), u"settings"_q);
-	addBotCommand(tr::lng_profile_bot_privacy(), u"privacy"_q);
+	//addBotCommand(tr::lng_profile_bot_privacy(), u"privacy"_q);
+	const auto openUrl = [=](const QString &url) {
+		Core::App().iv().openWithIvPreferred(
+			&user->session(),
+			url,
+			makeOtherContext());
+	};
+	const auto openPrivacyPolicy = [=] {
+		if (const auto info = user->botInfo.get()) {
+			if (!info->privacyPolicyUrl.isEmpty()) {
+				openUrl(info->privacyPolicyUrl);
+				return;
+			}
+		}
+		if (!sendBotCommand(u"privacy"_q)) {
+			openUrl(tr::lng_profile_bot_privacy_url(tr::now));
+		}
+	};
+	AddActionButton(
+		_wrap,
+		tr::lng_profile_bot_privacy(),
+		rpl::single(true),
+		openPrivacyPolicy,
+		nullptr);
+
 }
 
 void ActionsFiller::addReportAction() {

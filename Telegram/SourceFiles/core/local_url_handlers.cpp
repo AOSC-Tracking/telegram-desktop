@@ -33,6 +33,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "passport/passport_form_controller.h"
 #include "ui/text/text_utilities.h"
 #include "ui/toast/toast.h"
+#include "data/components/credits.h"
 #include "data/data_birthday.h"
 #include "data/data_channel.h"
 #include "data/data_document.h"
@@ -46,6 +47,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_peer_menu.h"
 #include "window/themes/window_theme_editor_box.h" // GenerateSlug.
 #include "payments/payments_checkout_process.h"
+#include "settings/settings_credits.h"
+#include "settings/settings_credits_graphics.h"
 #include "settings/settings_information.h"
 #include "settings/settings_global_ttl.h"
 #include "settings/settings_folders.h"
@@ -327,21 +330,6 @@ bool ConfirmPhone(
 	return true;
 }
 
-bool ShareGameScore(
-		Window::SessionController *controller,
-		const Match &match,
-		const QVariant &context) {
-	if (!controller) {
-		return false;
-	}
-	const auto params = url_parse_params(
-		match->captured(1),
-		qthelp::UrlParamNameTransform::ToLower);
-	ShareGameScoreByHash(controller, params.value(u"hash"_q));
-	controller->window().activate();
-	return true;
-}
-
 bool ApplySocksProxy(
 		Window::SessionController *controller,
 		const Match &match,
@@ -518,7 +506,9 @@ bool ResolveUsernameOrPhone(
 		return false;
 	}
 	using ResolveType = Window::ResolveType;
-	auto resolveType = ResolveType::Default;
+	auto resolveType = params.contains(u"profile"_q)
+		? ResolveType::Profile
+		: ResolveType::Default;
 	auto startToken = params.value(u"start"_q);
 	if (!startToken.isEmpty()) {
 		resolveType = ResolveType::BotStart;
@@ -588,8 +578,11 @@ bool ResolveUsernameOrPhone(
 			: (appname.isEmpty() && params.contains(u"startapp"_q))
 			? params.value(u"startapp"_q)
 			: std::optional<QString>()),
-		.attachBotMenuOpen = (appname.isEmpty()
+		.attachBotMainOpen = (appname.isEmpty()
 			&& params.contains(u"startapp"_q)),
+		.attachBotMainCompact = (appname.isEmpty()
+			&& params.contains(u"startapp"_q)
+			&& (params.value(u"mode"_q) == u"compact"_q)),
 		.attachBotChooseTypes = InlineBots::ParseChooseTypes(
 			params.value(u"choose"_q)),
 		.voicechatHash = (params.contains(u"livestream"_q)
@@ -600,7 +593,7 @@ bool ResolveUsernameOrPhone(
 			? std::make_optional(params.value(u"voicechat"_q))
 			: std::nullopt),
 		.clickFromMessageId = myContext.itemId,
-		.clickFromAttachBotWebviewUrl = myContext.attachBotWebviewUrl,
+		.clickFromBotWebviewContext = myContext.botWebviewContext,
 	});
 	return true;
 }
@@ -641,7 +634,7 @@ bool ResolvePrivatePost(
 			}
 			: Window::RepliesByLinkInfo{ v::null },
 		.clickFromMessageId = my.itemId,
-		.clickFromAttachBotWebviewUrl = my.attachBotWebviewUrl,
+		.clickFromBotWebviewContext = my.botWebviewContext,
 	});
 	controller->window().activate();
 	return true;
@@ -1180,6 +1173,52 @@ bool ResolveBoost(
 	return true;
 }
 
+bool ResolveTopUp(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto params = url_parse_params(
+		match->captured(1),
+		qthelp::UrlParamNameTransform::ToLower);
+	const auto amount = std::clamp(
+		params.value(u"balance"_q).toULongLong(),
+		qulonglong(1),
+		qulonglong(1'000'000));
+	const auto purpose = params.value(u"purpose"_q);
+	const auto weak = base::make_weak(controller);
+	const auto done = [=](::Settings::SmallBalanceResult result) {
+		if (result == ::Settings::SmallBalanceResult::Already) {
+			if (const auto strong = weak.get()) {
+				const auto filter = [=](const auto &...) {
+					strong->showSettings(::Settings::CreditsId());
+					return false;
+				};
+				strong->showToast(Ui::Toast::Config{
+					.text = tr::lng_credits_enough(
+						tr::now,
+						lt_link,
+						Ui::Text::Link(
+							Ui::Text::Bold(
+								tr::lng_credits_enough_link(tr::now))),
+						Ui::Text::RichLangValue),
+					.filter = filter,
+					.duration = 4 * crl::time(1000),
+				});
+			}
+		}
+	};
+	::Settings::MaybeRequestBalanceIncrease(
+		controller->uiShow(),
+		amount,
+		::Settings::SmallBalanceDeepLink{ .purpose = purpose },
+		done);
+	return true;
+}
+
+
 bool ResolveChatLink(
 		Window::SessionController *controller,
 		const Match &match,
@@ -1193,7 +1232,7 @@ bool ResolveChatLink(
 	controller->showPeerByLink(Window::PeerByLinkInfo{
 		.chatLinkSlug = match->captured(1),
 		.clickFromMessageId = myContext.itemId,
-		.clickFromAttachBotWebviewUrl = myContext.attachBotWebviewUrl,
+		.clickFromBotWebviewContext = myContext.botWebviewContext,
 	});
 	return true;
 }
@@ -1229,10 +1268,6 @@ const std::vector<LocalUrlHandler> &LocalUrlHandlers() {
 		{
 			u"^confirmphone/?\\?(.+)(#|$)"_q,
 			ConfirmPhone
-		},
-		{
-			u"^share_game_score/?\\?(.+)(#|$)"_q,
-			ShareGameScore
 		},
 		{
 			u"^socks/?\\?(.+)(#|$)"_q,
@@ -1287,8 +1322,12 @@ const std::vector<LocalUrlHandler> &LocalUrlHandlers() {
 			ResolveBoost,
 		},
 		{
-			u"^message/?\\?slug=([a-zA-Z0-9\\.\\_]+)(&|$)"_q,
+			u"^message/?\\?slug=([a-zA-Z0-9\\.\\_\\-]+)(&|$)"_q,
 			ResolveChatLink
+		},
+		{
+			u"^stars_topup/?\\?(.+)(#|$)"_q,
+			ResolveTopUp
 		},
 		{
 			u"^([^\\?]+)(\\?|#|$)"_q,
@@ -1351,6 +1390,13 @@ QString TryConvertUrlToLocal(QString url) {
 
 	using namespace qthelp;
 	auto matchOptions = RegExOption::CaseInsensitive;
+	auto tonsiteMatch = (url.indexOf(u".ton") >= 0)
+		? regex_match(u"^(https?://)?[^/@:]+\\.ton($|/)"_q, url, matchOptions)
+		: RegularExpressionMatch(QRegularExpressionMatch());
+	if (tonsiteMatch) {
+		const auto protocol = tonsiteMatch->captured(1);
+		return u"tonsite://"_q + url.mid(protocol.size());
+	}
 	auto subdomainMatch = regex_match(u"^(https?://)?([a-zA-Z0-9\\_]+)\\.t\\.me(/\\d+)?/?(\\?.+)?"_q, url, matchOptions);
 	if (subdomainMatch) {
 		const auto name = subdomainMatch->captured(2);

@@ -7,16 +7,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-namespace Data {
+namespace Window {
+class SessionController;
+} // namespace Window
 
-struct SubscriptionOption {
-	QString duration;
-	QString discount;
-	QString costPerMonth;
-	QString costTotal;
-	QString total;
-	QString botUrl;
-};
-using SubscriptionOptions = std::vector<SubscriptionOption>;
+namespace Ui {
 
-} // namespace Data
+void ShowGiftCreditsBox(
+	not_null<Window::SessionController*> controller,
+	Fn<void()> gifted);
+
+} // namespace Ui

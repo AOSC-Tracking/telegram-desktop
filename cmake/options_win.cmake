@@ -24,7 +24,7 @@ INTERFACE
     UNICODE
     _UNICODE
 )
-if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
     target_compile_options(common_options
     INTERFACE
         /permissive-
@@ -77,7 +77,7 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         )
     endif()
 
-    if (build_win64)
+    if (build_win64 OR build_winarm)
         target_compile_options(common_options
         INTERFACE
             /bigobj # scheme.cpp has too many sections.
@@ -105,7 +105,7 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
             $<IF:$<CONFIG:Debug>,,/LTCGOUT:>
         )
     endif()
-elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+elseif (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
     target_compile_definitions(common_options
     INTERFACE
         WINVER=0x0601

@@ -20,6 +20,7 @@ struct CreditsHistoryEntry;
 struct CreditsStatusSlice;
 struct PublicForwardsSlice;
 struct RecentPostId;
+struct SubscriptionEntry;
 struct SupergroupStatistics;
 } // namespace Data
 
@@ -50,13 +51,15 @@ void AddBoostsList(
 	not_null<PeerData*> peer,
 	rpl::producer<QString> title);
 
+using Clicked = Fn<void(
+	const Data::CreditsHistoryEntry &,
+	const Data::SubscriptionEntry &)>;
 void AddCreditsHistoryList(
 	std::shared_ptr<Main::SessionShow> show,
 	const Data::CreditsStatusSlice &firstSlice,
 	not_null<Ui::VerticalLayout*> container,
-	Fn<void(const Data::CreditsHistoryEntry &)> entryClickedCallback,
-	not_null<PeerData*> premiumBot,
-	not_null<QImage*> creditIcon,
+	Clicked entryClickedCallback,
+	not_null<PeerData*> peer,
 	bool in,
 	bool out);
 
