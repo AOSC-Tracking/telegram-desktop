@@ -11,6 +11,8 @@
 #include "ui/widgets/rp_window.h"
 #include "ui/widgets/shadow.h"
 #include "ui/painter.h"
+#include "ui/qt_object_factory.h"
+#include "ui/ui_utility.h"
 #include "styles/style_widgets.h"
 #include "styles/style_layers.h"
 #include "styles/palette.h"
@@ -278,11 +280,16 @@ void BasicWindowHelper::setupBodyTitleAreaEvents() {
 				}
 #endif // Q_OS_WIN
 				_mousePressed = false;
+				_mousePressCancelled = true;
+				const auto weak = QPointer(_window.get());
 				_window->windowHandle()->startSystemMove();
 				SendSynteticMouseEvent(
 					body().get(),
 					QEvent::MouseButtonRelease,
 					Qt::LeftButton);
+				if (weak) {
+					_mousePressCancelled = false;
+				}
 			}
 		}
 	}, body()->lifetime());

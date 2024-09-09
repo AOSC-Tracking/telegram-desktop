@@ -23,6 +23,9 @@
 #include "ui/style/style_core_palette.h"
 #include "ui/painter.h"
 #include "ui/rect.h"
+#include "ui/qt_object_factory.h"
+#include "ui/qt_weak_factory.h"
+#include "ui/ui_utility.h"
 #include "base/platform/base_platform_info.h"
 #include "base/debug_log.h"
 #include "base/invoke_queued.h"
@@ -244,6 +247,17 @@ void SeparatePanel::overrideTitleColor(std::optional<QColor> color) {
 	if (!_titleOverridePalette) {
 		_titleOverrideStyles.clear();
 	}
+	update();
+}
+
+void SeparatePanel::overrideBottomBarColor(std::optional<QColor> color) {
+	if (_bottomBarOverrideColor == color) {
+		return;
+	}
+	_bottomBarOverrideColor = color;
+	_bottomBarOverrideBorderParts = _bottomBarOverrideColor
+		? createBorderImage(*_bottomBarOverrideColor)
+		: QPixmap();
 	update();
 }
 
@@ -917,6 +931,9 @@ void SeparatePanel::paintShadowBorder(QPainter &p) const {
 	const auto &header = _titleOverrideColor
 		? _titleOverrideBorderParts
 		: _borderParts;
+	const auto &bottomBar = _bottomBarOverrideColor
+		? _bottomBarOverrideBorderParts
+		: _borderParts;
 	const auto topleft = QRect(QPoint(0, 0), corner);
 	p.drawPixmap(QRect(0, 0, part1, part1), header, topleft);
 
@@ -934,13 +951,13 @@ void SeparatePanel::paintShadowBorder(QPainter &p) const {
 	const auto bottomleft = QRect(QPoint(0, part2) * factor, corner);
 	p.drawPixmap(
 		QRect(0, height() - part1, part1, part1),
-		_borderParts,
+		bottomBar,
 		bottomleft);
 
 	const auto bottomright = QRect(QPoint(part2, part2) * factor, corner);
 	p.drawPixmap(
 		QRect(width() - part1, height() - part1, part1, part1),
-		_borderParts,
+		bottomBar,
 		bottomright);
 
 	const auto bottom = QRect(
@@ -952,7 +969,7 @@ void SeparatePanel::paintShadowBorder(QPainter &p) const {
 			height() - _padding.bottom() - radius,
 			width() - 2 * part1,
 			_padding.bottom() + radius),
-		_borderParts,
+		bottomBar,
 		bottom);
 
 	const auto fillLeft = [&](int from, int till, const auto &parts) {

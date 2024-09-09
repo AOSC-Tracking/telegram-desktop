@@ -97,7 +97,7 @@ RoundButton {
 	iconOver: icon;
 	iconPosition: point;
 
-	font: font;
+	style: TextStyle;
 
 	ripple: RippleAnimation;
 }
@@ -293,6 +293,7 @@ InputField {
 	width: pixels;
 	heightMin: pixels;
 	heightMax: pixels;
+	widthMin: pixels;
 }
 
 OutlineButton {
@@ -464,6 +465,8 @@ CallButton {
 	outerRadius: pixels;
 	outerBg: color;
 	label: FlatLabel;
+	cornerButtonPosition: point;
+	cornerButtonBorder: pixels;
 }
 
 InnerDropdown {
@@ -683,7 +686,7 @@ defaultActiveButton: RoundButton {
 
 	iconPosition: point(0px, 0px);
 
-	font: semiboldFont;
+	style: semiboldTextStyle;
 
 	ripple: RippleAnimation(defaultRippleAnimation) {
 		color: activeButtonBgRipple;
@@ -913,6 +916,7 @@ defaultInputField: InputField {
 
 	heightMin: 55px;
 	heightMax: 148px;
+	widthMin: 64px;
 }
 defaultInputFieldLimit: FlatLabel(defaultFlatLabel) {
 	textFg: windowSubTextFg;

@@ -11,6 +11,7 @@
 #include "ui/text/text_renderer.h"
 #include "ui/text/text_utilities.h"
 #include "ui/widgets/fields/input_field.h"
+#include "ui/integration.h"
 #include "styles/style_basic.h"
 #include "styles/style_widgets.h"
 
@@ -168,6 +169,7 @@ void CustomFieldObject::drawObject(
 				.pausedSpoiler = _pausedSpoiler(),
 
 				.elisionLines = Text::kQuoteCollapsedLines,
+				.useFullWidth = true,
 			});
 		}
 		return;
@@ -268,6 +270,7 @@ void CustomFieldObject::refreshSpoilerShown(InputFieldTextRange range) {
 
 void CustomFieldObject::setCollapsedText(int quoteId, TextWithTags text) {
 	auto &quote = _quotes[quoteId];
+	quote.string = Text::String(_field->_st.widthMin);
 	quote.string.setMarkedText(_field->_st.style, {
 		text.text,
 		TextUtilities::ConvertTextTagsToEntities(text.tags),

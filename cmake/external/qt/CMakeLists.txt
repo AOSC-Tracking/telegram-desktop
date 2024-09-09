@@ -114,7 +114,6 @@ if (TARGET Qt::Quick)
     list(PREPEND common_qt_libs
         lib/${qt_lib_prefix}Qt${QT_VERSION_MAJOR}Quick
         lib/${qt_lib_prefix}Qt${QT_VERSION_MAJOR}Qml
-        lib/${qt_lib_prefix}Qt${QT_VERSION_MAJOR}QmlBuiltins
     )
 endif()
 
@@ -267,6 +266,7 @@ else()
             plugins/platforms/${qt_lib_prefix}qwayland-egl
             plugins/wayland-graphics-integration-client/${qt_lib_prefix}qt-plugin-wayland-egl
             plugins/wayland-shell-integration/${qt_lib_prefix}xdg-shell
+            plugins/wayland-decoration-client/${qt_lib_prefix}adwaita
             plugins/wayland-decoration-client/${qt_lib_prefix}bradient
             lib/${qt_lib_prefix}Qt${QT_VERSION_MAJOR}WaylandEglClientHwIntegration
             lib/${qt_lib_prefix}Qt${QT_VERSION_MAJOR}WaylandClient
@@ -276,6 +276,7 @@ else()
             $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QWaylandEglPlatformIntegrationPlugin_init>
             $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QWaylandEglClientBufferPlugin_init>
             $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QWaylandXdgShellIntegrationPlugin_init>
+            $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QWaylandAdwaitaDecorationPlugin_init>
             $<TARGET_OBJECTS:Qt${QT_VERSION_MAJOR}::QWaylandBradientDecorationPlugin_init>
         )
     endif()
