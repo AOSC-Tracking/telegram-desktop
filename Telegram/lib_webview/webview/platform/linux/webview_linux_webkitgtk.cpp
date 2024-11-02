@@ -19,7 +19,12 @@
 #include <QtCore/QUrl>
 #include <QtGui/QDesktopServices>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QWindow>
+#include <QtWidgets/QWidget>
+
+#ifdef DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
 #include <QtQuickWidgets/QQuickWidget>
+#endif // DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
 
 #include <webview/webview.hpp>
 #include <crl/crl.h>
@@ -37,13 +42,6 @@ namespace GObject = gi::repository::GObject;
 constexpr auto kObjectPath = "/org/desktop_app/GtkIntegration/Webview";
 constexpr auto kMasterObjectPath = "/org/desktop_app/GtkIntegration/Webview/Master";
 constexpr auto kHelperObjectPath = "/org/desktop_app/GtkIntegration/Webview/Helper";
-
-void (* const SetGraphicsApi)(QSGRendererInterface::GraphicsApi) =
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-	QQuickWindow::setGraphicsApi;
-#else // Qt >= 6.0.0
-	QQuickWindow::setSceneGraphBackend;
-#endif // Qt < 6.0.0
 
 std::string SocketPath;
 
@@ -193,21 +191,13 @@ bool Instance::create(Config config) {
 			return false;
 		}
 
+#ifdef DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
 		if (_compositor && !qobject_cast<QQuickWidget*>(_widget)) {
-			[[maybe_unused]] static const auto Inited = [] {
-				const auto backend = Ui::GL::ChooseBackendDefault(
-					Ui::GL::CheckCapabilities(nullptr));
-				switch (backend) {
-				case Ui::GL::Backend::Raster:
-					SetGraphicsApi(QSGRendererInterface::Software);
-					break;
-				case Ui::GL::Backend::OpenGL:
-					SetGraphicsApi(QSGRendererInterface::OpenGL);
-					break;
-				}
-				return true;
-			}();
-
+			if (Ui::GL::ChooseBackendDefault(Ui::GL::CheckCapabilities())
+					!= Ui::GL::Backend::OpenGL) {
+				LOG(("WebView Error: OpenGL is disabled."));
+				return false;
+			}
 			_widget = ::base::make_unique_q<QQuickWidget>(config.parent);
 			const auto widget = static_cast<QQuickWidget*>(_widget.get());
 			widget->setAttribute(Qt::WA_AlwaysStackOnTop);
@@ -215,6 +205,12 @@ bool Instance::create(Config config) {
 			_compositor->setWidget(widget);
 			widget->show();
 		}
+#else // DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
+		if (_compositor) {
+			LOG(("WebView Error: No Wayland support."));
+			return false;
+		}
+#endif // !DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
 
 		if (!_helper) {
 			return false;
@@ -329,6 +325,24 @@ bool Instance::create(Config config) {
 		this);
 	g_signal_connect_swapped(
 		_webview,
+		"web-process-terminated",
+		G_CALLBACK(+[](
+			Instance *instance,
+			WebKitWebProcessTerminationReason reason) {
+			Gio::Application::get_default().quit();
+		}),
+		this);
+	g_signal_connect_swapped(
+		_webview,
+		"notify::is-web-process-responsive",
+		G_CALLBACK(+[](
+			Instance *instance,
+			GParamSpec *pspec) {
+			Gio::Application::get_default().quit();
+		}),
+		this);
+	g_signal_connect_swapped(
+		_webview,
 		"load-failed",
 		G_CALLBACK(+[](
 			Instance *instance,
@@ -431,7 +445,7 @@ window.external = {
 	}
 };)");
 
-	return true;
+	return webkit_web_view_get_is_web_process_responsive(_webview);
 }
 
 void Instance::scriptMessageReceived(void *message) {
@@ -573,12 +587,6 @@ ResolveResult Instance::resolve() {
 			GLib::MainContext::default_().iteration(true);
 		}
 
-		if (!_wayland && result && *result != ResolveResult::Success) {
-			_wayland = true;
-			stopProcess();
-			startProcess();
-			return resolve();
-		}
 		return result.value_or(ResolveResult::IPCFailure);
 	}
 
@@ -880,9 +888,11 @@ void Instance::stopProcess() {
 	if (_serviceProcess) {
 		_serviceProcess.send_signal(SIGTERM);
 	}
-	if (_compositor) {
-		_compositor->deleteLater();
-	}
+	GLib::timeout_add_seconds_once(1, [compositor = _compositor] {
+		if (compositor) {
+			compositor->deleteLater();
+		}
+	});
 }
 
 void Instance::updateHistoryStates() {
@@ -1136,17 +1146,6 @@ int Instance::exec() {
 		return 1;
 	}
 
-	if (_wayland) {
-		// https://bugreports.qt.io/browse/QTBUG-115063
-		GLib::setenv("__EGL_VENDOR_LIBRARY_FILENAMES", "", true);
-		GLib::setenv("LIBGL_ALWAYS_SOFTWARE", "1", true);
-		GLib::setenv("GSK_RENDERER", "cairo", true);
-		GLib::setenv("GDK_DISABLE", "gl", true);
-		GLib::setenv("GDK_DEBUG", "gl-disable", true);
-		GLib::setenv("GDK_GL", "disable", true);
-		GLib::setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", true);
-	}
-
 	return app.run({});
 }
 
@@ -1243,11 +1242,28 @@ void Instance::registerHelperMethodHandlers() {
 } // namespace
 
 Available Availability() {
+#ifdef DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
+	if (!Platform::IsX11()
+			&& Ui::GL::ChooseBackendDefault(Ui::GL::CheckCapabilities())
+				!= Ui::GL::Backend::OpenGL) {
+		return Available{
+			.error = Available::Error::NoOpenGL,
+			.details = "Please enable OpenGL in application settings.",
+		};
+	}
+#else // DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
+	if (!Platform::IsX11()) {
+		return Available{
+			.error = Available::Error::NonX11,
+			.details = "Unsupported display server. Please switch to X11.",
+		};
+	}
+#endif // !DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
 	if (Instance().resolve() == ResolveResult::NoLibrary) {
 		return Available{
 			.error = Available::Error::NoWebKitGTK,
 			.details = "Please install WebKitGTK "
-			"(webkitgtk-6.0/webkit2gtk-4.1/webkit2gtk-4.0) "
+			"(webkit2gtk-4.1/webkit2gtk-4.0) "
 			"from your package manager.",
 		};
 	}

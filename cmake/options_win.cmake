@@ -24,7 +24,7 @@ INTERFACE
     UNICODE
     _UNICODE
 )
-if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+if (MSVC)
     target_compile_options(common_options
     INTERFACE
         /permissive-
@@ -67,7 +67,7 @@ if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
     )
 
     if (DESKTOP_APP_ASAN)
-        target_compile_options(common_options INTERFACE /fsanitize=address /bigobj)
+        target_compile_options(common_options INTERFACE /fsanitize=address)
 
         # https://developercommunity.visualstudio.com/t/Linker-error-LNK2038-when-using-Parallel/10512721
         target_compile_definitions(common_options
@@ -77,12 +77,11 @@ if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
         )
     endif()
 
-    if (build_win64 OR build_winarm)
-        target_compile_options(common_options
-        INTERFACE
-            /bigobj # scheme.cpp has too many sections.
-        )
-    else()
+    target_compile_options(common_options
+    INTERFACE
+        /bigobj # scheme.cpp has too many sections.
+    )
+    if (NOT build_win64 AND NOT build_winarm)
         # target_compile_options(common_options
         # INTERFACE
         #     /fp:except # Crash-report fp exceptions in 32 bit build.
@@ -105,7 +104,7 @@ if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
             $<IF:$<CONFIG:Debug>,,/LTCGOUT:>
         )
     endif()
-elseif (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
+else()
     target_compile_definitions(common_options
     INTERFACE
         WINVER=0x0601

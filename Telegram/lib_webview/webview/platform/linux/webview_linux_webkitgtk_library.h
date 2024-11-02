@@ -71,6 +71,12 @@ typedef enum {
 } GtkWindowType;
 
 typedef enum {
+	WEBKIT_WEB_PROCESS_CRASHED,
+	WEBKIT_WEB_PROCESS_EXCEEDED_MEMORY_LIMIT,
+	WEBKIT_WEB_PROCESS_TERMINATED_BY_API,
+} WebKitWebProcessTerminationReason;
+
+typedef enum {
 	WEBKIT_LOAD_STARTED,
 	WEBKIT_LOAD_REDIRECTED,
 	WEBKIT_LOAD_COMMITTED,
@@ -183,6 +189,8 @@ inline void (*webkit_script_dialog_prompt_set_text)(
 
 inline GtkWidget *(*webkit_web_view_new_with_context)(WebKitWebContext *context);
 inline GType (*webkit_web_view_get_type)(void);
+inline gboolean (*webkit_web_view_get_is_web_process_responsive)(
+	WebKitWebView *web_view);
 inline WebKitUserContentManager *(*webkit_web_view_get_user_content_manager)(
 	WebKitWebView *web_view);
 inline const gchar *(*webkit_web_view_get_uri)(WebKitWebView *web_view);

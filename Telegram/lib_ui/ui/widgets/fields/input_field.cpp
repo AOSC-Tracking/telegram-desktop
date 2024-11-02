@@ -2546,10 +2546,12 @@ void InputField::editPreLanguage(int quoteId, QStringView tag) {
 	const auto apply = crl::guard(this, [=](QString language) {
 		auto block = FindBlock(document(), quoteId);
 		if (block.isValid()) {
+			const auto id = kTagPre + language;
+			_insertedTags = { { block.position(), block.length() - 1, id } };
 			auto cursor = QTextCursor(document());
 			cursor.setPosition(block.position());
-			cursor.setBlockFormat(
-				PrepareBlockFormat(_st, kTagPre + language));
+			cursor.setBlockFormat(PrepareBlockFormat(_st, id));
+			_insertedTags.clear();
 		}
 	});
 	_editLanguageCallback(tag.mid(kTagPre.size()).toString(), apply);
@@ -3414,11 +3416,8 @@ void InputField::processFormatting(int insertPosition, int insertEnd) {
 				ApplyTagFormat(format, cursor.charFormat());
 				cursor.setCharFormat(format);
 			} else if (action.type == ActionType::RemoveNewline) {
-				cursor.removeSelectedText();
+				cursor.insertText(u" "_q);
 				insertPosition = action.intervalStart;
-				if (insertEnd >= action.intervalEnd) {
-					insertEnd -= action.intervalEnd - action.intervalStart;
-				}
 			}
 		} else {
 			break;
@@ -5251,7 +5250,8 @@ int ComputeFieldCharacterCount(not_null<InputField*> field) {
 void AddLengthLimitLabel(
 		not_null<InputField*> field,
 		int limit,
-		std::optional<uint> customThreshold) {
+		std::optional<uint> customThreshold,
+		int limitLabelTop) {
 	struct State {
 		rpl::variable<int> length;
 	};
@@ -5301,7 +5301,7 @@ void AddLengthLimitLabel(
 		const auto top = field->st().textMargins.top()
 			+ field->st().style.font->ascent
 			- st::defaultInputFieldLimit.style.font->ascent;
-		warning->moveToRight(0, top);
+		warning->moveToRight(0, top + limitLabelTop);
 	}, warning->lifetime());
 	warning->setAttribute(Qt::WA_TransparentForMouseEvents);
 }
