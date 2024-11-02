@@ -12,6 +12,7 @@
 #include <string>
 #include <optional>
 #include <functional>
+#include <cstdint>
 
 #include <rpl/never.h>
 #include <rpl/producer.h>
