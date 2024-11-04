@@ -107,12 +107,7 @@ private:
 		std::array<int64, kMaxStreams> lastDts = { 0 };
 	};
 
-#if DA_FFMPEG_CONST_WRITE_CALLBACK
-	static int Write(void *opaque, const uint8_t *_buf, int buf_size) {
-		uint8_t *buf = const_cast<uint8_t *>(_buf);
-#else
-	static int Write(void *opaque, uint8_t *buf, int buf_size) {
-#endif
+	static int Write(void *opaque, const uint8_t *buf, int buf_size) {
 		return static_cast<Private*>(opaque)->write(buf, buf_size);
 	}
 
@@ -120,7 +115,7 @@ private:
 		return static_cast<Private*>(opaque)->seek(offset, whence);
 	}
 
-	int write(uint8_t *buf, int buf_size);
+	int write(const uint8_t *buf, int buf_size);
 	int64_t seek(int64_t offset, int whence);
 
 	void initEncoding();
@@ -236,7 +231,7 @@ RoundVideoRecorder::Private::~Private() {
 	finishEncoding();
 }
 
-int RoundVideoRecorder::Private::write(uint8_t *buf, int buf_size) {
+int RoundVideoRecorder::Private::write(const uint8_t *buf, int buf_size) {
 	if (const auto total = _resultOffset + int64(buf_size)) {
 		const auto size = int64(_result.size());
 		constexpr auto kReserve = 1024 * 1024;
