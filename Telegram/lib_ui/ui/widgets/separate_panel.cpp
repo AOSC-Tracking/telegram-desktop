@@ -6,6 +6,7 @@
 //
 #include "ui/widgets/separate_panel.h"
 
+#include "ui/effects/ripple_animation.h"
 #include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/menu/menu_add_action_callback.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
@@ -144,6 +145,23 @@ PanelShow::operator bool() const {
 
 } // namespace
 
+class SeparatePanel::FullScreenButton : public RippleButton {
+public:
+	FullScreenButton(QWidget *parent, const style::IconButton &st);
+
+	void init(not_null<QWidget*> parentWindow);
+
+protected:
+	void paintEvent(QPaintEvent *e) override;
+
+	QImage prepareRippleMask() const override;
+	QPoint prepareRippleStartPosition() const override;
+
+private:
+	const style::IconButton &_st;
+
+};
+
 class SeparatePanel::ResizeEdge final : public RpWidget {
 public:
 	ResizeEdge(not_null<QWidget*> parent, Qt::Edges edges);
@@ -165,6 +183,70 @@ private:
 	bool _resizing = false;
 
 };
+
+SeparatePanel::FullScreenButton::FullScreenButton(
+	QWidget *parent,
+	const style::IconButton &st)
+: RippleButton(parent, st.ripple)
+, _st(st) {
+	resize(_st.width, _st.height);
+}
+
+void InitFullScreenButton(
+		not_null<QWidget*> button,
+		not_null<QWidget*> parentWindow) {
+	button->setWindowFlags(Qt::WindowFlags(Qt::FramelessWindowHint)
+		| Qt::BypassWindowManagerHint
+		| Qt::NoDropShadowWindowHint
+		| Qt::Tool);
+	button->setAttribute(Qt::WA_MacAlwaysShowToolWindow);
+	button->setAttribute(Qt::WA_OpaquePaintEvent, false);
+	button->setAttribute(Qt::WA_TranslucentBackground, true);
+	button->setAttribute(Qt::WA_NoSystemBackground, true);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+	button->setScreen(parentWindow->screen());
+#else // Qt >= 6.0.0
+	button->createWinId();
+	button->windowHandle()->setScreen(
+		parentWindow->windowHandle()->screen());
+#endif
+	button->show();
+}
+
+void SeparatePanel::FullScreenButton::paintEvent(QPaintEvent *e) {
+	Painter p(this);
+
+	auto hq = PainterHighQualityEnabler(p);
+	p.setBrush(st::radialBg);
+	p.setPen(Qt::NoPen);
+	p.drawEllipse(rect());
+
+	paintRipple(p, _st.rippleAreaPosition);
+
+	const auto icon = &_st.icon;
+	auto position = _st.iconPosition;
+	if (position.x() < 0) {
+		position.setX((width() - icon->width()) / 2);
+	}
+	if (position.y() < 0) {
+		position.setY((height() - icon->height()) / 2);
+	}
+	icon->paint(p, position, width());
+}
+
+QPoint SeparatePanel::FullScreenButton::prepareRippleStartPosition() const {
+	auto result = mapFromGlobal(QCursor::pos())
+		- _st.rippleAreaPosition;
+	auto rect = QRect(0, 0, _st.rippleAreaSize, _st.rippleAreaSize);
+	return rect.contains(result)
+		? result
+		: DisabledRippleStartPosition();
+}
+
+QImage SeparatePanel::FullScreenButton::prepareRippleMask() const {
+	return RippleAnimation::EllipseMask(
+		QSize(_st.rippleAreaSize, _st.rippleAreaSize));
+}
 
 SeparatePanel::ResizeEdge::ResizeEdge(
 	not_null<QWidget*> parent,
@@ -315,6 +397,7 @@ void SeparatePanel::ResizeEdge::updateFromResize(QPoint delta) {
 
 SeparatePanel::SeparatePanel(SeparatePanelArgs &&args)
 : RpWidget(args.parent)
+, _menuSt(args.menuSt ? *args.menuSt : st::popupMenuWithIcons)
 , _close(this, st::separatePanelClose)
 , _back(this, object_ptr<IconButton>(this, st::separatePanelBack))
 , _body(this)
@@ -324,12 +407,18 @@ SeparatePanel::SeparatePanel(SeparatePanelArgs &&args)
 	initControls();
 	initLayout(args);
 
-	shownValue() | rpl::filter([=](bool shown) {
+	rpl::combine(
+		shownValue(),
+		_fullscreen.value()
+	) | rpl::filter([=](bool shown, bool) {
 		return shown;
-	}) | rpl::start_with_next([=] {
-		Platform::SetWindowMargins(this, _useTransparency
-			? _padding
-			: QMargins());
+	}) | rpl::start_with_next([=](bool, bool fullscreen) {
+		if (_title) {
+			_title->setVisible(!fullscreen);
+		}
+		Platform::SetWindowMargins(
+			this,
+			_useTransparency ? computePadding() : QMargins());
 	}, lifetime());
 }
 
@@ -339,7 +428,7 @@ void SeparatePanel::setTitle(rpl::producer<QString> title) {
 	_title.create(this, std::move(title), st::separatePanelTitle);
 	updateTitleColors();
 	_title->setAttribute(Qt::WA_TransparentForMouseEvents);
-	_title->show();
+	_title->setVisible(!_fullscreen.current());
 	updateTitleGeometry(width());
 }
 
@@ -357,10 +446,70 @@ void SeparatePanel::setTitleBadge(object_ptr<RpWidget> badge) {
 }
 
 void SeparatePanel::initControls() {
-	widthValue(
-	) | rpl::start_with_next([=](int width) {
-		_back->moveToLeft(_padding.left(), _padding.top());
-		_close->moveToRight(_padding.right(), _padding.top());
+	_fullscreen.value(
+	) | rpl::start_with_next([=](bool fullscreen) {
+		if (!fullscreen) {
+			_fsClose = nullptr;
+			_fsMenuToggle = nullptr;
+			_fsBack = nullptr;
+			return;
+		} else if (_fsClose) {
+			return;
+		}
+		_fsClose = std::make_unique<FullScreenButton>(
+			this,
+			st::fullScreenPanelClose);
+		InitFullScreenButton(_fsClose.get(), this);
+		_fsClose->clicks() | rpl::to_empty | rpl::start_to_stream(
+			_userCloseRequests,
+			_fsClose->lifetime());
+
+		_fsBack = std::make_unique<FadeWrapScaled<FullScreenButton>>(
+			this,
+			object_ptr<FullScreenButton>(this, st::fullScreenPanelBack));
+		InitFullScreenButton(_fsBack.get(), this);
+		_fsBack->toggle(_back->toggled(), anim::type::instant);
+		if (_back->toggled()) {
+			_fsBack->raise();
+		}
+		_fsBack->entity()->clicks() | rpl::to_empty | rpl::start_to_stream(
+			_synteticBackRequests,
+			_fsBack->lifetime());
+		if (_menuToggle) {
+			_fsMenuToggle = std::make_unique<FullScreenButton>(
+				this,
+				st::fullScreenPanelMenu);
+			InitFullScreenButton(_fsMenuToggle.get(), this);
+			if (const auto onstack = _menuToggleCreated) {
+				onstack(_fsMenuToggle.get(), true);
+			}
+			_fsMenuToggle->setClickedCallback([=] {
+				_menuToggle->clicked(
+					_fsMenuToggle->clickModifiers(),
+					Qt::LeftButton);
+			});
+		}
+		geometryValue() | rpl::start_with_next([=](QRect geometry) {
+			const auto shift = st::separatePanelClose.rippleAreaPosition;
+			_fsBack->move(geometry.topLeft() + shift);
+			_fsBack->resize(st::fullScreenPanelBack.width, st::fullScreenPanelBack.height);
+			_fsClose->move(geometry.topLeft() + QPoint(geometry.width() - _fsClose->width() - shift.x(), shift.y()));
+			_fsClose->resize(st::fullScreenPanelClose.width, st::fullScreenPanelClose.height);
+			if (_fsMenuToggle) {
+				_fsMenuToggle->move(_fsClose->pos()
+					- QPoint(_fsMenuToggle->width() + shift.x(), 0));
+				_fsMenuToggle->resize(st::fullScreenPanelMenu.width, st::fullScreenPanelMenu.height);
+			}
+		}, _fsClose->lifetime());
+	}, lifetime());
+
+	rpl::combine(
+		widthValue(),
+		_fullscreen.value()
+	) | rpl::start_with_next([=](int width, bool fullscreen) {
+		const auto padding = computePadding();
+		_back->moveToLeft(padding.left(), padding.top());
+		_close->moveToRight(padding.right(), padding.top());
 		updateTitleGeometry(width);
 	}, lifetime());
 
@@ -427,6 +576,17 @@ void SeparatePanel::overrideTitleColor(std::optional<QColor> color) {
 	update();
 }
 
+void SeparatePanel::overrideBodyColor(std::optional<QColor> color) {
+	if (_bodyOverrideColor == color) {
+		return;
+	}
+	_bodyOverrideColor = color;
+	_bodyOverrideBorderParts = _bodyOverrideColor
+		? createBorderImage(*_bodyOverrideColor)
+		: QPixmap();
+	update();
+}
+
 void SeparatePanel::overrideBottomBarColor(std::optional<QColor> color) {
 	if (_bottomBarOverrideColor == color) {
 		return;
@@ -438,6 +598,20 @@ void SeparatePanel::overrideBottomBarColor(std::optional<QColor> color) {
 	update();
 }
 
+void SeparatePanel::setBottomBarHeight(int height) {
+	Expects(!height || height >= st::callRadius);
+
+	if (_bottomBarHeight == height) {
+		return;
+	}
+	_bottomBarHeight = height;
+	update();
+}
+
+style::palette *SeparatePanel::titleOverridePalette() const {
+	return _titleOverridePalette.get();
+}
+
 void SeparatePanel::updateTitleGeometry(int newWidth) const {
 	if (!_title && !_searchWrap) {
 		return;
@@ -447,8 +621,9 @@ void SeparatePanel::updateTitleGeometry(int newWidth) const {
 		st::separatePanelTitleLeft,
 		_back->width() + st::separatePanelTitleSkip,
 		progress);
+	const auto padding = computePadding();
 	const auto available = newWidth
-		- rect::m::sum::h(_padding)
+		- rect::m::sum::h(padding)
 		- left
 		- _close->width();
 	if (_title) {
@@ -460,8 +635,8 @@ void SeparatePanel::updateTitleGeometry(int newWidth) const {
 					- (_titleBadge ? _titleBadge->width() : 0),
 				_title->textMaxWidth()));
 		_title->moveToLeft(
-			_padding.left() + left,
-			_padding.top() + st::separatePanelTitleTop);
+			padding.left() + left,
+			padding.top() + st::separatePanelTitleTop);
 		if (_titleBadge) {
 			_titleBadge->moveToLeft(
 				_title->x() + _title->width(),
@@ -470,7 +645,7 @@ void SeparatePanel::updateTitleGeometry(int newWidth) const {
 	}
 	if (_searchWrap) {
 		_searchWrap->entity()->resize(available, _close->height());
-		_searchWrap->move(_padding.left() + left, _padding.top());
+		_searchWrap->move(padding.left() + left, padding.top());
 		if (_searchField) {
 			_searchField->resizeToWidth(available);
 			_searchField->move(
@@ -519,23 +694,36 @@ void SeparatePanel::updateBackToggled() {
 	const auto toggled = _backAllowed || (_searchField != nullptr);
 	if (_back->toggled() != toggled) {
 		_back->toggle(toggled, anim::type::normal);
+		if (_fsBack) {
+			_fsBack->toggle(toggled, anim::type::normal);
+			if (toggled) {
+				_fsBack->raise();
+			}
+		}
 	}
 }
 
 void SeparatePanel::setMenuAllowed(
-		Fn<void(const Menu::MenuCallback&)> fill) {
+		Fn<void(const Menu::MenuCallback&)> fill,
+		Fn<void(not_null<RpWidget*>, bool fullscreen)> created) {
 	_menuToggle.create(this, st::separatePanelMenu);
 	updateTitleButtonColors(_menuToggle.data());
 	_menuToggle->show();
 	_menuToggle->setClickedCallback([=] { showMenu(fill); });
-
-	widthValue(
-	) | rpl::start_with_next([=](int width) {
+	rpl::combine(
+		widthValue(),
+		_fullscreen.value()
+	) | rpl::start_with_next([=](int width, bool) {
+		const auto padding = computePadding();
 		_menuToggle->moveToRight(
-			_padding.right() + _close->width(),
-			_padding.top());
+			padding.right() + _close->width(),
+			padding.top());
 	}, _menuToggle->lifetime());
 	updateTitleGeometry(width());
+	_menuToggleCreated = std::move(created);
+	if (const auto onstack = _menuToggleCreated) {
+		onstack(_menuToggle.data(), false);
+	}
 }
 
 void SeparatePanel::setSearchAllowed(
@@ -551,11 +739,14 @@ void SeparatePanel::setSearchAllowed(
 	_searchToggle->show(anim::type::instant);
 	button->setClickedCallback([=] { toggleSearch(true); });
 
-	widthValue(
-	) | rpl::start_with_next([=](int width) {
+	rpl::combine(
+		widthValue(),
+		_fullscreen.value()
+	) | rpl::start_with_next([=](int width, bool) {
+		const auto padding = computePadding();
 		_searchToggle->moveToRight(
-			_padding.right() + _close->width(),
-			_padding.top());
+			padding.right() + _close->width(),
+			padding.top());
 	}, _searchToggle->lifetime());
 	updateTitleGeometry(width());
 }
@@ -672,7 +863,7 @@ void SeparatePanel::showMenu(Fn<void(const Menu::MenuCallback&)> fill) {
 		_menu->setForcedOrigin(PanelAnimation::Origin::TopRight);
 		_menu->popup(mapToGlobal(QPoint(
 			(width()
-				- _padding.right()
+				- computePadding().right()
 				- _close->width()
 				+ st::separatePanelMenuPosition.x()),
 			st::separatePanelMenuPosition.y())));
@@ -683,7 +874,7 @@ bool SeparatePanel::createMenu(not_null<IconButton*> button) {
 	if (_menu) {
 		return false;
 	}
-	_menu = base::make_unique_q<PopupMenu>(this, st::popupMenuWithIcons);
+	_menu = base::make_unique_q<PopupMenu>(this, _menuSt);
 	_menu->setDestroyedCallback([
 		weak = MakeWeak(this),
 			weakButton = MakeWeak(button),
@@ -1009,6 +1200,8 @@ void SeparatePanel::setInnerSize(QSize size, bool allowResize) {
 			for (const auto area : areas) {
 				_resizeEdges.push_back(
 					std::make_unique<ResizeEdge>(this, area));
+				_resizeEdges.back()->showOn(
+					_fullscreen.value() | rpl::map(!rpl::mappers::_1));
 			}
 		}
 	}
@@ -1021,6 +1214,19 @@ void SeparatePanel::setInnerSize(QSize size, bool allowResize) {
 
 QRect SeparatePanel::innerGeometry() const {
 	return _body->geometry();
+}
+
+void SeparatePanel::toggleFullScreen(bool fullscreen) {
+	_fullscreen = fullscreen;
+	if (fullscreen) {
+		showFullScreen();
+	} else {
+		showNormal();
+	}
+}
+
+QMargins SeparatePanel::computePadding() const {
+	return _fullscreen.current() ? QMargins() : _padding;
 }
 
 void SeparatePanel::initGeometry(QSize size) {
@@ -1067,27 +1273,32 @@ void SeparatePanel::initGeometry(QSize size) {
 	}
 
 	setAttribute(Qt::WA_OpaquePaintEvent, !_useTransparency);
-	const auto rect = [&] {
-		const QRect initRect(QPoint(), size);
-		return initRect.translated(center - initRect.center()).marginsAdded(_padding);
-	}();
-	move(rect.topLeft());
-	if (_allowResize) {
-		setMinimumSize(rect.size());
-	} else {
-		setFixedSize(rect.size());
+	if (!_fullscreen.current()) {
+		const auto rect = [&] {
+			const auto initRect = QRect(QPoint(), size);
+			const auto shift = center - initRect.center();
+			return initRect.translated(shift).marginsAdded(_padding);
+		}();
+		move(rect.topLeft());
+		if (_allowResize) {
+			setMinimumSize(rect.size());
+		} else {
+			setFixedSize(rect.size());
+		}
+		updateControlsGeometry();
 	}
-	updateControlsGeometry();
 }
 
 void SeparatePanel::updateGeometry(QSize size) {
-	size = QRect(QPoint(), size).marginsAdded(_padding).size();
-	if (_allowResize) {
-		setMinimumSize(size);
-	} else {
-		setFixedSize(size);
+	if (!_fullscreen.current()) {
+		size = QRect(QPoint(), size).marginsAdded(_padding).size();
+		if (_allowResize) {
+			setMinimumSize(size);
+		} else {
+			setFixedSize(size);
+		}
+		updateControlsGeometry();
 	}
-	updateControlsGeometry();
 	update();
 }
 
@@ -1099,12 +1310,14 @@ void SeparatePanel::resizeEvent(QResizeEvent *e) {
 }
 
 void SeparatePanel::updateControlsGeometry() {
-	const auto top = _padding.top() + _titleHeight;
+	const auto padding = computePadding();
+	const auto top = padding.top()
+		+ (_fullscreen.current() ? 0 : _titleHeight);
 	_body->setGeometry(
-		_padding.left(),
+		padding.left(),
 		top,
-		width() - _padding.left() - _padding.right(),
-		height() - top - _padding.bottom());
+		width() - padding.left() - padding.right(),
+		height() - top - padding.bottom());
 }
 
 void SeparatePanel::paintEvent(QPaintEvent *e) {
@@ -1133,8 +1346,7 @@ void SeparatePanel::paintEvent(QPaintEvent *e) {
 			return;
 		}
 	}
-
-	if (_useTransparency) {
+	if (_useTransparency && !_fullscreen.current()) {
 		paintShadowBorder(p);
 	} else {
 		paintOpaqueBorder(p);
@@ -1152,8 +1364,10 @@ void SeparatePanel::paintShadowBorder(QPainter &p) const {
 	const auto &header = _titleOverrideColor
 		? _titleOverrideBorderParts
 		: _borderParts;
-	const auto &bottomBar = _bottomBarOverrideColor
+	const auto &footer = (_bottomBarHeight && _bottomBarOverrideColor)
 		? _bottomBarOverrideBorderParts
+		: _bodyOverrideColor
+		? _bodyOverrideBorderParts
 		: _borderParts;
 	const auto topleft = QRect(QPoint(0, 0), corner);
 	p.drawPixmap(QRect(0, 0, part1, part1), header, topleft);
@@ -1172,13 +1386,13 @@ void SeparatePanel::paintShadowBorder(QPainter &p) const {
 	const auto bottomleft = QRect(QPoint(0, part2) * factor, corner);
 	p.drawPixmap(
 		QRect(0, height() - part1, part1, part1),
-		bottomBar,
+		footer,
 		bottomleft);
 
 	const auto bottomright = QRect(QPoint(part2, part2) * factor, corner);
 	p.drawPixmap(
 		QRect(width() - part1, height() - part1, part1, part1),
-		bottomBar,
+		footer,
 		bottomright);
 
 	const auto bottom = QRect(
@@ -1190,7 +1404,7 @@ void SeparatePanel::paintShadowBorder(QPainter &p) const {
 			height() - _padding.bottom() - radius,
 			width() - 2 * part1,
 			_padding.bottom() + radius),
-		bottomBar,
+		footer,
 		bottom);
 
 	const auto fillLeft = [&](int from, int till, const auto &parts) {
@@ -1215,76 +1429,86 @@ void SeparatePanel::paintShadowBorder(QPainter &p) const {
 			parts,
 			right);
 	};
+	fillLeft(part1, height() - part1, _borderParts);
+	fillRight(part1, height() - part1, _borderParts);
+	paintBodyBg(p, radius);
+}
+
+void SeparatePanel::paintBodyBg(QPainter &p, int radius) const {
+	const auto padding = computePadding();
 	const auto fillBody = [&](int from, int till, QColor color) {
+		if (till <= from) {
+			return;
+		}
 		p.fillRect(
-			_padding.left(),
+			padding.left(),
 			from,
-			width() - _padding.left() - _padding.right(),
+			width() - padding.left() - padding.right(),
 			till - from,
 			color);
 	};
-	const auto bg = st::windowBg->c;
-	if (_titleOverrideColor) {
-		const auto niceOverscroll = ::Platform::IsMac();
+	const auto bg = _bodyOverrideColor.value_or(st::windowBg->c);
+	const auto chosenFooter = (_bottomBarHeight && _bottomBarOverrideColor)
+		? _bottomBarOverrideColor
+		: _bodyOverrideColor;
+	const auto footerColor = chosenFooter.value_or(st::windowBg->c);
+	const auto chosenHeader = (_titleHeight
+		&& !_fullscreen.current()
+		&& _titleOverrideColor)
+		? _titleOverrideColor
+		: _bodyOverrideColor;
+	const auto titleColor = chosenHeader.value_or(st::windowBg->c);
+	const auto niceOverscroll = !_layer && ::Platform::IsMac();
+	if ((niceOverscroll && titleColor == footerColor)
+		|| (titleColor == footerColor && titleColor == bg)) {
+		fillBody(
+			padding.top() + radius,
+			height() - padding.bottom() - radius,
+			titleColor);
+	} else if (niceOverscroll || titleColor == bg || footerColor == bg) {
 		const auto top = niceOverscroll
 			? (height() / 2)
-			: (_padding.top() + _titleHeight);
-		fillLeft(part1, top, _titleOverrideBorderParts);
-		fillLeft(top, height() - part1, _borderParts);
-		fillRight(part1, top, _titleOverrideBorderParts);
-		fillRight(top, height() - part1, _borderParts);
-		fillBody(_padding.top() + radius, top, *_titleOverrideColor);
-		fillBody(top, height() - _padding.bottom() - radius, bg);
+			: (titleColor != bg)
+			? (padding.top() + _titleHeight)
+			: (height() - padding.bottom() - _bottomBarHeight);
+		fillBody(padding.top() + radius, top, titleColor);
+		fillBody(top, height() - padding.bottom() - radius, footerColor);
 	} else {
-		fillLeft(part1, height() - part1, _borderParts);
-		fillRight(part1, height() - part1, _borderParts);
-		fillBody(
-			_padding.top() + radius,
-			height() - _padding.bottom() - radius,
-			bg);
+		const auto one = padding.top() + _titleHeight;
+		const auto two = height() - padding.bottom() - _bottomBarHeight;
+		fillBody(padding.top() + radius, one, titleColor);
+		fillBody(one, two, bg);
+		fillBody(two, height() - padding.bottom() - radius, footerColor);
 	}
 }
 
 void SeparatePanel::paintOpaqueBorder(QPainter &p) const {
 	const auto border = st::windowShadowFgFallback;
-	p.fillRect(0, 0, width(), _padding.top(), border);
-	p.fillRect(
-		myrtlrect(
-			0,
-			_padding.top(),
-			_padding.left(),
-			height() - _padding.top()),
-		border);
-	p.fillRect(
-		myrtlrect(
-			width() - _padding.right(),
-			_padding.top(),
-			_padding.right(),
-			height() - _padding.top()),
-		border);
-	p.fillRect(
-		_padding.left(),
-		height() - _padding.bottom(),
-		width() - _padding.left() - _padding.right(),
-		_padding.bottom(),
-		border);
-
-	const auto fillBody = [&](int from, int till, QColor color) {
+	const auto padding = computePadding();
+	if (!_fullscreen.current()) {
+		p.fillRect(0, 0, width(), padding.top(), border);
 		p.fillRect(
-			_padding.left(),
-			from,
-			width() - _padding.left() - _padding.right(),
-			till - from,
-			color);
-	};
-	const auto bg = st::windowBg->c;
-	if (_titleOverrideColor) {
-		const auto half = height() / 2;
-		fillBody(_padding.top(), half, *_titleOverrideColor);
-		fillBody(half, height() - _padding.bottom(), bg);
-	} else {
-		fillBody(_padding.top(), height() - _padding.bottom(), bg);
+			myrtlrect(
+				0,
+				padding.top(),
+				padding.left(),
+				height() - padding.top()),
+			border);
+		p.fillRect(
+			myrtlrect(
+				width() - padding.right(),
+				padding.top(),
+				padding.right(),
+				height() - padding.top()),
+			border);
+		p.fillRect(
+			padding.left(),
+			height() - padding.bottom(),
+			width() - padding.left() - padding.right(),
+			padding.bottom(),
+			border);
 	}
+	paintBodyBg(p);
 }
 
 void SeparatePanel::closeEvent(QCloseEvent *e) {
@@ -1293,6 +1517,9 @@ void SeparatePanel::closeEvent(QCloseEvent *e) {
 }
 
 void SeparatePanel::mousePressEvent(QMouseEvent *e) {
+	if (_fullscreen.current()) {
+		return;
+	}
 	auto dragArea = myrtlrect(
 		_padding.left(),
 		_padding.top(),
@@ -1323,7 +1550,9 @@ void SeparatePanel::mousePressEvent(QMouseEvent *e) {
 }
 
 void SeparatePanel::mouseMoveEvent(QMouseEvent *e) {
-	if (_dragging) {
+	if (_fullscreen.current()) {
+		return;
+	} else if (_dragging) {
 		if (!(e->buttons() & Qt::LeftButton)) {
 			_dragging = false;
 		} else {
@@ -1334,7 +1563,9 @@ void SeparatePanel::mouseMoveEvent(QMouseEvent *e) {
 }
 
 void SeparatePanel::mouseReleaseEvent(QMouseEvent *e) {
-	if (e->button() == Qt::LeftButton && _dragging) {
+	if (_fullscreen.current()) {
+		return;
+	} else if (e->button() == Qt::LeftButton && _dragging) {
 		_dragging = false;
 	}
 }

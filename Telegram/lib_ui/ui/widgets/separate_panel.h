@@ -19,6 +19,7 @@ class Painter;
 
 namespace style {
 struct IconButton;
+struct PopupMenu;
 } // namespace style
 
 namespace Ui::Menu {
@@ -49,6 +50,7 @@ struct SeparatePanelArgs {
 	QWidget *parent = nullptr;
 	bool onAllSpaces = false;
 	Fn<bool(int zorder)> animationsPaused;
+	const style::PopupMenu *menuSt = nullptr;
 };
 
 class SeparatePanel final : public RpWidget {
@@ -61,6 +63,9 @@ public:
 	void setTitleBadge(object_ptr<RpWidget> badge);
 	void setInnerSize(QSize size, bool allowResize = false);
 	[[nodiscard]] QRect innerGeometry() const;
+
+	void toggleFullScreen(bool fullscreen);
+	[[nodiscard]] QMargins computePadding() const;
 
 	void setHideOnDeactivate(bool hideOnDeactivate);
 	void showAndActivate();
@@ -85,14 +90,19 @@ public:
 
 	void updateBackToggled();
 
-	void setMenuAllowed(Fn<void(const Menu::MenuCallback&)> fill);
+	void setMenuAllowed(
+		Fn<void(const Menu::MenuCallback&)> fill,
+		Fn<void(not_null<RpWidget*>, bool fullscreen)> created = nullptr);
 	void setSearchAllowed(
 		rpl::producer<QString> placeholder,
 		Fn<void(std::optional<QString>)> queryChanged);
 	bool closeSearch();
 
 	void overrideTitleColor(std::optional<QColor> color);
+	void overrideBodyColor(std::optional<QColor> color);
 	void overrideBottomBarColor(std::optional<QColor> color);
+	void setBottomBarHeight(int height);
+	[[nodiscard]] style::palette *titleOverridePalette() const;
 
 	base::weak_ptr<Toast::Instance> showToast(Toast::Config &&config);
 	base::weak_ptr<Toast::Instance> showToast(
@@ -119,6 +129,7 @@ protected:
 
 private:
 	class ResizeEdge;
+	class FullScreenButton;
 
 	void initControls();
 	void initLayout(const SeparatePanelArgs &args);
@@ -135,6 +146,7 @@ private:
 	void updateTitleGeometry(int newWidth) const;
 	void paintShadowBorder(QPainter &p) const;
 	void paintOpaqueBorder(QPainter &p) const;
+	void paintBodyBg(QPainter &p, int radius = 0) const;
 
 	void toggleOpacityAnimation(bool visible);
 	void finishAnimating();
@@ -150,8 +162,10 @@ private:
 	[[nodiscard]] rpl::producer<> allBackRequests() const;
 	[[nodiscard]] rpl::producer<> allCloseRequests() const;
 
+	const style::PopupMenu &_menuSt;
 	object_ptr<IconButton> _close;
 	object_ptr<IconButton> _menuToggle = { nullptr };
+	Fn<void(not_null<RpWidget*>, bool fullscreen)> _menuToggleCreated;
 	object_ptr<FadeWrapScaled<IconButton>> _searchToggle = { nullptr };
 	rpl::variable<QString> _searchPlaceholder;
 	Fn<void(std::optional<QString>)> _searchQueryChanged;
@@ -165,6 +179,11 @@ private:
 	base::unique_qptr<LayerStackWidget> _layer = { nullptr };
 	base::unique_qptr<PopupMenu> _menu;
 	std::vector<std::unique_ptr<ResizeEdge>> _resizeEdges;
+
+	std::unique_ptr<FullScreenButton> _fsClose;
+	std::unique_ptr<FullScreenButton> _fsMenuToggle;
+	std::unique_ptr<FadeWrapScaled<FullScreenButton>> _fsBack;
+
 	rpl::event_stream<> _synteticBackRequests;
 	rpl::event_stream<> _userCloseRequests;
 	rpl::event_stream<> _closeEvents;
@@ -182,6 +201,7 @@ private:
 
 	Animations::Simple _titleLeft;
 	bool _visible = false;
+	rpl::variable<bool> _fullscreen = false;
 
 	Animations::Simple _opacityAnimation;
 	QPixmap _animationCache;
@@ -194,8 +214,12 @@ private:
 		not_null<IconButton*>,
 		std::unique_ptr<style::IconButton>> _titleOverrideStyles;
 
+	std::optional<QColor> _bodyOverrideColor;
+	QPixmap _bodyOverrideBorderParts;
+
 	std::optional<QColor> _bottomBarOverrideColor;
 	QPixmap _bottomBarOverrideBorderParts;
+	int _bottomBarHeight = 0;
 
 	Fn<bool(int zorder)> _animationsPaused;
 
