@@ -34,7 +34,13 @@ Available Availability() {
 			.error = Available::Error::OldWindows,
 			.details = "Please update your system to Windows 8.1 or later.",
 		};
-	} else if (EdgeChromium::Supported() || EdgeHtml::Supported()) {
+	} else if (EdgeChromium::Supported()) {
+		return Available{
+			.customSchemeRequests = true,
+			.customRangeRequests = true,
+			.customReferer = true,
+		};
+	} else if (EdgeHtml::Supported()) {
 		return Available{};
 	}
 	return Available{
@@ -47,10 +53,6 @@ bool SupportsEmbedAfterCreate() {
 	return !SystemTooOld()
 		&& !EdgeChromium::Supported()
 		&& EdgeHtml::Supported();
-}
-
-bool NavigateToDataSupported() {
-	return !SystemTooOld() && EdgeChromium::Supported();
 }
 
 bool SeparateStorageIdSupported() {
