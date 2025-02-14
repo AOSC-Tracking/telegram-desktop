@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/platform/linux/base_linux_library.h"
 
 #include <gio/gio.h>
+#include <QGuiApplication>
 
 namespace Platform {
 namespace {
