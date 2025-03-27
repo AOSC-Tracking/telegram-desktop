@@ -8,12 +8,12 @@
 
 #include "base/algorithm.h"
 #include "base/debug_log.h"
-#include "base/variant.h"
 #include "base/base_file_utilities.h"
 #include "ui/integration.h"
 
 #include <QtCore/QMap>
 #include <QtCore/QVector>
+#include <QtCore/QDir>
 #include <QtGui/QFontInfo>
 #include <QtGui/QFontDatabase>
 
@@ -65,19 +65,6 @@ ResolvedFont::ResolvedFont(FontResolveResult result, FontVariants *modified)
 }
 
 namespace {
-
-#ifndef LIB_UI_USE_PACKAGED_FONTS
-const auto FontTypes = std::array{
-	u"OpenSans-Regular"_q,
-	u"OpenSans-Italic"_q,
-	u"OpenSans-SemiBold"_q,
-	u"OpenSans-SemiBoldItalic"_q,
-};
-const auto PersianFontTypes = std::array{
-	u"Vazirmatn-UI-NL-Regular"_q,
-	u"Vazirmatn-UI-NL-SemiBold"_q,
-};
-#endif // !LIB_UI_USE_PACKAGED_FONTS
 
 bool Started = false;
 
@@ -326,9 +313,6 @@ struct Metrics {
 		font.setFamily(family);
 	} else {
 		font.setFamily("Open Sans"_q);
-#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
-		font.setFeature("ss03", true);
-#endif // Qt >= 6.7.0
 	}
 	font.setPixelSize(size);
 
@@ -376,16 +360,12 @@ void StartFonts() {
 	style_InitFontsResource();
 
 #ifndef LIB_UI_USE_PACKAGED_FONTS
-	const auto base = u":/gui/fonts/"_q;
 	const auto name = u"Open Sans"_q;
 
-	for (const auto &file : FontTypes) {
-		LoadCustomFont(base + file + u".ttf"_q);
+	for (const auto &file : QDir(u":/gui/fonts/"_q).entryInfoList()) {
+		LoadCustomFont(file.canonicalFilePath());
 	}
 
-	for (const auto &file : PersianFontTypes) {
-		LoadCustomFont(base + file + u".ttf"_q);
-	}
 	QFont::insertSubstitution(name, u"Vazirmatn UI NL"_q);
 
 #ifdef Q_OS_MAC

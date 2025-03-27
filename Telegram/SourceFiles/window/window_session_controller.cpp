@@ -364,6 +364,10 @@ Main::Session &SessionNavigation::session() const {
 	return *_session;
 }
 
+bool SessionNavigation::showFrozenError() {
+	return uiShow()->showFrozenError();
+}
+
 void SessionNavigation::showPeerByLink(const PeerByLinkInfo &info) {
 	Core::App().hideMediaView();
 	if (!info.phone.isEmpty()) {
@@ -1095,6 +1099,8 @@ void SessionNavigation::showRepliesForMessage(
 		if (error.type() == u"CHANNEL_PRIVATE"_q
 			|| error.type() == u"USER_BANNED_IN_CHANNEL"_q) {
 			showToast(tr::lng_group_not_accessible(tr::now));
+		} else if (error.type() == u"MSG_ID_INVALID"_q) {
+			showToast(tr::lng_message_not_found(tr::now));
 		}
 	}).send();
 }
@@ -2535,7 +2541,10 @@ void SessionController::showInNewWindow(
 
 void SessionController::toggleChooseChatTheme(
 		not_null<PeerData*> peer,
-		std::optional<bool> show) const {
+		std::optional<bool> show) {
+	if (showFrozenError()) {
+		return;
+	}
 	content()->toggleChooseChatTheme(peer, show);
 }
 
