@@ -6,6 +6,12 @@
 
 cmake_minimum_required(VERSION 3.25...3.31)
 
+# Workaround for KDE Frameworks 5 components cmake errors
+# `IMPORTED property is read-only for target("KF5CoreAddons_QCH")`
+if (POLICY CMP0160)
+    cmake_policy(SET CMP0160 OLD)
+endif()
+
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 include(cmake/validate_special_target.cmake)
