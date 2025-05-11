@@ -8,8 +8,8 @@ add_library(external_td INTERFACE IMPORTED GLOBAL)
 add_library(desktop-app::external_td ALIAS external_td)
 
 if (DESKTOP_APP_USE_PACKAGED)
-    find_package(Td REQUIRED)
-    target_link_libraries(external_td INTERFACE Td::tde2e)
+    find_package(tde2e REQUIRED)
+    target_link_libraries(external_td INTERFACE tde2e::tde2e)
     return()
 endif()
 
