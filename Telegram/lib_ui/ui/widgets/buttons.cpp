@@ -322,6 +322,11 @@ void RoundButton::setText(rpl::producer<TextWithEntities> text) {
 	_textFull = std::move(text);
 }
 
+void RoundButton::setContext(const Text::MarkedContext &context) {
+	_context = context;
+	resizeToText(_textFull.current());
+}
+
 void RoundButton::setNumbersText(const QString &numbersText, int numbers) {
 	if (numbersText.isEmpty()) {
 		_numbers.reset();
@@ -382,9 +387,10 @@ void RoundButton::resizeToText(const TextWithEntities &text) {
 		_text.setMarkedText(
 			_st.style,
 			{ text.text.toUpper(), text.entities },
-			kMarkupTextOptions);
+			kMarkupTextOptions,
+			_context);
 	} else {
-		_text.setMarkedText(_st.style, text, kMarkupTextOptions);
+		_text.setMarkedText(_st.style, text, kMarkupTextOptions, _context);
 	}
 	int innerWidth = _text.maxWidth() + addedWidth();
 	if (_fullWidthOverride > 0) {
@@ -782,10 +788,12 @@ SettingsButton::SettingsButton(
 SettingsButton::SettingsButton(
 	QWidget *parent,
 	rpl::producer<TextWithEntities> &&text,
-	const style::SettingsButton &st)
+	const style::SettingsButton &st,
+	const Text::MarkedContext &context)
 : RippleButton(parent, st.ripple)
 , _st(st)
-, _padding(_st.padding) {
+, _padding(_st.padding)
+, _context(context) {
 	std::move(
 		text
 	) | rpl::start_with_next([this](TextWithEntities &&value) {
@@ -955,7 +963,7 @@ void SettingsButton::onStateChanged(
 }
 
 void SettingsButton::setText(TextWithEntities &&text) {
-	_text.setMarkedText(_st.style, text, kMarkupTextOptions);
+	_text.setMarkedText(_st.style, text, kMarkupTextOptions, _context);
 	update();
 }
 
