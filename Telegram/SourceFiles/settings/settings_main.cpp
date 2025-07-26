@@ -478,7 +478,7 @@ void SetupValidatePhoneNumberSuggestion(
 		st::inviteLinkButton);
 	no->setTextTransform(Ui::RoundButton::TextTransform::NoTransform);
 	no->setClickedCallback([=] {
-		const auto sharedLabel = std::make_shared<QPointer<Ui::FlatLabel>>();
+		const auto sharedLabel = std::make_shared<base::weak_qptr<Ui::FlatLabel>>();
 		const auto height = st::boxLabel.style.font->height;
 		const auto customEmojiFactory = [=](
 			QStringView data,
@@ -805,7 +805,6 @@ void SetupPremium(
 	button->addClickHandler([=] {
 		showOther(BusinessId());
 	});
-	Ui::NewBadge::AddToRight(button);
 
 	if (controller->session().premiumCanBuy()) {
 		const auto button = AddButtonWithIcon(
@@ -814,6 +813,8 @@ void SetupPremium(
 			st::settingsButton,
 			{ .icon = &st::menuIconGiftPremium }
 		);
+		Ui::NewBadge::AddToRight(button);
+
 		button->addClickHandler([=] {
 			Ui::ChooseStarGiftRecipient(controller);
 		});

@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/unixtime.h"
 #include "apiwrap.h"
 #include "core/application.h"
+#include "data/components/top_peers.h"
 #include "data/data_changes.h"
 #include "data/data_channel.h"
 #include "data/data_document.h"
@@ -233,7 +234,7 @@ void Stories::apply(not_null<PeerData*> peer, const MTPPeerStories *data) {
 		_sourceChanged.fire_copy(peer->id);
 		updatePeerStoriesState(peer);
 	} else {
-		parseAndApply(*data);
+		parseAndApply(*data, ParseSource::DirectRequest);
 	}
 }
 
@@ -271,7 +272,7 @@ void Stories::requestPeerStories(
 		const auto &data = result.data();
 		_owner->processUsers(data.vusers());
 		_owner->processChats(data.vchats());
-		parseAndApply(data.vstories());
+		parseAndApply(data.vstories(), ParseSource::DirectRequest);
 		finish();
 	}).fail([=] {
 		applyDeletedFromSources(peer->id, StorySourcesList::NotHidden);
@@ -365,7 +366,9 @@ void Stories::clearArchive(not_null<PeerData*> peer) {
 	_archiveChanged.fire_copy(peerId);
 }
 
-void Stories::parseAndApply(const MTPPeerStories &stories) {
+void Stories::parseAndApply(
+		const MTPPeerStories &stories,
+		ParseSource source) {
 	const auto &data = stories.data();
 	const auto peerId = peerFromMTP(data.vpeer());
 	const auto already = _readTill.find(peerId);
@@ -419,12 +422,25 @@ void Stories::parseAndApply(const MTPPeerStories &stories) {
 		}
 		sort(list);
 	};
-	if (result.peer->isSelf()
-		|| (result.peer->isChannel() && result.peer->asChannel()->amIn())
-		|| (result.peer->isUser()
-			&& (result.peer->asUser()->isBot()
-				|| result.peer->asUser()->isContact()))
-		|| result.peer->isServiceUser()) {
+	const auto appendToStrip = [](not_null<PeerData*> peer, ParseSource source) {
+		if (peer->isSelf()) {
+			return true;
+		} else if (const auto channel = peer->asChannel()) {
+			return channel->amIn();
+		} else if (const auto user = peer->asUser()) {
+			return (source == ParseSource::MyStrip)
+				|| user->storiesCorrespondent()
+				|| user->isServiceUser()
+				|| user->isContact()
+				|| user->isBot();
+		}
+		return false;
+	};
+	if (appendToStrip(result.peer, source)) {
+		if (source == ParseSource::MyStrip
+			&& !appendToStrip(result.peer, ParseSource::DirectRequest)) {
+			result.peer->asUser()->setStoriesCorrespondent(true);
+		}
 		const auto hidden = result.peer->hasStoriesHidden();
 		using List = StorySourcesList;
 		add(hidden ? List::Hidden : List::NotHidden);
@@ -619,7 +635,7 @@ void Stories::loadMore(StorySourcesList list) {
 			_sourcesStates[index] = qs(data.vstate());
 			_sourcesLoaded[index] = !data.is_has_more();
 			for (const auto &single : data.vpeer_stories().v) {
-				parseAndApply(single);
+				parseAndApply(single, ParseSource::MyStrip);
 			}
 		}, [](const MTPDstories_allStoriesNotModified &) {
 		});
@@ -1187,15 +1203,24 @@ void Stories::toggleHidden(
 		bool hidden,
 		std::shared_ptr<Ui::Show> show) {
 	const auto peer = _owner->peer(peerId);
-	const auto justRemove = peer->isServiceUser() && hidden;
+	const auto byHints = peer->isUser()
+		&& !peer->asUser()->isBot()
+		&& !peer->asUser()->isContact()
+		&& !peer->asUser()->isServiceUser();
+	const auto justRemove = (byHints || peer->isServiceUser()) && hidden;
 	if (peer->hasStoriesHidden() != hidden) {
-		if (!justRemove) {
+		if (byHints && hidden) {
+			peer->asUser()->setStoriesCorrespondent(false);
+		} else if (!justRemove) {
 			peer->setStoriesHidden(hidden);
 		}
 		session().api().request(MTPstories_TogglePeerStoriesHidden(
 			peer->input,
 			MTP_bool(hidden)
 		)).send();
+		if (byHints) {
+			peer->session().topPeers().remove(peer);
+		}
 	}
 
 	const auto name = peer->shortName();

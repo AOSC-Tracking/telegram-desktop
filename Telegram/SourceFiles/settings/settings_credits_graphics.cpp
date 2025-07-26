@@ -625,9 +625,9 @@ void FillCreditOptions(
 					.giftPeerId = PeerId(option.giftBarePeerId),
 				};
 
-				const auto weak = Ui::MakeWeak(button);
+				const auto weak = base::make_weak(button);
 				const auto done = [=](Payments::CheckoutResult result) {
-					if (const auto strong = weak.data()) {
+					if (const auto strong = weak.get()) {
 						strong->window()->setFocus();
 						if (result == Payments::CheckoutResult::Paid) {
 							if (const auto onstack = paid) {
@@ -889,10 +889,10 @@ void BoostCreditsBox(
 }
 
 void ProcessReceivedSubscriptions(
-		QPointer<Ui::GenericBox> weak,
+		base::weak_qptr<Ui::GenericBox> weak,
 		not_null<Main::Session*> session) {
 	const auto rebuilder = session->data().activeCreditsSubsRebuilder();
-	if (const auto strong = weak.data()) {
+	if (const auto strong = weak.get()) {
 		if (!rebuilder) {
 			return strong->closeBox();
 		}
@@ -903,7 +903,7 @@ void ProcessReceivedSubscriptions(
 				true);
 		api->requestSubscriptions({}, [=](Data::CreditsStatusSlice first) {
 			rebuilder->fire(std::move(first));
-			if (const auto strong = weak.data()) {
+			if (const auto strong = weak.get()) {
 				strong->closeBox();
 			}
 		});
@@ -939,7 +939,8 @@ void FillUniqueGiftMenu(
 		&& e.id.isEmpty()
 		&& (e.in || (giftChannel && giftChannel->canManageGifts()))
 		&& !e.giftTransferred
-		&& !e.giftRefunded;
+		&& !e.giftRefunded
+		&& !e.converted;
 
 	const auto unique = e.uniqueGift;
 	if (unique
@@ -1148,7 +1149,6 @@ void GenericCreditsEntryBox(
 	const auto isStarGift = e.stargift || e.soldOutInfo;
 	const auto creditsHistoryStarGift = isStarGift && !e.id.isEmpty();
 	const auto sentStarGift = creditsHistoryStarGift && !e.in;
-	const auto convertedStarGift = creditsHistoryStarGift && e.converted;
 	const auto giftToSelf = isStarGift
 		&& (e.barePeerId == selfPeerId)
 		&& (e.in || e.bareGiftOwnerId == selfPeerId);
@@ -1164,7 +1164,8 @@ void GenericCreditsEntryBox(
 	const auto starGiftCanManage = isStarGift
 		&& !creditsHistoryStarGift
 		&& (e.in || giftToChannelCanManage)
-		&& !e.fromGiftSlug;
+		&& !e.fromGiftSlug
+		&& !e.converted;
 	const auto starGiftCanTransfer = isStarGift
 		&& !creditsHistoryStarGift
 		&& (e.in || giftToChannelCanTransfer);
@@ -1250,12 +1251,13 @@ void GenericCreditsEntryBox(
 				EntryToSavedStarGiftId(session, e),
 				style);
 		};
+		const auto canResell = CanResellGift(session, e);
 		AddUniqueGiftCover(
 			content,
 			rpl::single(*uniqueGift),
 			{},
 			std::move(price),
-			CanResellGift(session, e) ? std::move(change) : Fn<void()>());
+			canResell ? std::move(change) : Fn<void()>());
 
 		AddSkip(content, st::defaultVerticalListSkip * 2);
 
@@ -1263,6 +1265,10 @@ void GenericCreditsEntryBox(
 			const auto type = SavedStarGiftMenuType::View;
 			FillUniqueGiftMenu(show, menu, e, type, st);
 		});
+
+		if (canResell) {
+			Ui::PreloadUniqueGiftResellPrices(session);
+		}
 	} else if (const auto callback = Ui::PaintPreviewCallback(session, e)) {
 		const auto thumb = content->add(object_ptr<Ui::CenterWrap<>>(
 			content,
@@ -1419,7 +1425,7 @@ void GenericCreditsEntryBox(
 					? tr::lng_credits_box_history_entry_gift_unavailable(tr::now)
 					: sentStarGift
 					? tr::lng_credits_box_history_entry_gift_sent(tr::now)
-					: convertedStarGift
+					: e.converted
 					? tr::lng_credits_box_history_entry_gift_converted(tr::now)
 					: (isStarGift && !starGiftCanManage)
 					? tr::lng_gift_link_label_gift(tr::now)
@@ -1434,7 +1440,23 @@ void GenericCreditsEntryBox(
 
 		Ui::AddSkip(content);
 	}
-	if (!isStarGift || creditsHistoryStarGift || e.soldOutInfo) {
+	if (e.bareGiftReleasedById && !e.uniqueGift) {
+		const auto peer = owner->peer(PeerId(e.bareGiftReleasedById));
+		const auto released = content->add(
+			object_ptr<Ui::CenterWrap<Ui::FlatLabel>>(
+				box,
+				object_ptr<Ui::FlatLabel>(
+					content,
+					tr::lng_credits_box_history_entry_gift_released(
+						lt_name,
+						rpl::single(Ui::Text::Link('@' + peer->username())),
+						Ui::Text::WithEntities),
+					st::creditsReleasedByLabel)));
+		released->entity()->setClickHandlerFilter([=](const auto &...) {
+			Ui::GiftReleasedByHandler(peer);
+			return false;
+		});
+	} else if (!isStarGift || creditsHistoryStarGift || e.soldOutInfo) {
 		constexpr auto kMinus = QChar(0x2212);
 		auto &lifetime = content->lifetime();
 		const auto text = lifetime.make_state<Ui::Text::String>();
@@ -1606,7 +1628,7 @@ void GenericCreditsEntryBox(
 	}
 
 	const auto arrow = Ui::Text::IconEmoji(&st::textMoreIconEmoji);
-	if (!uniqueGift && starGiftCanManage) {
+	if (!uniqueGift && (starGiftCanManage || e.converted)) {
 		Ui::AddSkip(content);
 		const auto about = box->addRow(
 			object_ptr<Ui::CenterWrap<Ui::FlatLabel>>(
@@ -1735,8 +1757,9 @@ void GenericCreditsEntryBox(
 
 	const auto canToggle = starGiftCanManage
 		&& !e.giftTransferred
-		&& !e.giftRefunded;
-	const auto toggleVisibility = [=, weak = Ui::MakeWeak(box)](bool save) {
+		&& !e.giftRefunded
+		&& !e.converted;
+	const auto toggleVisibility = [=, weak = base::make_weak(box)](bool save) {
 		const auto showSection = !e.fromGiftsList;
 		const auto savedId = EntryToSavedStarGiftId(&show->session(), e);
 		const auto done = [=](bool ok) {
@@ -1748,7 +1771,7 @@ void GenericCreditsEntryBox(
 							Info::Section::Type::PeerGifts));
 				}
 			}
-			if (const auto strong = weak.data()) {
+			if (const auto strong = weak.get()) {
 				if (ok) {
 					strong->closeBox();
 				} else {
@@ -1794,7 +1817,7 @@ void GenericCreditsEntryBox(
 	const auto canUpgradeFree = canUpgrade && (e.starsUpgradedBySender > 0);
 
 	if (isStarGift && e.id.isEmpty()) {
-		const auto convert = [=, weak = Ui::MakeWeak(box)] {
+		const auto convert = [=, weak = base::make_weak(box)] {
 			const auto stars = e.starsConverted;
 			const auto days = canConvert ? ((timeLeft + 86399) / 86400) : 0;
 			auto text = giftToChannelCanManage
@@ -1828,7 +1851,7 @@ void GenericCreditsEntryBox(
 								.action = GiftAction::Convert,
 							});
 						}
-						if (const auto strong = weak.data()) {
+						if (const auto strong = weak.get()) {
 							if (ok) {
 								strong->closeBox();
 							} else {
@@ -1950,7 +1973,7 @@ void GenericCreditsEntryBox(
 				if (button != Qt::LeftButton) {
 					return false;
 				}
-				const auto done = [=, weak = Ui::MakeWeak(box)] {
+				const auto done = [=, weak = base::make_weak(box)] {
 					ProcessReceivedSubscriptions(weak, session);
 				};
 				const auto fail = [=, s = box->uiShow()](const QString &e) {
@@ -2001,7 +2024,7 @@ void GenericCreditsEntryBox(
 				? tr::lng_gift_show_on_channel
 				: tr::lng_gift_show_on_page)()
 			: tr::lng_box_ok()));
-	const auto send = [=, weak = Ui::MakeWeak(box)] {
+	const auto send = [=, weak = base::make_weak(box)] {
 		if (toRejoin && !toRenew) {
 			if (const auto window = show->resolveWindow()) {
 				const auto finish = [=](Payments::CheckoutResult&&) {
@@ -2026,7 +2049,7 @@ void GenericCreditsEntryBox(
 				ProcessReceivedSubscriptions(weak, session);
 			};
 			const auto fail = [=, show = box->uiShow()](const QString &e) {
-				if ([[maybe_unused]] const auto strong = weak.data()) {
+				if ([[maybe_unused]] const auto strong = weak.get()) {
 					state->confirmButtonBusy = false;
 				}
 				show->showToast(e);
@@ -2282,6 +2305,9 @@ void StarGiftViewBox(
 		.bareGiftOwnerId = (data.unique
 			? data.unique->ownerId.value
 			: toId.value),
+		.bareGiftReleasedById = (data.stargiftReleasedBy
+			? data.stargiftReleasedBy->id.value
+			: 0),
 		.bareActorId = (toChannel ? data.channelFrom->id.value : 0),
 		.bareEntryOwnerId = (toChannel ? data.channel->id.value : 0),
 		.giftChannelSavedId = data.channelSavedId,
