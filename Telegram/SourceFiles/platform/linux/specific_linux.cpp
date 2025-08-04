@@ -26,6 +26,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/platform/linux/base_linux_xcb_utilities.h"
 #endif // !DESKTOP_APP_DISABLE_X11_INTEGRATION
 
+#include <QtGlobal>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QSystemTrayIcon>
 #include <QtGui/QDesktopServices>
@@ -235,9 +236,14 @@ bool GenerateDesktopFile(
 	if (!QDir(targetPath).exists()) QDir().mkpath(targetPath);
 
 	const auto sourceFile = u":/misc/org.telegram.desktop.desktop"_q;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 	const auto targetFile = targetPath
 		+ QGuiApplication::desktopFileName()
 		+ u".desktop"_q;
+#else
+	const auto targetFile = targetPath
+		+ QGuiApplication::desktopFileName();
+#endif
 
 	const auto sourceText = [&] {
 		QFile source(sourceFile);
@@ -399,9 +405,15 @@ bool GenerateServiceFile(bool silent = false) {
 	const auto targetPath = QStandardPaths::writableLocation(
 		QStandardPaths::GenericDataLocation) + u"/dbus-1/services/"_q;
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 	const auto targetFile = targetPath
 		+ QGuiApplication::desktopFileName()
 		+ u".service"_q;
+#else
+	const auto targetFile = targetPath
+		+ QGuiApplication::desktopFileName().chopped(8)
+		+ u".service"_q;
+#endif
 
 	DEBUG_LOG(("App Info: placing D-Bus service file to %1").arg(targetPath));
 	if (!QDir(targetPath).exists()) QDir().mkpath(targetPath);
@@ -409,10 +421,18 @@ bool GenerateServiceFile(bool silent = false) {
 	auto target = GLib::KeyFile::new_();
 	constexpr auto group = "D-BUS Service";
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 	target.set_string(
 		group,
 		"Name",
 		QGuiApplication::desktopFileName().toStdString());
+#else
+	target.set_string(
+		group,
+		"Name",
+		QGuiApplication::desktopFileName().chopped(8)
+		.toStdString());
+#endif
 
 	QStringList exec;
 	exec.append(executable);
@@ -631,10 +651,16 @@ void AutostartToggle(bool enabled, Fn<void(bool)> done) {
 			+ u"/autostart/"_q;
 
 		if (!enabled) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 			return QFile::remove(
 				autostart
 					+ QGuiApplication::desktopFileName()
 					+ u".desktop"_q);
+#else
+			return QFile::remove(
+				autostart + QGuiApplication::desktopFileName()
+				);
+#endif
 		}
 
 		return GenerateDesktopFile(
@@ -742,7 +768,11 @@ void start() {
 				Core::Launcher::Instance().instanceHash().constData());
 		}
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 		return u"org.telegram.desktop"_q;
+#else
+		return u"org.telegram.desktop.desktop"_q;
+#endif
 	}());
 
 	LOG(("App ID: %1").arg(QGuiApplication::desktopFileName()));
@@ -826,10 +856,17 @@ QImage DefaultApplicationIcon() {
 }
 
 QString ApplicationIconName() {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 	static const auto Result = KSandbox::isSnap()
 		? u"snap.%1."_q.arg(qEnvironmentVariable("SNAP_INSTANCE_NAME"))
 		: QGuiApplication::desktopFileName().remove(
 		u"._"_q + Core::Launcher::Instance().instanceHash());
+#else
+	static const auto Result = KSandbox::isSnap()
+		? u"snap.%1."_q.arg(qEnvironmentVariable("SNAP_INSTANCE_NAME"))
+		: QGuiApplication::desktopFileName().chopped(8).remove(
+		u"._"_q + Core::Launcher::Instance().instanceHash());
+#endif
 	return Result;
 }
 
