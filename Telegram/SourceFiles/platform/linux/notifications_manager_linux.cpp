@@ -25,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/weak_ptr.h"
 #include "window/notifications_utilities.h"
 
+#include <QtGlobal>
 #include <QtCore/QBuffer>
 #include <QtCore/QVersionNumber>
 #include <QtGui/QGuiApplication>
@@ -680,8 +681,13 @@ void Manager::Private::showNotification(
 			"category",
 			GLib::Variant::new_string("im.received"));
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 		hints.insert_value("desktop-entry", GLib::Variant::new_string(
 			QGuiApplication::desktopFileName().toStdString()));
+#else
+		hints.insert_value("desktop-entry", GLib::Variant::new_string(
+			QGuiApplication::desktopFileName().chopped(8).toStdString()));
+#endif
 	}
 
 	const auto imageKey = GetImageKey();
