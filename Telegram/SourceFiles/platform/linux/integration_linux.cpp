@@ -18,6 +18,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/random.h"
 #include "base/qt_connection.h"
 
+#include <QtGlobal>
 #include <QtCore/QAbstractEventDispatcher>
 
 #include <gio/gio.hpp>
@@ -87,7 +88,11 @@ public:
 
 Application::Application()
 : Gio::impl::ApplicationImpl(this) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 	const auto appId = QGuiApplication::desktopFileName().toStdString();
+#else
+	const auto appId = QGuiApplication::desktopFileName().chopped(8).toStdString();
+#endif
 	if (Gio::Application::id_is_valid(appId)) {
 		set_application_id(appId);
 	}

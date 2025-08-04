@@ -35,6 +35,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/platform/linux/base_linux_xcb_utilities.h"
 #endif // !DESKTOP_APP_DISABLE_X11_INTEGRATION
 
+#include <QtGlobal>
 #include <QtCore/QSize>
 #include <QtCore/QMimeData>
 #include <QtGui/QWindow>
@@ -174,9 +175,14 @@ void MainWindow::updateUnityCounter() {
 		return hash;
 	};
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 	const auto launcherUrl = "application://"
 		+ QGuiApplication::desktopFileName().toStdString()
 		+ ".desktop";
+#else
+	const auto launcherUrl = "application://"
+		+ QGuiApplication::desktopFileName().toStdString();
+#endif
 
 	const auto counterSlice = std::min(Core::App().unreadBadge(), 9999);
 
