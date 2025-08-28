@@ -126,7 +126,12 @@ bool HttpServer::Private::processRedirect(
 	request.setRawHeader("Referer", "http://desktop-app-resource/page.html");
 
 	const auto reply = manager.get(request);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 	QObject::connect(reply, &QNetworkReply::finished, socket, [
+#else
+	QMetaObject::Connection * const connection = new QMetaObject::Connection;
+	*connection = QObject::connect(reply, &QNetworkReply::finished, socket, [
+#endif
 		=, 
 		replyGuard = std::make_unique<Guard>([=] {
 			reply->deleteLater();
@@ -155,7 +160,13 @@ bool HttpServer::Private::processRedirect(
 		socket->write("Cache-Control: no-store\r\n");
 		socket->write("\r\n");
 		socket->write(input);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 	}, Qt::SingleShotConnection);
+#else
+		QObject::disconnect(*connection);
+		delete connection;
+	});
+#endif
 
 	return true;
 }
@@ -179,9 +190,18 @@ HttpServer::HttpServer(
 				socket,
 				&QObject::deleteLater);
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 			QObject::connect(socket, &QIODevice::readyRead, socket, [=] {
 				_private->handleRequest(socket);
 			}, Qt::SingleShotConnection);
+#else
+			QMetaObject::Connection * const connection = new QMetaObject::Connection;
+			*connection = QObject::connect(socket, &QIODevice::readyRead, socket, [=] {
+				_private->handleRequest(socket);
+				QObject::disconnect(*connection);
+				delete connection;
+			});
+#endif
 		}
 	});
 }
