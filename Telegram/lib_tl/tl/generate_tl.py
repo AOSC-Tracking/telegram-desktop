@@ -190,10 +190,13 @@ def paramNameTag(name):
   return 'param_description' if name == 'description' else name
 
 def isBotsOnlyLine(comments):
-  return endsWithForTag(comments, 'description', 'for bots only')
+  return endsWithForTag(comments, 'description', 'for bots only') or endsWithForTag(comments, 'description', 'bots only')
 
 def isBotsOnlyParam(comments, name):
-  return endsWithForTag(comments, paramNameTag(name), 'for bots only')
+  return endsWithForTag(comments, paramNameTag(name), 'for bots only') or endsWithForTag(comments, paramNameTag(name), 'bots only')
+
+def isMobileOnlyLine(comments):
+  return endsWithForTag(comments, 'description', 'for official mobile applications only')
 
 def isNullableVector(comments, name):
   return name.endswith('s') and endsWithForTag(comments, paramNameTag(name), name + ' may be null')
@@ -384,7 +387,7 @@ def readAndGenerate(inputFiles, outputPath, scheme):
     comments = accumulatedComments
     accumulatedComments = ''
 
-    if isBotsOnlyLine(comments):
+    if isBotsOnlyLine(comments) or isMobileOnlyLine(comments):
       continue
 
     originalname = nametype.group(1)
@@ -1462,6 +1465,10 @@ bool DumpToTextType(DumpToTextBuffer &to, const ' + primeType + ' *&from, const 
 			types.pop_back(); vtypes.pop_back(); stages.pop_back(); flags.pop_back();\n\
 		} else {\n\
 			to.error();\n\
+\n\
+			const auto bad = QByteArray::number(type, 16);\n\
+			to.add("(ERROR_SCHEME_BAD_CONS:0x").add(bad.data()).add(")");\n\
+\n\
 			return false;\n\
 		}\n\
 	}\n\

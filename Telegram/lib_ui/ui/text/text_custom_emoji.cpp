@@ -6,6 +6,7 @@
 //
 #include "ui/text/text_custom_emoji.h"
 
+#include "ui/style/style_core.h"
 #include "ui/text/text_utilities.h"
 #include "ui/text/text.h"
 
@@ -151,33 +152,55 @@ std::unique_ptr<CustomEmoji> MakeCustomEmoji(
 	return nullptr;
 }
 
-StaticCustomEmoji::StaticCustomEmoji(QImage &&image, QString entity)
-: _image(std::move(image))
-, _entity(std::move(entity)) {
+PaletteDependentCustomEmoji::PaletteDependentCustomEmoji(
+	Fn<QImage()> factory,
+	QString entity,
+	QMargins padding)
+: _factory(std::move(factory))
+, _entity(std::move(entity))
+, _padding(padding) {
 }
 
-int StaticCustomEmoji::width() {
-	return _image.width() / style::DevicePixelRatio();
+int PaletteDependentCustomEmoji::width() {
+	if (_frame.isNull()) {
+		validateFrame();
+	}
+	return _padding.left()
+		+ (_frame.width() / style::DevicePixelRatio())
+		+ _padding.right();
 }
 
-QString StaticCustomEmoji::entityData() {
+QString PaletteDependentCustomEmoji::entityData() {
 	return _entity;
 }
 
-void StaticCustomEmoji::paint(QPainter &p, const Context &context) {
-	p.drawImage(context.position, _image);
+void PaletteDependentCustomEmoji::paint(
+		QPainter &p,
+		const Context &context) {
+	validateFrame();
+	p.drawImage(
+		context.position + QPoint(_padding.left(), _padding.top()),
+		_frame);
 }
 
-void StaticCustomEmoji::unload() {
-	_image = QImage();
+void PaletteDependentCustomEmoji::unload() {
+	_frame = QImage();
 }
 
-bool StaticCustomEmoji::ready() {
+bool PaletteDependentCustomEmoji::ready() {
 	return true;
 }
 
-bool StaticCustomEmoji::readyInDefaultState() {
+bool PaletteDependentCustomEmoji::readyInDefaultState() {
 	return true;
+}
+
+void PaletteDependentCustomEmoji::validateFrame() {
+	const auto version = style::PaletteVersion();
+	if (_frame.isNull() || _paletteVersion != version) {
+		_paletteVersion = version;
+		_frame = _factory();
+	}
 }
 
 } // namespace Ui::Text

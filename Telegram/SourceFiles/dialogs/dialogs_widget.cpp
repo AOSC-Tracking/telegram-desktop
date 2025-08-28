@@ -2742,6 +2742,11 @@ void Widget::showMainMenu() {
 }
 
 void Widget::searchMessages(SearchState state) {
+	if (const auto peer = state.inChat.peer()) {
+		if (_openedForum && peer->forum() != _openedForum) {
+			controller()->closeForum();
+		}
+	}
 	applySearchState(std::move(state));
 	session().local().saveRecentSearchHashtags(_searchState.query);
 }
@@ -2917,15 +2922,19 @@ void Widget::requestPublicPosts(bool fromStart) {
 		.posts = true,
 		.start = fromStart,
 	};
+	using Flag = MTPchannels_SearchPosts::Flag;
 	_postsProcess.requestId = session().api().request(
 		MTPchannels_SearchPosts(
+			MTP_flags(Flag::f_hashtag),
 			MTP_string(_searchState.query.trimmed().mid(1)),
+			MTP_string(), // query
 			MTP_int(fromStart ? 0 : _postsProcess.nextRate),
 			(fromStart
 				? MTP_inputPeerEmpty()
 				: _postsProcess.lastPeer->input),
 			MTP_int(fromStart ? 0 : _postsProcess.lastId),
-			MTP_int(kSearchPerPage))
+			MTP_int(kSearchPerPage),
+			MTP_long(0)) // allow_paid_stars
 	).done([=](const MTPmessages_Messages &result) {
 		searchReceived(type, result, &_postsProcess);
 	}).fail([=](const MTP::Error &error) {

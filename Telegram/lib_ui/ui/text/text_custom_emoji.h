@@ -111,9 +111,12 @@ private:
 
 };
 
-class StaticCustomEmoji final : public CustomEmoji {
+class PaletteDependentCustomEmoji final : public CustomEmoji {
 public:
-	StaticCustomEmoji(QImage &&image, QString entity);
+	PaletteDependentCustomEmoji(
+		Fn<QImage()> factory,
+		QString entity,
+		QMargins padding = {});
 
 	int width() override;
 	QString entityData() override;
@@ -123,8 +126,13 @@ public:
 	bool readyInDefaultState() override;
 
 private:
-	QImage _image;
+	void validateFrame();
+
+	Fn<QImage()> _factory;
 	QString _entity;
+	QMargins _padding;
+	QImage _frame;
+	int _paletteVersion = 0;
 
 };
 
