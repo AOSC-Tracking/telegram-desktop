@@ -718,21 +718,37 @@ void Instance::dataRequest(
 		socket->write("HTTP/1.1 ");
 		socket->write(partial ? "206 Partial Content\r\n" : "200 OK\r\n");
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 		const auto mime = QByteArray(stream->mime());
+#else
+		const auto mime = QByteArray(stream->mime().c_str());
+#endif
 		socket->write("Content-Type: " + mime + "\r\n");
 		socket->write("Accept-Ranges: bytes\r\n");
 		socket->write("Cache-Control: no-store\r\n");
 		socket->write("Content-Length: "
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 			+ QByteArray::number(requestedLimit)
+#else
+			+ QByteArray::number((qlonglong)requestedLimit)
+#endif
 			+ "\r\n");
 
 		if (partial) {
 			socket->write("Content-Range: bytes "
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 				+ QByteArray::number(requestedOffset)
 				+ '-'
 				+ QByteArray::number(requestedOffset + requestedLimit - 1)
 				+ '/'
 				+ QByteArray::number(total)
+#else
+				+ QByteArray::number((qlonglong)requestedOffset)
+				+ '-'
+				+ QByteArray::number((qlonglong)(requestedOffset + requestedLimit - 1))
+				+ '/'
+				+ QByteArray::number((qlonglong)total)
+#endif
 				+ "\r\n");
 		}
 
