@@ -389,9 +389,8 @@ bool Instance::create(Config config) {
 		"notify::uri",
 		G_CALLBACK(+[](
 			Instance *instance,
-			GParamSpec *pspec) -> gboolean {
+			GParamSpec *pspec) {
 			instance->updateHistoryStates();
-			return true;
 		}),
 		this);
 	g_signal_connect_swapped(
@@ -399,9 +398,8 @@ bool Instance::create(Config config) {
 		"notify::title",
 		G_CALLBACK(+[](
 			Instance *instance,
-			GParamSpec *pspec) -> gboolean {
+			GParamSpec *pspec) {
 			instance->updateHistoryStates();
-			return true;
 		}),
 		this);
 	g_signal_connect_swapped(
@@ -709,12 +707,12 @@ void Instance::dataRequest(
 #endif // Qt < 6.8.0
 
 	const auto total = resolved.totalSize ? resolved.totalSize : length;
+	const auto partial = (requestedOffset > 0) || (requestedLimit > 0);
 	if (requestedLimit <= 0) {
 		requestedLimit = (total - requestedOffset);
 	}
 	
 	if (!headersWritten) {
-		const auto partial = (requestedOffset > 0) || (requestedLimit > 0);
 		socket->write("HTTP/1.1 ");
 		socket->write(partial ? "206 Partial Content\r\n" : "200 OK\r\n");
 

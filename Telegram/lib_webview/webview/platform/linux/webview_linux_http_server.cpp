@@ -22,7 +22,7 @@ struct HttpServer::Private {
 		QTcpSocket *socket,
 		const QByteArray &id,
 		const ::base::flat_map<QByteArray, QByteArray> &headers,
-		const std::shared_ptr<HttpServer::Guard> &guard);
+		const std::shared_ptr<Guard> &guard);
 
 	QNetworkAccessManager manager;
 	QByteArray password;
@@ -30,7 +30,7 @@ struct HttpServer::Private {
 		QTcpSocket *socket,
 		const QByteArray &id,
 		const ::base::flat_map<QByteArray, QByteArray> &headers,
-		const std::shared_ptr<HttpServer::Guard> &guard)> handler;
+		const std::shared_ptr<Guard> &guard)> handler;
 };
 
 void HttpServer::Private::handleRequest(QTcpSocket *socket) {
@@ -66,14 +66,16 @@ void HttpServer::Private::handleRequest(QTcpSocket *socket) {
 			: QByteArray();
 	};
 
-	auto authed = false;
-	const auto auth = getHeader("Authorization");
-	if (auth.mid(0, 6).toLower() == "basic ") {
-		const auto userPass = QByteArray::fromBase64(auth.mid(6));
-		if (userPass == ':' + password) {
-			authed = true;
+	const auto authed = [&] {
+		const auto auth = getHeader("Authorization");
+		if (auth.startsWith("Basic ")) {
+			const auto userPass = QByteArray::fromBase64(auth.mid(6));
+			if (userPass == ':' + password) {
+				return true;
+			}
 		}
-	}
+		return false;
+	}();
 
 	if (!authed) {
 		socket->write("HTTP/1.1 401 Unauthorized\r\n");
@@ -94,7 +96,7 @@ bool HttpServer::Private::processRedirect(
 		QTcpSocket *socket,
 		const QByteArray &id,
 		const ::base::flat_map<QByteArray, QByteArray> &headers,
-		const std::shared_ptr<HttpServer::Guard> &guard) {
+		const std::shared_ptr<Guard> &guard) {
 	const auto dot = id.indexOf('.');
 	const auto slash = id.indexOf('/');
 	if (dot < 0 || slash < 0 || dot > slash) {
@@ -126,7 +128,7 @@ bool HttpServer::Private::processRedirect(
 	const auto reply = manager.get(request);
 	QObject::connect(reply, &QNetworkReply::finished, socket, [
 		=, 
-		replyGuard = gsl::finally([=] {
+		replyGuard = std::make_unique<Guard>([=] {
 			reply->deleteLater();
 		})
 	] {
