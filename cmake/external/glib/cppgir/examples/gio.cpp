@@ -13,6 +13,9 @@ static GLib::MainLoop loop;
 // so typically will throw here instead
 // (unless GError output is explicitly requested in call signature)
 
+// NOTE abundancy of gi::expect not generally needed;
+// only needed when using --dl and --expected
+
 static bool
 receive(Gio::Socket s, GLib::IOCondition /*cond*/)
 {
@@ -26,9 +29,9 @@ receive(Gio::Socket s, GLib::IOCondition /*cond*/)
     std::string origin("someone");
     auto ia = gi::object_cast<Gio::InetSocketAddress>(a);
     if (ia) {
-      origin = ia.get_address().to_string();
+      origin = gi::expect(gi::expect(ia.get_address()).to_string());
       origin += ":";
-      origin += std::to_string(ia.get_port());
+      origin += std::to_string(gi::expect(ia.get_port()));
     }
     std::cout << origin << " said " << (char *)buffer << std::endl;
     // quit when idle
@@ -46,14 +49,22 @@ open(bool listen)
   auto socket = gi::expect(Gio::Socket::new_(Gio::SocketFamily::IPV4_,
       Gio::SocketType::DATAGRAM_, Gio::SocketProtocol::DEFAULT_));
 
-  auto address = Gio::InetSocketAddress::new_from_string(localhost, 0);
+  auto address =
+      gi::expect(Gio::InetSocketAddress::new_from_string(localhost, 0));
   socket.bind(address, false);
   socket.set_blocking(false);
 
   if (listen) {
     // runtime introspection has a hard time here,
     // but with a bit of extra information, we can keep going
-    GLib::Source source = socket.create_source(GLib::IOCondition::IN_, nullptr);
+#if defined(GI_CALL_ARGS) && CALL_ARGS <= 1
+    // so we should have this signature for a function with 1 non-required
+    GLib::Source source =
+        gi::expect(socket.create_source({.condition = GLib::IOCondition::IN_}));
+#else
+    GLib::Source source =
+        gi::expect(socket.create_source(GLib::IOCondition::IN_, nullptr));
+#endif
     source.set_callback<Gio::SocketSourceFunc>(receive);
     source.attach();
   }
@@ -82,6 +93,6 @@ main(int argc, char **argv)
   auto send = open(false);
   send.send_to(local, (guint8 *)msg.data(), msg.size(), nullptr);
 
-  loop = GLib::MainLoop::new_();
+  loop = gi::expect(GLib::MainLoop::new_());
   loop.run();
 }

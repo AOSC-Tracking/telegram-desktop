@@ -1,11 +1,9 @@
 #ifndef GI_BOXED_HPP
 #define GI_BOXED_HPP
 
-#include <memory>
+#include "gi_inc.hpp"
 
-#include <glib-object.h>
-#include <glib.h>
-
+GI_MODULE_EXPORT
 namespace gi
 {
 namespace repository
@@ -25,12 +23,6 @@ struct enable_boxed_copy :
     public std::false_type
 #endif
 {};
-
-// should be used within proper namespace
-#define GI_ENABLE_BOXED_COPY(CType) \
-  template<> \
-  struct enable_boxed_copy<CType> : public std::true_type \
-  {};
 
 } // namespace repository
 

@@ -4,13 +4,7 @@
 #include "base.hpp"
 #include "wrap.hpp"
 
-#include <iterator>
-#include <map>
-#include <vector>
-
-#include <assert.h>
-#include <string.h>
-
+GI_MODULE_EXPORT
 namespace gi
 {
 namespace detail
@@ -1852,7 +1846,7 @@ public:
 
   // only allowed (limited) move
   // (even if some parents might allow more)
-  CollectionHolder(CollectionHolder &&other) : super_type(other)
+  CollectionHolder(CollectionHolder &&other) : super_type(std::move(other))
   {
     this->own_ = other.own_;
     other.own_ = false;

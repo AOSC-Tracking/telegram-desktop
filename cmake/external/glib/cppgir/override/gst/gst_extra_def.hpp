@@ -142,8 +142,8 @@ public:
     T &operator*()
     {
       if (result_ != IteratorResult::OK_ && result_ != IteratorResult::DONE_)
-        throw std::runtime_error(
-            "GstIterator error result " + std::to_string((int)result_));
+        detail::try_throw(std::runtime_error(
+            "GstIterator error result " + std::to_string((int)result_)));
       return value_;
     }
     void operator->() { return &value_; }
@@ -216,7 +216,7 @@ struct Fraction
             num, den, other.num, other.den, &result.num, &result.den)) {
       return result;
     } else {
-      throw std::overflow_error("multiplying Fraction");
+      detail::try_throw(std::overflow_error("multiplying Fraction"));
     }
   }
   Fraction operator/(const Fraction &other)
@@ -241,7 +241,7 @@ struct Fraction
             num, den, other.num, other.den, &result.num, &result.den)) {
       return result;
     } else {
-      throw std::overflow_error("adding Fraction");
+      detail::try_throw(std::overflow_error("adding Fraction"));
     }
   }
   Fraction operator-(const Fraction &other)

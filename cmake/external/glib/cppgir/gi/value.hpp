@@ -4,11 +4,7 @@
 #include "exception.hpp"
 #include "wrap.hpp"
 
-#include <gobject/gvaluecollector.h>
-
-#include <string.h>
-#include <type_traits>
-
+GI_MODULE_EXPORT
 namespace gi
 {
 namespace repository

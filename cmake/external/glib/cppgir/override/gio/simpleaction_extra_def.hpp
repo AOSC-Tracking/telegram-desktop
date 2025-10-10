@@ -5,11 +5,6 @@ namespace gi
 {
 namespace repository
 {
-namespace GLib
-{
-class Variant;
-}
-
 namespace Gio
 {
 class SimpleAction;

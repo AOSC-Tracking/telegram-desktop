@@ -63,6 +63,18 @@ concepts used in the following descriptions.
   As such, a great many calls might then fail at runtime.  So, if combined
   with `--expected` all those calls will use the above error return type.
 
+* `--const-method`:
+  Mark (almost) all generated methods in generated wrappers as `const`.
+  Alternatively, perhaps more recommended, see also the helper `gi:cs_ptr` type.
+
+* `--class-args` _MIN_OPTIONAL_:
+  If >= 0, minimum number of non-required arguments that triggers generation of a
+  `CallArgs` signature variant (see below for details).
+
+* `--basic-container`:
+  Also generate a collection signature for an input collection of basic type
+  (e.g. `int`, etc).  See below for some details and discussion.
+
 * `--output-top`:
   Also generate convenience `.cpp` and `.hpp` files in root output directory
   per namespace, as may be useful for some build tool setups.
@@ -207,6 +219,18 @@ are worth mentioning;
   during which the parameter instance exists.  It is not (and should not be)
   used elsewhere.
 
+* For an input collection parameter of basic type (e.g. `int`), the
+  original C signature is typically used.  That is, 2 parameters (`int*` and
+  `gsize`). The rationale here is that the same signature may also occur for an
+  output collection (of specified input size).  Preserving the original signature
+  ensures that it can be used whether or not the annotation is correct.  The
+  latter may not be the case as these APIs are typically "low-level" (e.g. involve
+  some buffers), and as such are often not considered by "scripted binding". It is
+  also an efficient and clear API as any buffer's "location" (e.g. `std::vector`
+  or otherwise) can easily be provided by means of these 2 parameters.
+  However, if desired and specified by `--basic-container` option, then an
+  additional collection-based signature is generated as well.
+
 In short, one can choose to work with `std` types and convert to
 collection wrappers upon function call/return, but for simple cases (or beyond),
 the collection wrapper might well serve (without conversion).
@@ -233,7 +257,28 @@ return value, which is likely but not necessarily a good choice.
 
 Note, however, that the aforementioned `catch` only applies if exception support
 is enabled.  Auto-detection of this should usually work, but if needed can be
-specified by defining `GI_CONFIG_EXCEPTIONS` expclitly (truth/falsy).
+specified by defining `GI_CONFIG_EXCEPTIONS` explicitly (truth/falsy).
+
+If a function has (non-GError) output parameters, then there is a signature
+where these outputs are parameters (as in the plain C case) and another variant
+where these are incorporated in the return value, which may then become a
+`std::tuple<>` type.
+
+If so configured, some so-called `CallArgs` variations may also be generated. In
+this case, (roughly) a custom `xyz_CallArgs` struct type is generated (for each
+function `xyz`) with members corresponding to the function arguments along with
+a function with 1 argument (of that custom struct type).  In case of many
+(optional) arguments, this argument could be specified using designated
+initializer syntax, thereby allowing a sort-of "call by keyword".  Again, there
+are variations with output parameters as return value or not.  Besides some
+potential advantages, there are also some drawbacks, however.  First and
+foremost, when using the member names in designated initializers, these names
+then become essentially part of the API, although the name's origin as
+plain C function parameter does not provide stability guarantee.  Also,
+suffice it to say a great many struct types can be generated this way.  This could
+be mitigated by employing a suitable "generation level", e.g. 2.  In that case,
+only functions that have at least 2 (or more) non-required arguments will have
+such a custom type and signature generated.
 
 **Subclasses and Interfaces.**
 Some additional specifications on how subclasses and interfaces are mapped
@@ -249,12 +294,10 @@ any time. However, for ease of use, some helper code is generated when an
 implemented interface is known at generation/compile time, as illustrated in
 the following snippet from an example
 
-```c++
     // use a cast if not known, either to a class or interface
     auto bin = gi::object_cast<Gst::Bin>(playbin_);
     // known at compile time; overloaded interface_ method
     auto cp = bin.interface_ (gi::interface_tag<Gst::ChildProxy>());
-```
 
 
 ### SUBCLASS IMPLEMENTATION API
@@ -305,58 +348,57 @@ can be defined that acts as a surrogate constructor.
 So, how to subclass then? By a slight twist by using the `impl` namespace
 variations, as in following excerpt from an example:
 
-```c++
-class TreeViewFilterWindow : public Gtk::impl::WindowImpl
-{
-  // ...
-public:
-  // Assume (hypothetically) that Window also implements FakeInterface
-  // with a set_focus method, then a compilation failure will be triggered (as
-  // it can no longer be detected whether set_focus is defined in this class).
-  // Then the following inner struct is needed to resolve so manually;
-  struct DefinitionData
-  {
-    // the last parameter specifies whether the method is defined
-    // (which may well be false in all class/interface cases if not defined)
-    GI_DEFINES_MEMBER(WindowClassDef, set_focus, true)
-    GI_DEFINES_MEMBER(FakeInterfaceDef, set_focus, false)
-  };
-  // NOTE for the auto-detection to work, the methods must be accessible
-  // so either they should be defined public, or (e.g.) WindowClassDef
-  // must be declared friend, or the above manual resolution can be used.
+    class TreeViewFilterWindow : public Gtk::impl::WindowImpl
+    {
+      // ...
+    public:
+      // Assume (hypothetically) that Window also implements FakeInterface
+      // with a set_focus method, then a compilation failure will be triggered (as
+      // it can no longer be detected whether set_focus is defined in this class).
+      // Then the following inner struct is needed to resolve so manually;
+      struct DefinitionData
+      {
+        // the last parameter specifies whether the method is defined
+        // (which may well be false in all class/interface cases if not defined)
+        GI_DEFINES_MEMBER(WindowClassDef, set_focus, true)
+        GI_DEFINES_MEMBER(FakeInterfaceDef, set_focus, false)
+      };
+      // NOTE for the auto-detection to work, the methods must be accessible
+      // so either they should be defined public, or (e.g.) WindowClassDef
+      // must be declared friend, or the above manual resolution can be used.
 
-  // this (super)constructor signature leads to a C++ side type
-  TreeViewFilterWindow () : Gtk::impl::WindowImpl (this)
-  {
-    // ...
-  }
+      // this (super)constructor signature leads to a C++ side type
+      TreeViewFilterWindow () : Gtk::impl::WindowImpl (this)
+      {
+        // ...
+      }
 
-  // this (super)constructor signature leads to a C-side type
-  // NOTE InitData is not (easily) instantiated,
-  //    so this constructor is only used by the internal C-side mechanics
-  TreeViewFilterWindow (const InitData &id)
-      : Gtk::impl::WindowImpl (this, id, "TreeViewFilterWindow")
+      // this (super)constructor signature leads to a C-side type
+      // NOTE InitData is not (easily) instantiated,
+      //    so this constructor is only used by the internal C-side mechanics
+      TreeViewFilterWindow (const InitData &id)
+          : Gtk::impl::WindowImpl (this, id, "TreeViewFilterWindow")
 
-  void set_focus_ (Gtk::Widget focus) noexcept override
-  {
-  }
+      void set_focus_ (Gtk::Widget focus) noexcept override
+      {
+      }
 
-  // the above constructor is also re-used during (C-side) type registration
-  // (in that case with an "empty" id and no associated GObject setup)
-  // that can avoided by providing a separate ...
-  GType get_type_()
-  {
-    // no interfaces, properties or signals to declare
-    return register_type_<TreeViewFilterWindow>("TreeViewFilterWindow", 0, {}, {}, {});
-  }
-};
+      // the above constructor is also re-used during (C-side) type registration
+      // (in that case with an "empty" id and no associated GObject setup)
+      // that can avoided by providing a separate ...
+      GType get_type_()
+      {
+        // no interfaces, properties or signals to declare
+        return register_type_<TreeViewFilterWindow>("TreeViewFilterWindow", 0, {}, {}, {});
+      }
+    };
 
-// create an instance of (either) type
-// it prefers the latter C-side type, if supported, and supports extra arguments
-// (a second template parameter allows for specific selection,
-// see code comments and examples for details)
-gi::make_ref<TreeViewFilterWindow>()
-```
+    // create an instance of (either) type
+    // it prefers the latter C-side type, if supported, and supports extra arguments
+    // (a second template parameter allows for specific selection,
+    // see code comments and examples for details)
+    gi::make_ref<TreeViewFilterWindow>()
+
 Parent (class or interface) methods can then be overridden or implemented
 in the usual way by simply defining them in the subclass.  It is also possible
 to define custom signal and properties in the subclass, as illustrated in the
@@ -418,16 +460,15 @@ headers for a namespace are then:
   than the latter, except for more traditional naming.
   Compiling this file in the non-inline case provides all the definitions
   for the namespace in the resulting object file.
+* `*.cppm`; module wrappers, see next subsection for details.
 
 So, in summary, it comes down to setting up the build system to build each of
 the namespaces' `.cpp`, as is also done in this repo's CMake build setup.
 There is one other shortcut build setup that is illustrated by the `gtk-obj.cpp`
 example file, which includes all definitions (recursively):
 
-```c++
-#define GI_INCLUDE_IMPL 1
-#include <gtk/gtk.hpp>
-```
+    #define GI_INCLUDE_IMPL 1
+    #include <gtk/gtk.hpp>
 
 Note, however, this is only possible if there is exactly 1 top-level namespace,
 as doing this for several namespaces will lead to duplicate definitions.
@@ -453,6 +494,69 @@ might trigger compilation warnings. These are not suppressed by default, as you
 may need to be made aware of this. However, if it does no harm in your
 particular case, then defining `GI_CLASS_IMPL_PRAGMA` should arrange for proper
 suppression.
+
+The generated code may be quite extensive and so it may present a "heavy build".
+Other than that the above allows for a number of different build setups,
+`cppgir` tries not to impose any particular approach.  In particular, standard
+tried-and-tested build optimizations can be applied, such as precompiled headers
+(with some good results, as reported in
+[issue #99](https://gitlab.com/mnauw/cppgir/-/issues/99)).
+
+
+**C++ Module support**
+
+At this time of writing, module support is still new-ish in compilers
+and (not in the least) build tools.  Unfortunately, all major compilers also
+take a different approach in handling these wrt command-line argument, source
+file extension or binary output.  Note that this also likely complicates any
+`compile_commands.json` based tooling (e.g. LSP server as used by IDEs) along
+with other issues as outlined in
+[this post](https://nibblestew.blogspot.com/2023/12/even-more-breakage-in-c-module-world.html)
+and originally raised
+[long ago](https://vector-of-bool.github.io/2019/01/27/modules-doa.html).
+
+By comparison, precompiled headers are long since well supported, so these may
+be a more recommended alternative approach.
+
+Failing that, a next natural fit might be "header units" (in module spec sense).
+Unfortunately, compiler setup here varies somewhat and build tool support may be
+limited.
+
+So, a next step is a pure/real module.  Unfortunately, "core gi" can not be
+provided in that form;
+
+* in addition to code, it also "exports" some macros, which can not really be
+  `export`'ed or `import`'ed (only from a "header unit")
+* the core is somewhat intertwined with basic types from GObject,
+  e.g. some code-generated types are forward declared (which satisfies
+  for their purposes in "core gi").  However, forward and real declaration
+  can not pass module boundary.
+
+But "core gi" combined with (generated) GLib and GObject can be wrapped
+in a module (along with a separate "macro API header", `gi_inc.hpp`).
+
+Again, `cppgir` does not impose a particular module layout/setup, but provides
+the basic parts and pieces to do so.  The generated code also provides a few
+example module wrappers (with no stability guarantee), also see `gst.cpp` and
+`gtk.cpp` examples for possible usage details;
+
+* `ns.cppm` (exports `gi.repo.ns`);
+  module that wraps/provides `ns` (inline) code, so a typical compilation
+  produces `.o` code of `ns` and a BMI/CMI that exports `ns` declarations
+* `ns_rec.cppm` (exports `gi.repo.ns.rec`);
+  module that wraps/provides `ns` and all (recursive) dependencies, so a
+  typical compilation produces `.o` code of `ns` and dependencies, along
+  with a BMI/CMI with corresponding declarations.
+
+The above have been tested with gcc-15 and clang-18 with some varied measure of
+success (apparently, GCC fails to link the non-recursive approach).  They each
+come with an extra "knob"; if `GI_MODULE_EXTERN` is defined, then the module
+purview is essentially `extern "C++" { ... }`.  So all declarations are then
+attached to global module, as opposed to the named module, and as such do not
+incur any modified ABI linkage (`@M`) (so it may be recommended).
+
+Other variations are likely possible, e.g. module partitions, separate
+module implementation, etc.
 
 
 ### OVERRIDING OR EXTENDING
@@ -678,7 +782,9 @@ use `--class-full` to generate a virtual method with plain C signature
 use `Object::connect_unchecked` (see also `gst.cpp` example)
 
 * callback;
-use `gi::callback_wrapper` (see also in same example location as above)
+use `gi::callback_wrapper` (see also in same example location as above).
+Or perhaps there is an API variant using closures which may be useful in
+combination with some `Closure::from_*` helpers (see still same example).
 
 
 ## SEE ALSO

@@ -20,7 +20,9 @@ static void
 on_reply(GObject_::Object ob, Gio::AsyncResult result)
 {
   // if not caught here, it will be caught before returning to plain C
+#if GI_CONFIG_EXCEPTIONS
   try {
+#endif
     auto connection = gi::object_cast<Gio::DBusConnection>(ob);
 
     auto call_result = gi::expect(connection.call_finish(result));
@@ -33,9 +35,11 @@ on_reply(GObject_::Object ob, Gio::AsyncResult result)
       std::cout << gi::expect(
                        gi::expect(names.get_child_value(i)).get_string(nullptr))
                 << std::endl;
+#if GI_CONFIG_EXCEPTIONS
   } catch (const GLib::Error &error) {
     std::cerr << "error: '" << error.what() << "'." << std::endl;
   }
+#endif
 
   // quit when idle
   GLib::idle_add([]() {

@@ -4,9 +4,7 @@
 #include "base.hpp"
 #include "wrap.hpp"
 
-#include <exception>
-#include <glib.h>
-
+GI_MODULE_EXPORT
 namespace gi
 {
 namespace detail
@@ -166,19 +164,6 @@ missing_symbol_error(const std::string &symbol)
   return repository::GLib::Error(error);
 }
 } // namespace detail
-
-// exception specification is generated according to settings and situation
-// some derived code (e.g. overrides) may need to follow suit accordingly
-#if GI_EXPECTED
-// no exception if reported through expected
-#define GI_NOEXCEPT_DECL(nonthrowing) noexcept
-#elif GI_DL
-// otherwise, everything can start failing if resolved at runtime
-#define GI_NOEXCEPT_DECL(nonthrowing)
-#else
-// otherwise, depends on whether (wrapped) function is (GError) throwing
-#define GI_NOEXCEPT_DECL(nonthrowing) noexcept(nonthrowing)
-#endif
 
 } // namespace gi
 

@@ -3,6 +3,7 @@
 
 #include <iostream>
 
+#if GI_CONFIG_EXCEPTIONS
 #include <boost/fiber/all.hpp>
 
 namespace GLib = gi::repository::GLib;
@@ -336,3 +337,15 @@ main(int argc, char **argv)
   if (clients > 0)
     async_demo(loop, clients);
 }
+
+#else
+int
+main(int argc, char **argv)
+{
+  (void)argc;
+  (void)argv;
+
+  std::cerr << "boost::fibers needs exceptions";
+}
+
+#endif

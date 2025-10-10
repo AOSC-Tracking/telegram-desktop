@@ -1,5 +1,15 @@
-//#define GI_INLINE 1
+#ifndef USE_GI_MODULE
+// no inline as the implementation is in another TU
+// #define GI_INLINE 1
 #include <gtk/gtk.hpp>
+#else
+// optional, but recommended if gi macros are used
+#include <gi/gi_inc.hpp>
+// we use some gtk macros
+#include <gtk/gtk.h>
+// import recursive module
+import gi.repo.gtk.rec;
+#endif
 
 // adapt to API as needed
 #if GTK_CHECK_VERSION(4, 0, 0)
@@ -17,6 +27,7 @@ namespace Gtk = gi::repository::Gtk;
 
 static GLib::MainLoop loop;
 
+#ifdef GI_CLASS_IMPL
 // based on python-gtk3 example
 // https://python-gtk-3-tutorial.readthedocs.io/en/latest/treeview.html
 
@@ -373,6 +384,7 @@ public:
                              : builder.get_object_derived<self_type>(WINID);
   }
 };
+#endif // GI_CLASS_IMPL
 
 int
 main(int argc, char **argv)
@@ -390,7 +402,10 @@ main(int argc, char **argv)
   // recommended general approach iso stack based
   // too much vmethod calling which is not safe for plain case
   Gtk::Window win;
-  if (argc == 1) {
+#ifdef GI_CLASS_IMPL
+  // silly compile/link check
+  static_assert(gi::transfer_full.value == 1, "");
+  if (argc == gi::transfer_full.value) {
     win = gi::make_ref<TreeViewFilterWindow>();
   } else {
     win = ExampleWindow::build(std::stoi(argv[1]));
@@ -405,6 +420,9 @@ main(int argc, char **argv)
 #else
   win.signal_destroy().connect([](Gtk::Widget) { loop.quit(); });
   win.show_all();
+#endif
+#else // GI_CLASS_IMPL
+  (void)win;
 #endif
 
   loop.run();

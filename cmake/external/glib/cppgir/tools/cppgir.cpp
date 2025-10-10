@@ -24,6 +24,9 @@ static const char *GI_DATA_IGNORE = "";
 static std::string GI_DEFAULT_IGNORE{GI_STRINGIFY(DEFAULT_IGNORE_FILE)};
 #endif
 
+static const char PATH_SEP = '/';
+static const std::string GIR_SUBDIR{"gir-1.0"};
+
 Log _loglevel = Log::WARNING;
 
 class Generator
@@ -134,15 +137,29 @@ die(const std::string &desc, const std::string &msg = "")
   return 1;
 }
 
+static std::string
+make_subdir(const std::string &dir, const std::string &subdir)
+{
+  auto result = dir;
+  if (subdir.size()) {
+    assert(subdir.front() != PATH_SEP);
+    if (result.back() != PATH_SEP)
+      result += PATH_SEP;
+    result += subdir;
+  }
+  return result;
+}
+
 static void
 addsplit(std::vector<std::string> &target, const std::string &src,
-    const std::string &seps = ":")
+    const std::string &suffix = "", const std::string &seps = ":")
 {
   std::vector<std::string> tmp;
   boost::split(tmp, src, boost::is_any_of(seps));
   for (auto &&d : tmp) {
-    if (d.size())
-      target.emplace_back(d);
+    if (d.size()) {
+      target.emplace_back(make_subdir(d, suffix));
+    }
   }
 }
 
@@ -213,6 +230,8 @@ main(int argc, char *argv[])
   bool use_expected{};
   bool const_method{};
   bool output_top{};
+  int call_args{-1};
+  bool basic_collection{};
   bool dump_ignore{};
   std::string gir_path;
 
@@ -249,6 +268,12 @@ main(int argc, char *argv[])
       {"output-top", "GI_OUTPUT_TOP",
           "generate convenience wrappers in output dir",
           make_parser(&output_top)},
+      {"call-args", "GI_CALL_ARGS",
+          "(if >= 0) min #optional arguments to enable a CallArgs variant",
+          make_parser(&call_args)},
+      {"basic-collection", "GI_BASIC_COLLECTION",
+          "also generate collection for input collection of basic type",
+          make_parser(&basic_collection)},
   };
 
   // optionally dump embedded ignore
@@ -291,7 +316,7 @@ main(int argc, char *argv[])
 {} [options] girs...
 
 Supported options and environment variables
-(specify 0 or 1 as variable value for a boolean switch):
+(specify 0 or 1 as environment variable value for a boolean switch):
 
 )|");
     helpdesc = fmt::format(tmpl, argv[0]);
@@ -362,8 +387,8 @@ Supported options and environment variables
 
   // system default
   {
-    const char PATH_SEP = '/';
     // gobject-introspection considers XDG_DATA_HOME first
+    // (essentially g_get_user_data_dir)
     auto xdg_data_home = wrap(getenv("XDG_DATA_HOME"));
     if (xdg_data_home.empty()) {
       xdg_data_home = wrap(getenv("HOME"));
@@ -377,18 +402,14 @@ Supported options and environment variables
     if (!xdg_data_home.empty())
       default_gir_dirs.push_back(xdg_data_home);
     // gobject-introspection uses XDG_DATA_DIRS next
+    // (essentially g_get_system_data_dirs)
     auto xdg_data_dirs = wrap(getenv("XDG_DATA_DIRS"));
     addsplit(default_gir_dirs, xdg_data_dirs);
-#ifdef DEFAULT_GIRPATH
-    // optional fallback
-    if (default_gir_dirs.empty())
-      addsplit(default_gir_dirs, GI_STRINGIFY(DEFAULT_GIRPATH));
-#endif
+    // g_get_system_data_dirs optionally falls back to fixed /usr[/local] now
+    // but that would then precede custom paths, which is a bit unfortunate
+    // so, instead, consider those only as the very last resort (below)
     for (auto &d : default_gir_dirs) {
-      if (d.back() != PATH_SEP)
-        d += PATH_SEP;
-      d += "gir-1.0";
-      girdirs.push_back(std::move(d));
+      girdirs.push_back(make_subdir(d, GIR_SUBDIR));
     }
   }
 
@@ -399,8 +420,9 @@ Supported options and environment variables
 #ifdef GI_DATA_DIR
   girdirs.push_back(GI_STRINGIFY(GI_DATA_DIR));
 #endif
-#ifdef GI_DEF_DIR
-  girdirs.push_back(GI_STRINGIFY(GI_DEF_DIR));
+#ifdef DEFAULT_GIRPATH
+  // optional (hard) fallback
+  addsplit(girdirs, GI_STRINGIFY(DEFAULT_GIRPATH), GIR_SUBDIR);
 #endif
 
   for (auto &&d : girdirs)
@@ -458,6 +480,8 @@ Supported options and environment variables
   options.expected = use_expected;
   options.const_method = const_method;
   options.output_top = output_top;
+  options.call_args = call_args;
+  options.basic_collection = basic_collection;
 
   logger(Log::INFO, "generating to directory {}", options.rootdir);
 

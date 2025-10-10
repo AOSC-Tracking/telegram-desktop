@@ -27,6 +27,7 @@ const std::string PT_ATTR("<xmlattr>");
 const std::string GI_NS("gi");
 const std::string GI_NS_INTERNAL("internal");
 const std::string GI_NS_IMPL("impl");
+const std::string GI_NS_ARGS("callargs");
 const std::string GI_SCOPE("::");
 const std::string GI_NS_SCOPED("gi::");
 const std::string GI_NS_DETAIL_SCOPED("gi::detail::");

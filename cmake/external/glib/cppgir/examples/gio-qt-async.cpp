@@ -75,8 +75,8 @@ public:
 #endif
 
 template<typename Result, typename Object>
-qt_future<Result> make_future(
-    Result (Object::*mf)(Gio::AsyncResult, GLib::Error *) CONST_METHOD)
+qt_future<Result>
+make_future(Result (Object::*mf)(Gio::AsyncResult, GLib::Error *) CONST_METHOD)
 {
   ResultExtractor<Result> f;
   f = [mf](GObject_::Object cbobj, Gio::AsyncResult result,

@@ -156,17 +156,16 @@ GeneratorBase::make_ctype(
 }
 
 void
-GeneratorBase::track_dependency(
-    std::set<std::string> &deps, const ArgInfo &info) const
+GeneratorBase::track_dependency(DepsSet &deps, const ArgInfo &info) const
 {
   auto track = [&](const std::string &cpptype, int flags) {
     // other items (e.g. enums) are included before anyway
     if (flags & TYPE_CLASS && !(flags & (TYPE_BASIC | TYPE_TYPEDEF))) {
       // always track scoped
       assert(is_qualified(cpptype));
-      deps.insert(cpptype);
+      deps.insert({"", cpptype});
       if (flags & TYPE_BOXED)
-        deps.insert(cpptype + GI_SUFFIX_REF);
+        deps.insert({"", cpptype + GI_SUFFIX_REF});
     }
   };
   if (!(info.flags & TYPE_CONTAINER)) {

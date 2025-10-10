@@ -4,6 +4,8 @@
 #include <unordered_map>
 #include <vector>
 
+// always enable assert
+#undef NDEBUG
 #include "assert.h"
 
 #define GI_CLASS_IMPL_PRAGMA
@@ -614,6 +616,34 @@ test_wrap()
     if (false)
       f(ob);
   }
+}
+
+void
+test_helpers()
+{
+  constexpr int VALUE = 5;
+  int value = VALUE * 3;
+  using nmtype = std::unique_ptr<int>;
+  struct Args
+  {
+    gi::required<nmtype> ptr;
+    gi::required<int> v;
+    int ov{};
+    int &rv;
+  };
+
+  auto rf = [&value](nmtype ptr, int v, int ov, int &rv) {
+    assert(ptr && *ptr == VALUE);
+    assert(v == VALUE * 2);
+    assert(ov == 0);
+    assert(rv == value);
+  };
+
+  auto f = [&rf](Args args) {
+    rf(std::move(args.ptr), std::move(args.v), std::move(args.ov), args.rv);
+  };
+
+  f({.ptr = std::make_unique<int>(VALUE), .v = VALUE * 2, .rv = value});
 }
 
 using gi::detail::Collection;
@@ -1820,6 +1850,29 @@ test_callback()
     // which in turn should have called the supplied callback
     assert(oi == 5);
     //
+    // destroy_notify parameter
+    bool called = false;
+    int INTVAL = 7;
+    auto ndx = [&](CppLocalCallback cb) {
+      called = true;
+      int x = INTVAL;
+      auto r = cb(x);
+      // supplied cb below is identity function
+      assert(r == x);
+      return w;
+    };
+    detail::transform_callback_wrapper<void(CppLocalCallback),
+        void(CLocalCallback_CF_CType, gpointer,
+            GDestroyNotify)>::with_transfer<false, transfer_none_t,
+        detail::arg_info<transfer_full_t, false, CLocalCallback_CF_Trait,
+            detail::args_index<0, 1, 2>>>
+        zdx{ndx};
+    auto dn = [](gpointer ud) { *(int *)ud = 0; };
+    zdx.wrapper(cb, (gpointer)&oi, dn, &zdx);
+    assert(called);
+    // destroy notify called last
+    assert(oi == 0);
+    //
     // void return case, and sized array out
     char *sx{};
     gpointer vbx{};
@@ -2698,6 +2751,7 @@ main(int argc, char *argv[])
 
   test_trait();
   test_wrap();
+  test_helpers();
   test_collection();
   test_string();
   test_exception();

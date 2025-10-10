@@ -4,7 +4,9 @@
 #include "genbase.hpp"
 
 #include <boost/algorithm/string/classification.hpp>
+#include <boost/algorithm/string/erase.hpp>
 #include <boost/algorithm/string/join.hpp>
+#include <boost/algorithm/string/replace.hpp>
 #include <boost/algorithm/string/split.hpp>
 
 #include <boost/property_tree/xml_parser.hpp>
@@ -207,7 +209,7 @@ private:
       // need to generate namespaced function members
       std::ostringstream oss_decl;
       std::ostringstream oss_impl;
-      std::set<std::string> dummy;
+      DepsSet dummy;
       for (const auto &n : node) {
         if (n.first == EL_FUNCTION) {
           process_element_function(n, oss_decl, oss_impl, "", "", dummy);
@@ -327,8 +329,8 @@ private:
       name = unreserve(name);
       // NOTE what about an inline var in C++17
       // recall that const implies static in C++
-      oss << fmt::format(
-          "const {} {}{} = {}{};", cpptype, name, namesuffix, cast, value);
+      oss << fmt::format("GI_MODULE_INLINE const {} {}{} = {}{};", cpptype,
+          name, namesuffix, cast, value);
     } catch (skip &ex) {
       oss << "// SKIP constant " << name << "; " << ex.what();
     }
@@ -337,7 +339,7 @@ private:
 
   void process_element_property(const pt::ptree::value_type &entry,
       std::ostream &out, std::ostream &impl, const std::string &klass,
-      std::set<std::string> &deps) const
+      DepsSet &deps) const
   {
     auto &node = entry.second;
 
@@ -386,7 +388,7 @@ private:
 
   void process_element_field(const pt::ptree::value_type &entry,
       std::ostream &out, std::ostream &impl, const std::string &klass,
-      const std::string &klasstype, std::set<std::string> &deps) const
+      const std::string &klasstype, DepsSet &deps) const
   {
     auto &node = entry.second;
 
@@ -465,10 +467,10 @@ private:
       instance.tinfo.ctype = fmt::format("const {}*", instance.tinfo.dtype);
       // define helper function
       auto funcname = "_field_" + name + "_get";
-      auto funcdef =
-          fmt::format("static {} {} ({} {}) {{ return ({}) obj->{}; }}",
-              param.tinfo.ctype, funcname, instance.tinfo.ctype, instance.name,
-              param.tinfo.ctype, name);
+      auto funcdef = fmt::format(
+          "GI_MODULE_STATIC_OR_INLINE {} {} ({} {}) {{ return ({}) obj->{}; }}",
+          param.tinfo.ctype, funcname, instance.tinfo.ctype, instance.name,
+          param.tinfo.ctype, name);
       make_wrapper(funcname, funcdef, {param, instance});
     }
 
@@ -480,10 +482,11 @@ private:
       instance.tinfo.ctype = instance.tinfo.dtype + "*";
       // define helper function
       auto funcname = "_field_" + name + "_set";
-      auto funcdef = fmt::format("static void {} ({} {}, {} {}) {{ "
-                                 "obj->{} = (decltype(obj->{})) {}; }}",
-          funcname, instance.tinfo.ctype, instance.name, param.tinfo.ctype,
-          param.name, name, name, param.name);
+      auto funcdef =
+          fmt::format("GI_MODULE_STATIC_OR_INLINE void {} ({} {}, {} {}) {{ "
+                      "obj->{} = (decltype(obj->{})) {}; }}",
+              funcname, instance.tinfo.ctype, instance.name, param.tinfo.ctype,
+              param.name, name, name, param.name);
       // void return
       Parameter vparam;
       parse_typeinfo(GIR_VOID, vparam.tinfo);
@@ -494,11 +497,11 @@ private:
 
   FunctionDefinition process_element_function(
       const pt::ptree::value_type &entry, std::ostream &out, std::ostream &impl,
-      const std::string &klass, const std::string &klasstype,
-      std::set<std::string> &deps) const
+      const std::string &klass, const std::string &klasstype, DepsSet &deps,
+      std::ostream *call_args = nullptr) const
   {
-    return ::process_element_function(
-        ctx, ns, entry, out, impl, klass, klasstype, deps, allow_deprecated_);
+    return ::process_element_function(ctx, ns, entry, out, impl, klass,
+        klasstype, deps, call_args, allow_deprecated_);
   }
 
   // unqualify (current ns qualifed) type
@@ -533,14 +536,34 @@ private:
                : EMPTY;
   }
 
-  std::string make_dep_declare(const std::set<std::string> &deps) const
+  std::string make_dep_declare(const DepsSet &deps, bool only_ns = false) const
   {
     std::ostringstream oss;
-    for (const auto &d : deps) {
+    NamespaceGuard nsg(oss);
+    std::string last_ns;
+    for (const auto &de : deps) {
+      if (last_ns != de.first) {
+        oss << std::endl;
+        nsg.pop();
+        last_ns = de.first;
+        if (!last_ns.empty())
+          nsg.push(last_ns, false);
+      }
+      if (only_ns && last_ns.empty())
+        continue;
+      const auto &d = de.second;
+      if (d.size() > 7 && (d[6] == ' ' || d[7] == ' ')) {
+        // there is a space in there, so it is not just a type name
+        // but rather struct/class XXX (a CallArgs case)
+        oss << d << ';' << std::endl;
+        continue;
+      }
       auto c = unqualify(d);
       if (!is_qualified(c))
         oss << "class " << c << ";" << std::endl;
     }
+    // apparently guard destructor runs too late
+    nsg.pop();
     return oss.str();
   }
 
@@ -864,7 +887,7 @@ constexpr static TypeInitData factory()
 
   std::vector<TypeInfo> record_collect_interfaces(
       const pt::ptree::value_type &entry, const TypeInfo &current,
-      const TypeInfo &parent, std::set<std::string> &deps) const
+      const TypeInfo &parent, DepsSet &deps) const
   {
     auto &repo = ctx.repo;
     auto &node = entry.second;
@@ -914,7 +937,7 @@ constexpr static TypeInitData factory()
         logger(Log::WARNING, "{} implements unknown interface {}", name, n);
         continue;
       }
-      deps.insert(itf.cpptype);
+      deps.insert({"", itf.cpptype});
       interfaces.push_back(itf);
     }
 
@@ -923,7 +946,8 @@ constexpr static TypeInitData factory()
 
   // returns (decl header name, impl header name)
   std::tuple<std::string, std::string> process_element_record(
-      const pt::ptree::value_type &entry, bool onlyverify) const
+      const pt::ptree::value_type &entry, bool onlyverify,
+      std::ostream *call_args = nullptr) const
   {
     auto &kind = entry.first;
     auto &node = entry.second;
@@ -983,7 +1007,7 @@ constexpr static TypeInitData factory()
     std::ostringstream oss_decl, oss_class_decl;
     std::ostringstream oss_impl, oss_class_impl;
     VirtualMethods vmethods;
-    std::set<std::string> deps;
+    DepsSet deps;
     for (const auto &n : node) {
       auto el = n.first;
       int introspectable = get_attribute<int>(n.second, AT_INTROSPECTABLE, 1);
@@ -993,12 +1017,12 @@ constexpr static TypeInitData factory()
         if (el == EL_FUNCTION || el == EL_CONSTRUCTOR || el == EL_METHOD ||
             el == EL_SIGNAL) {
           process_element_function(
-              n, oss_decl, oss_impl, qnamebase, name, deps);
+              n, oss_decl, oss_impl, qnamebase, name, deps, call_args);
         } else if (el == EL_VIRTUAL_METHOD && introspectable &&
                    ctx.options.classimpl) {
           // placeholder replaced suitably later on
-          auto def = process_element_function(
-              n, oss_class_decl, oss_class_impl, CLASS_PLACEHOLDER, name, deps);
+          auto def = process_element_function(n, oss_class_decl, oss_class_impl,
+              CLASS_PLACEHOLDER, name, deps, call_args);
           if (def.name.size())
             vmethods.push_back({def.name, def});
         } else if (el == EL_FIELD && introspectable) {
@@ -1018,7 +1042,13 @@ constexpr static TypeInitData factory()
     File out_impl(ns, fname_impl, false);
 
     // a superclass needs full declaration (not only forward declaration)
-    out_decl << make_dep_include(parent.girname);
+    // skip include for GObject, which would lead to object.hpp,
+    // which is not generated in GObject namespace, but rather provided by gi
+    // so it actually references gi/object.hpp, which is only works if gi/
+    // is part of the include path, which is a bit confusing/messy
+    // (as it is/should always be referenced by gi/xyz, e.g. gi/gi.hpp)
+    if (parent.girname != GIR_GOBJECT)
+      out_decl << make_dep_include(parent.girname);
     out_decl << std::endl;
 
     // implemented interfaces are also dependency
@@ -1031,7 +1061,7 @@ constexpr static TypeInitData factory()
 
     // all declarations are included prior to implementation
     // forward class declarations in declaration
-    deps.erase(current.cpptype);
+    deps.erase({"", current.cpptype});
     out_decl << make_dep_declare(deps);
     out_decl << std::endl;
 
@@ -1329,6 +1359,7 @@ public:
     auto h_callbacks_impl = "_callbacks_impl.hpp";
     auto h_functions = "_functions.hpp";
     auto h_functions_impl = "_functions_impl.hpp";
+    auto h_call_args = "_callargs.hpp";
 
     File enums(ns, h_enums, false);
     File flags(ns, h_flags, false);
@@ -1337,6 +1368,12 @@ public:
     File callbacks_impl(ns, h_callbacks_impl);
     File functions(ns, h_functions);
     File functions_impl(ns, h_functions_impl);
+
+    // setup CallArgs handling
+    // the definition of a CallArgs requires complete types for fields
+    // so it will have to be among the last header file, collected as we go
+    // actual file handled below
+    std::ostringstream call_args;
 
     entry_processor proc_pass_1 = [&](const pt::ptree::value_type &n) {
       auto &el = n.first;
@@ -1355,7 +1392,7 @@ public:
       auto &el = n.first;
       if ((el == EL_RECORD || el == EL_OBJECT || el == EL_INTERFACE) &&
           visit_ok(n)) {
-        process_element_record(n, true);
+        process_element_record(n, true, &call_args);
       }
     };
     process_entries(tree_, proc_pass_class);
@@ -1363,7 +1400,7 @@ public:
     // so the known classes will be declared/defined
     // check what callback typedefs that allows for
     // check class types we can handle and will provide a definition for
-    std::set<std::string> cb_deps;
+    DepsSet cb_deps;
     std::ostringstream cb_decl;
     entry_processor proc_pass_callbacks = [&](const pt::ptree::value_type &n) {
       auto &el = n.first;
@@ -1382,20 +1419,40 @@ public:
     // now we know all supported types and supported callbacks
     // pass over class types again and fill in
     std::set<std::pair<std::string, std::string>> includes;
-    std::set<std::string> dummy;
+    DepsSet functions_deps;
+    std::ostringstream functions_decl;
     entry_processor proc_pass_2 = [&](const pt::ptree::value_type &n) {
       auto &el = n.first;
       if ((el == EL_RECORD || el == EL_OBJECT || el == EL_INTERFACE) &&
           visit_ok(n)) {
-        auto &&res = process_element_record(n, false);
+        auto &&res = process_element_record(n, false, &call_args);
         includes.insert({std::get<0>(res), std::get<1>(res)});
       } else if (el == EL_FUNCTION && visit_ok(n)) {
-        process_element_function(n, functions, functions_impl, "", "", dummy);
+        // all types known now, so include CallArgs directly
+        process_element_function(n, functions_decl, functions_impl, "", "",
+            functions_deps, &call_args);
       } else if ((el == EL_ENUM || el == EL_FLAGS) && visit_ok(n)) {
         process_element_enum(n, functions, &functions_impl);
       }
     };
     process_entries(tree_, proc_pass_2);
+
+    // write functions
+    // need to declare CallArgs deps first
+    // only those, as the others are already all declared by this stage
+    if (auto fd = make_dep_declare(functions_deps, true); fd.size())
+      functions << fd << std::endl;
+    functions << functions_decl.str();
+
+    // generate callargs
+    if (call_args.tellp()) {
+      File ca(ns, h_call_args);
+      NamespaceGuard nsg_decl(ca);
+      nsg_decl.push(GI_NS_ARGS, false);
+      ca << call_args.str();
+    } else {
+      h_call_args = nullptr;
+    }
 
     auto add_stub_include = [this](const std::string &suffix) {
       auto fpath = (fs::path(tolower(ns)) / (tolower(ns) + suffix)).native();
@@ -1415,45 +1472,63 @@ public:
     };
 
     auto h_ns = tolower(ns) + ".hpp";
+    auto h_ns_inc = tolower(ns) + "_inc.hpp";
     auto h_ns_impl = tolower(ns) + "_impl.hpp";
 
     // generate overall includes
-    File nsh(ns, h_ns, false);
+    File nsh_inc(ns, h_ns_inc, false);
     // enable dl load coding
     if (h_libs && *h_libs) {
-      nsh << "#ifndef GI_DL" << std::endl;
-      nsh << "#define GI_DL 1" << std::endl;
-      nsh << "#endif" << std::endl;
+      nsh_inc << "#ifndef GI_DL" << std::endl;
+      nsh_inc << "#define GI_DL 1" << std::endl;
+      nsh_inc << "#endif" << std::endl;
     }
     if (ctx.options.expected) {
-      nsh << "#ifndef GI_EXPECTED" << std::endl;
-      nsh << "#define GI_EXPECTED 1" << std::endl;
-      nsh << "#endif" << std::endl;
+      nsh_inc << "#ifndef GI_EXPECTED" << std::endl;
+      nsh_inc << "#define GI_EXPECTED 1" << std::endl;
+      nsh_inc << "#endif" << std::endl;
     }
     if (ctx.options.const_method) {
-      nsh << "#ifndef GI_CONST_METHOD" << std::endl;
-      nsh << "#define GI_CONST_METHOD 1" << std::endl;
-      nsh << "#endif" << std::endl;
+      nsh_inc << "#ifndef GI_CONST_METHOD" << std::endl;
+      nsh_inc << "#define GI_CONST_METHOD 1" << std::endl;
+      nsh_inc << "#endif" << std::endl;
     }
     if (ctx.options.classimpl) {
-      nsh << "#ifndef GI_CLASS_IMPL" << std::endl;
-      nsh << "#define GI_CLASS_IMPL 1" << std::endl;
-      nsh << "#endif" << std::endl;
+      nsh_inc << "#ifndef GI_CLASS_IMPL" << std::endl;
+      nsh_inc << "#define GI_CLASS_IMPL 1" << std::endl;
+      nsh_inc << "#endif" << std::endl;
     }
-    nsh << std::endl;
-    nsh << make_include("gi/gi.hpp", false) << std::endl;
-    nsh << std::endl;
-    // include gi deps
-    for (auto &&d : dep_headers)
-      nsh << make_include(d, false) << std::endl;
-    nsh << std::endl;
+    if (ctx.options.call_args >= 0) {
+      nsh_inc << "#ifndef GI_CALL_ARGS" << std::endl;
+      nsh_inc << "#define GI_CALL_ARGS " << ctx.options.call_args << std::endl;
+      nsh_inc << "#endif" << std::endl;
+    }
+    if (ctx.options.basic_collection) {
+      nsh_inc << "#ifndef GI_BASIC_COLLECTION" << std::endl;
+      nsh_inc << "#define GI_BASIC_COLLECTION 1" << std::endl;
+      nsh_inc << "#endif" << std::endl;
+    }
+    nsh_inc << std::endl;
+    nsh_inc << make_include("gi/gi_inc.hpp", false) << std::endl;
+    nsh_inc << std::endl;
+    // preserve some behaviour for standard non-module code
+    nsh_inc << "#ifndef GI_MODULE_IN_INTERFACE" << std::endl;
+    nsh_inc << make_include("gi/gi.hpp", false) << std::endl;
+    nsh_inc << "#endif" << std::endl;
+    nsh_inc << std::endl;
+    // include gi deps; inc version
+    for (auto &&d : dep_headers) {
+      auto hd = boost::algorithm::replace_last_copy(d, ".hpp", "_inc.hpp");
+      nsh_inc << make_include(hd, false) << std::endl;
+    }
+    nsh_inc << std::endl;
     // package includes
     // in some cases, these are totally missing
     // so the headers will have to be supplied by extra header override
     // repo supplied
-    nsh << add_stub_include("_setup_pre_def.hpp") << std::endl;
+    nsh_inc << add_stub_include("_setup_pre_def.hpp") << std::endl;
     // user supplied
-    nsh << add_stub_include("_setup_pre.hpp") << std::endl;
+    nsh_inc << add_stub_include("_setup_pre.hpp") << std::endl;
     // include the above before the includes
     // (so as to allow tweaking some defines in the overrides)
     auto node = root_.get_child(EL_REPOSITORY);
@@ -1468,13 +1543,30 @@ public:
         if (pos != name.npos)
           name = name.substr(pos + 1);
       }
-      nsh << make_include(name, false) << std::endl;
+      nsh_inc << make_include(name, false) << std::endl;
     }
     // we may also need to tweak or fix things after usual includes
     // repo supplied
-    nsh << add_stub_include("_setup_post_def.hpp") << std::endl;
+    nsh_inc << add_stub_include("_setup_post_def.hpp") << std::endl;
     // user supplied
-    nsh << add_stub_include("_setup_post.hpp") << std::endl;
+    nsh_inc << add_stub_include("_setup_post.hpp") << std::endl;
+    nsh_inc << std::endl;
+
+    File nsh(ns, h_ns, false);
+    // include above part
+    nsh << make_include(h_ns_inc, true) << std::endl;
+    nsh << std::endl;
+    // gi deps; full version
+    nsh << "#ifndef GI_MODULE_NO_REC_INC" << std::endl;
+    for (auto &&d : dep_headers)
+      nsh << make_include(d, false) << std::endl;
+    nsh << "#endif" << std::endl;
+    // allow to tweak things (e.g. template specialization)
+    // prior to generated code declaration/definition
+    // repo supplied
+    nsh << add_stub_include("_extra_pre_def.hpp") << std::endl;
+    // user supplied
+    nsh << add_stub_include("_extra_pre.hpp") << std::endl;
     nsh << std::endl;
 
     // guard begin
@@ -1492,6 +1584,9 @@ public:
     nsh << std::endl;
     // global functions when we have seen all else
     nsh << make_include(h_functions, true) << std::endl;
+    // all collected CallArgs
+    if (h_call_args)
+      nsh << make_include(h_call_args, true) << std::endl;
     nsh << std::endl;
     // allow for override/supplements
     // repo supplied
@@ -1538,6 +1633,90 @@ public:
     auto cpp_ns = tolower(ns) + ".cpp";
     File cpp(ns, cpp_ns, false, false);
     cpp << make_include(h_ns_impl, true) << std::endl;
+
+    // NOTE it is not possible to provide (core) gi as a module,
+    // as it also provides a set of macros, and contains some forward
+    // declarations (ParamFlags, SignalFlags) which are only fully defined
+    // by generated code
+    // however, symbol/definitions are attached to module, so a later one
+    // can not define another one forward declared by another module
+    // in essence; modules break forward declarations
+    // so, 2 variants are created;
+    // + a separate one per namespace, but the "lowest" one is gobject,
+    //   which then also includes glib and gi
+    // + a recursive one, a module that combines all dependency ns,
+    //   so a large object and precompiled result
+    auto nsl = tolower(ns);
+    std::string glib_ns = "glib";
+    std::string gobject_ns = "gobject";
+    if (nsl != glib_ns) {
+      // lowest gobject is actually recursive
+      std::string modprefix{"gi.repo."};
+      bool is_gobject = nsl == gobject_ns;
+      if (!is_gobject) {
+        // module form; separate
+        auto cppm_ns = cpp_ns + "m";
+        File cppm(ns, cppm_ns, false, false);
+        auto module_templ = R"|(
+module;
+#define GI_INLINE 1
+#define GI_MODULE_IN_INTERFACE 1
+{0}
+export module {1};
+{2}
+GI_MODULE_BEGIN
+#define GI_MODULE_NO_REC_INC 1
+export {{
+{3}
+}}
+GI_MODULE_END
+)|";
+        auto modname = modprefix + nsl;
+        std::ostringstream moddeps;
+        bool got_gobject = false;
+        for (auto &&d : dep_headers) {
+          std::string path = fs::path(d).filename();
+          boost::algorithm::erase_all(path, ".hpp");
+          // sigh, glib/gobject collapsed along with core
+          // replace references in non-duplicate way
+          if (path == glib_ns)
+            path = gobject_ns;
+          if (path == gobject_ns) {
+            if (got_gobject) {
+              continue;
+            } else {
+              got_gobject = true;
+            }
+          }
+          moddeps << "import " << modprefix << path << ';' << std::endl;
+        }
+        cppm << fmt::format(module_templ, make_include(h_ns_inc, true), modname,
+            moddeps.str(), make_include(h_ns, true));
+      }
+
+      { // module form; recursive
+        auto cppm_ns = (is_gobject ? cpp_ns : nsl + "_rec.cpp") + "m";
+        File cppm(ns, cppm_ns, false, false);
+        auto module_templ = R"|(
+module;
+#define GI_INLINE 1
+#define GI_MODULE_IN_INTERFACE 1
+{0}
+export module {1};
+GI_MODULE_BEGIN
+#include "gi/gi.hpp"
+export {{
+{2}
+}}
+GI_MODULE_END
+)|";
+        auto modname = modprefix + nsl;
+        if (!is_gobject)
+          modname += ".rec";
+        cppm << fmt::format(module_templ, make_include(h_ns_inc, true), modname,
+            make_include(h_ns, true));
+      }
+    }
 
     // optional build tool convenience
     // generate refering files in rootdir

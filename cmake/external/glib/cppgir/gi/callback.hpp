@@ -5,26 +5,11 @@
 #include "exception.hpp"
 #include "wrap.hpp"
 
-#include <functional>
-#include <tuple>
-
+GI_MODULE_EXPORT
 namespace gi
 {
 namespace detail
 {
-inline std::string
-exception_desc(const std::exception &e)
-{
-  auto desc = e.what();
-  return desc ? desc : typeid(e).name();
-}
-
-inline std::string
-exception_desc(...)
-{
-  return "[unknown]";
-}
-
 #if GI_CONFIG_EXCEPTIONS
 
 inline ::GError **
@@ -607,13 +592,6 @@ struct cb_arg_handler<CppArg,
   }
 };
 
-#define GI_CB_ARG_CALLBACK_CUSTOM(Type, CF_CType, CF_handler) \
-  struct Type \
-  { \
-    using handler_cb_type = CF_CType; \
-    static constexpr auto handler = CF_handler; \
-  }
-
 // handles callback argument
 // (as argument in anther callback, most likely a virtual method)
 template<typename CppArg>
@@ -629,10 +607,8 @@ struct cb_arg_handler<CppArg,
     // setup shared pointer to userdata with destroy as Deleter
     auto sp = destroy ? std::shared_ptr<void>(userdata, destroy) : nullptr;
     // keep userdata/destroy alive as long as lambda handler
-    auto h = [cb, userdata, destroy = std::move(destroy)](
+    auto h = [cb, userdata, sp = std::move(sp)](
                  auto &&...args) -> decltype(auto) {
-      // avoid unused warning
-      (void)destroy;
       // original callback type CType should match deduced handler_cb_tpe
       // but let's make sure as usual
       return ct::handler(std::forward<decltype(args)>(args)...,

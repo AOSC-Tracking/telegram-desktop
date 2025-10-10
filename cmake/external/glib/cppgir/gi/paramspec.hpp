@@ -4,6 +4,7 @@
 #include "objectbase.hpp"
 #include "value.hpp"
 
+GI_MODULE_EXPORT
 namespace gi
 {
 // slightly nasty; will be generated

@@ -4,6 +4,7 @@
 #include "base.hpp"
 #include "string.hpp"
 
+GI_MODULE_EXPORT
 namespace gi
 {
 // object/wrapper conversion
@@ -196,7 +197,6 @@ unwrap(const std::string &v, const transfer_none_t &)
 {
   return v.c_str();
 }
-
 
 inline const gchar *
 unwrap(const detail::optional_string &v, const transfer_none_t &)

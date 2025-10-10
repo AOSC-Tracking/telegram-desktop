@@ -98,15 +98,20 @@ public:
   }
 };
 
-void on_firstname_changed(GObject_::Object, GObject_::ParamSpec)
+void
+on_firstname_changed(GObject_::Object, GObject_::ParamSpec)
 {
   std::cout << "- firstname changed!" << std::endl;
 }
-void on_lastname_changed(GObject_::Object, GObject_::ParamSpec)
+
+void
+on_lastname_changed(GObject_::Object, GObject_::ParamSpec)
 {
   std::cout << "- lastname changed!" << std::endl;
 }
-void on_age_changed(GObject_::Object, GObject_::ParamSpec)
+
+void
+on_age_changed(GObject_::Object, GObject_::ParamSpec)
 {
   std::cout << "- age changed!" << std::endl;
 }

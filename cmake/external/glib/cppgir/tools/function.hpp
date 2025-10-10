@@ -116,13 +116,13 @@ std::string make_arg_traits(
 FunctionDefinition process_element_function(GeneratorContext &_ctx,
     const std::string _ns, const pt::ptree::value_type &entry,
     std::ostream &out, std::ostream &impl, const std::string &klass,
-    const std::string &klasstype, std::set<std::string> &deps,
-    bool allow_deprecated);
+    const std::string &klasstype, GeneratorBase::DepsSet &deps,
+    std::ostream *call_args, bool allow_deprecated);
 
 FunctionDefinition process_element_function(GeneratorContext &_ctx,
     const std::string _ns, const ElementFunction &func,
     const std::vector<Parameter> &params, std::ostream &out, std::ostream &impl,
     const std::string &klass, const std::string &klasstype,
-    std::set<std::string> &deps);
+    GeneratorBase::DepsSet &deps);
 
 #endif // FUNCTION_HPP

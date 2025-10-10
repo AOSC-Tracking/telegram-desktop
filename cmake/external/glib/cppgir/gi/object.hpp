@@ -8,6 +8,7 @@
 #include "paramspec.hpp"
 #include "value.hpp"
 
+GI_MODULE_EXPORT
 namespace gi
 {
 namespace detail

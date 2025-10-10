@@ -1,12 +1,9 @@
 #ifndef GI_OBJECTBASE_HPP
 #define GI_OBJECTBASE_HPP
 
-#include <type_traits>
-#include <utility>
+#include "gi_inc.hpp"
 
-#include <glib-object.h>
-#include <glib.h>
-
+GI_MODULE_EXPORT
 namespace gi
 {
 namespace detail

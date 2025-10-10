@@ -1,53 +1,37 @@
 #ifndef GI_BASE_HPP
 #define GI_BASE_HPP
 
-// attempt to auto-discover exception support:
-#ifndef GI_CONFIG_EXCEPTIONS
-#if defined(_MSC_VER)
-#include <cstddef> // for _HAS_EXCEPTIONS
-#endif
-#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || (_HAS_EXCEPTIONS)
-#define GI_CONFIG_EXCEPTIONS 1
-#else
-#define GI_CONFIG_EXCEPTIONS 0
-#endif
-#endif
-
-// lots of declarations might be attributed as deprecated,
-// but not so annotated, so let's avoid warning floods
-// also handle complaints about const qualified casts
-// (due to silly const qualified scalar parameters)
-#define GI_DISABLE_DEPRECATED_WARN_BEGIN \
-  _Pragma("GCC diagnostic push") \
-      _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"") \
-          _Pragma("GCC diagnostic push") \
-              _Pragma("GCC diagnostic ignored \"-Wignored-qualifiers\"")
-
-#define GI_DISABLE_DEPRECATED_WARN_END \
-  _Pragma("GCC diagnostic pop") _Pragma("GCC diagnostic pop")
+#include "gi_inc.hpp"
 
 #include "boxed.hpp"
 #include "objectbase.hpp"
 
-#include <cstddef>
-#include <functional>
-#include <string>
-#include <type_traits>
-// required for generated code
-#include <tuple>
-#if GI_CONFIG_EXCEPTIONS
-#include <exception>
+// un-inline some glib parts
+// (otherwise they have internal linkage and not usable in non-TU-local context)
+#ifdef GI_MODULE_IN_INTERFACE
+#ifdef g_strdup
+#undef g_strdup
+#endif
 #endif
 
-#if GI_DL
-#include <dlfcn.h>
-#include <vector>
-#endif
-
+GI_MODULE_EXPORT
 namespace gi
 {
 namespace detail
 {
+inline std::string
+exception_desc(const std::exception &e)
+{
+  auto desc = e.what();
+  return desc ? desc : typeid(e).name();
+}
+
+inline std::string
+exception_desc(...)
+{
+  return "[unknown]";
+}
+
 template<typename E>
 [[noreturn]] inline void
 try_throw(E &&e)
@@ -55,7 +39,7 @@ try_throw(E &&e)
 #if GI_CONFIG_EXCEPTIONS
   throw std::forward<E>(e);
 #else
-  (void)e;
+  g_critical("no throw exception; %s", exception_desc(e).c_str());
   abort();
 #endif
 }
@@ -161,7 +145,8 @@ struct is_type_complete : public std::false_type
 {};
 
 template<typename T>
-struct is_type_complete<T, typename if_valid_type<decltype(sizeof(T))>::type>
+struct is_type_complete<T, typename if_valid_type<decltype(sizeof(
+                               typename std::decay<T>::type))>::type>
     : public std::true_type
 {};
 
@@ -399,10 +384,12 @@ struct transfer_container_t : public transfer_t
   constexpr transfer_container_t() : transfer_t(2) {}
 };
 
-const constexpr transfer_t transfer_dummy = transfer_t();
-const constexpr transfer_none_t transfer_none = transfer_none_t();
-const constexpr transfer_full_t transfer_full = transfer_full_t();
-const constexpr transfer_container_t transfer_container =
+GI_MODULE_INLINE const constexpr transfer_t transfer_dummy = transfer_t();
+GI_MODULE_INLINE const constexpr transfer_none_t transfer_none =
+    transfer_none_t();
+GI_MODULE_INLINE const constexpr transfer_full_t transfer_full =
+    transfer_full_t();
+GI_MODULE_INLINE const constexpr transfer_container_t transfer_container =
     transfer_container_t();
 
 template<typename Transfer>
@@ -444,10 +431,11 @@ struct scope_notified_t : public scope_t
   constexpr scope_notified_t() : scope_t(2) {}
 };
 
-const constexpr scope_t scope_dummy = scope_t();
-const constexpr scope_call_t scope_call = scope_call_t();
-const constexpr scope_async_t scope_async = scope_async_t();
-const constexpr scope_notified_t scope_notified = scope_notified_t();
+GI_MODULE_INLINE const constexpr scope_t scope_dummy = scope_t();
+GI_MODULE_INLINE const constexpr scope_call_t scope_call = scope_call_t();
+GI_MODULE_INLINE const constexpr scope_async_t scope_async = scope_async_t();
+GI_MODULE_INLINE const constexpr scope_notified_t scope_notified =
+    scope_notified_t();
 
 // (dummy) helper tag to aid in overload resolution
 template<typename Interface>
@@ -455,6 +443,37 @@ struct interface_tag
 {
   typedef Interface type;
 };
+
+// CallArgs minimal helper type
+// only provide what is needed
+// not intended for general use, even though not in internal namespace
+template<typename T>
+class required
+{
+  T data_;
+
+public:
+  constexpr required(T v) : data_(std::move(v)) {}
+  constexpr operator T &() &noexcept { return data_; }
+  constexpr operator T &&() &&noexcept { return std::move(data_); }
+  constexpr T &value() &noexcept { return data_; }
+  constexpr T &&value() &&noexcept { return std::move(data_); }
+};
+
+// helper tag type to aid in overload resolution of CallArgs
+// this is used as the first argument of a (non-plain) signature variant
+// (since it may otherwise have only 1 struct argument, like the plain variant)
+template<typename... CA_TAG>
+using ca = std::tuple<CA_TAG...>;
+
+struct ca_tag
+{};
+struct ca_in_tag : public ca_tag
+{};
+struct ca_bc_tag : public ca_tag
+{};
+// convenience abbreviation
+using ca_in = ca<ca_in_tag>;
 
 #if GI_DL
 namespace detail

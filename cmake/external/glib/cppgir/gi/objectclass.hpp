@@ -30,10 +30,7 @@
 #include "callback.hpp"
 #include "object.hpp"
 
-#include <memory>
-#include <typeinfo>
-#include <vector>
-
+GI_MODULE_EXPORT
 namespace gi
 {
 // slightly nasty; will be generated
@@ -250,10 +247,6 @@ forward_make_type_init_data()
   return (gpointer)make_type_init_data<ClassDef, SubClass>();
 }
 
-// helper macro to obtain data from factory (if provided)
-#define GI_MEMBER_INIT_DATA(ClassType, factory) \
-  (factory ? ((ClassType(*)())(factory))() : ClassType());
-
 // in generated code;
 // each class/interface member (function) is assocated with a single type
 // base class for tagged boolean member types
@@ -283,51 +276,7 @@ struct Combine : public Spec, public Default
 template<typename SubClass, typename Default>
 using DefinitionData = Combine<typename SubClass::DefinitionData, Default>;
 
-// conflicts might arise between interfaces and/or class
-// generate some dummy check types to force failure
-#define GI_MEMBER_CHECK_CONFLICT(member) _check_member_conflict_##member
-
-// generated code tries to detect a defined member in SubClass as follows
-#define GI_MEMBER_DEFAULT_HAS_DEFINITION(BaseDef, member) \
-  template<typename SubClass> \
-  constexpr static bool has_definition(const member##_t *, const SubClass *) \
-  { \
-    /* the use of conflict type check is only to trigger a compiler error \
-     * if there is such a conflict \
-     * in that case, manual specification of definitions are needed \
-     * (which will then avoid this code path instantiation) \
-     * (type should never be void, so merely serves as dummy check) \
-     */ \
-    return std::is_void<typename SubClass::GI_MEMBER_CHECK_CONFLICT( \
-               member)>::value || \
-           !std::is_same<decltype(&BaseDef::member##_), \
-               decltype(&SubClass::member##_)>::value; \
-  }
-
-// helper macro used in generated code
-#define GI_MEMBER_DEFINE(BaseDef, member) \
-  struct member##_tag; \
-  using member##_t = detail::member_type<member##_tag>; \
-  member##_t member; \
-  GI_MEMBER_DEFAULT_HAS_DEFINITION(BaseDef, member)
-
-// the automated way might/will fail in case of overload resolution failure
-// (due to member conflicts with interfaces)
-// so the following can be used to specify definition situation
-// should be used in an inner struct DefinitionData in the SubClass
-#define GI_DEFINES_MEMBER(BaseDef, member, _defines) \
-  template<typename SubClass> \
-  constexpr static bool defines( \
-      const BaseDef::TypeInitData::member##_t *, const SubClass *) \
-  { \
-    return _defines; \
-  }
-
-// uses function overload on all of the above to determine
-// if member of DefData is defined/overridden in SubClass
-// (and should then be registered in the class/interface struct)
-#define GI_MEMBER_HAS_DEFINITION(SubClass, DefData, member) \
-  DefData::defines((member##_t *)(nullptr), (SubClass *)(nullptr))
+// see objectclass macros in gi_inc for how the above is used
 
 //// class setup ////
 
@@ -675,7 +624,9 @@ private:
     // avoid inadvertent sink
     InitData id{0};
     id.instance = gi::wrap((GObject *)g_object_ref(instance), transfer_full);
+#if GI_CONFIG_EXCEPTIONS
     try {
+#endif
       auto self = new SubClass(id);
       // sanity check on ref
       if (floating && !g_object_is_floating(instance)) {
@@ -693,11 +644,13 @@ private:
       // self->setup is essentially run below at bottom of constructor chain)
       // this will then assign ownership of self to instance
       g_assert(self->gobj_() == (gpointer)instance);
+#if GI_CONFIG_EXCEPTIONS
     } catch (const std::exception &exc) {
       // bad things will happen
       report_exception(exc);
       g_critical("constructor failed in instance_init");
     }
+#endif
 
     return instance;
   }

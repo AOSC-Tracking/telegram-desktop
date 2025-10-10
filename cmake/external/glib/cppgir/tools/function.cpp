@@ -5,6 +5,7 @@
 #include <boost/range/iterator.hpp>
 
 #include <map>
+#include <tuple>
 
 namespace
 { // anonymous
@@ -26,7 +27,9 @@ struct FunctionGenerator : public GeneratorBase
   // errors collected along the way (trigger abort)
   std::vector<std::string> errors;
   // collected dependencies
-  std::set<std::string> &deps;
+  DepsSet &deps;
+  // collected CallArgs definitions
+  std::ostream *call_args_decl{};
   // tweak debug level upon error
   bool ignored = false;
   bool introspectable = true;
@@ -51,12 +54,22 @@ struct FunctionGenerator : public GeneratorBase
     ALT = DISCARD
   };
   std::set<opt_nullable> do_nullable = {opt_nullable::DEFAULT};
+  // basic value container
+  enum class opt_basic_container {
+    PASS,
+    COLLECTION,
+    DEFAULT = PASS,
+    ALT = COLLECTION
+  };
+  // default is fixed and always processed
+  std::set<opt_basic_container> do_basic_container;
 
   struct Options
   {
     opt_except except{};
     opt_output output{};
     opt_nullable nullable{};
+    opt_basic_container basic_container{};
     Options(opt_except _except, opt_output _output, opt_nullable _nullable)
         : except(_except), output(_output), nullable(_nullable)
     {}
@@ -75,6 +88,9 @@ struct FunctionGenerator : public GeneratorBase
   std::map<int, Parameter> paraminfo;
   // param numbers referenced by some other parameter
   std::set<int> referenced;
+  // defined/declared CallArgs
+  // (various exception variants may re-use the same)
+  std::set<std::string> call_args_types;
   // collects generated declaration and implementation
   std::ostringstream oss_decl, oss_impl;
 
@@ -101,10 +117,11 @@ struct FunctionGenerator : public GeneratorBase
 public:
   FunctionGenerator(GeneratorContext &_ctx, const std::string _ns,
       const ElementFunction &_func, const std::string &_klass,
-      const std::string &_klasstype, std::set<std::string> &_deps,
+      const std::string &_klasstype, DepsSet &_deps, std::ostream *_call_args,
       bool _allow_deprecated = false)
       : GeneratorBase(_ctx, _ns), func(_func), kind(func.kind), klass(_klass),
-        klasstype(_klasstype), deps(_deps), allow_deprecated(_allow_deprecated)
+        klasstype(_klasstype), deps(_deps), call_args_decl(_call_args),
+        allow_deprecated(_allow_deprecated)
   {
     assert(func.name.size());
     assert(func.kind.size());
@@ -505,7 +522,8 @@ public:
         // annotations are often wrong with low-level buffers
         // so stick to simple interface below in that case
         // (which also works in case of bogus in/out mixup)
-        if (!basicvalue) {
+        if (!basicvalue ||
+            options.basic_container == opt_basic_container::COLLECTION) {
           if (callee)
             def.arg_traits[param_no].args = {param_no, len};
           callexps.emplace_back(len, fmt::format("{}._size()", pname));
@@ -519,6 +537,8 @@ public:
           callexps.emplace_back(param_no, pname);
           def.cpp_decl[len] = linfo.tinfo.cpptype + " " + linfo.name;
           callexps.emplace_back(len, linfo.name);
+          // mark that the alternative above is a possibility
+          do_basic_container.insert(opt_basic_container::COLLECTION);
         }
       }
       if (coltype.size() && coleltype.size()) {
@@ -1046,8 +1066,158 @@ public:
     return boost::algorithm::join(temp, ", ");
   }
 
+  struct DeclData
+  {
+    std::string cpptype;
+    std::string varname;
+    bool is_ref{};
+    bool has_init{};
+  };
+
+  auto parse_var_name(const std::string &decl)
+  {
+    std::string name;
+    bool is_ref = false;
+    bool has_init = false;
+    const char *last = nullptr;
+    const char *start = nullptr;
+    for (auto it = decl.rbegin(); it != decl.rend(); ++it) {
+      if (*it == '=') {
+        name.clear();
+        has_init = true;
+        last = nullptr;
+        continue;
+      }
+      if (isspace(*it) && !last)
+        continue;
+      if (!isalnum(*it) && *it != '_' && name.empty()) {
+        if (it == decl.rbegin()) {
+          // weird format ?!
+          throw skip(
+              fmt::format("unexpected declaration {}", decl), skip::TODO);
+          break;
+        }
+        start = &*it + 1;
+        name = decl.substr(start - decl.data(), last - start + 1);
+      } else if (!last) {
+        last = &*it;
+      }
+      if (*it == '&') {
+        is_ref = true;
+      }
+    }
+    // see definition above
+    assert(start > decl.data());
+    --start;
+    while (isspace(*start) && start > decl.data())
+      --start;
+    auto cpptype = start ? decl.substr(0, start - decl.data() + 1) : "";
+    return std::tuple{cpptype, name.size() ? name : decl, is_ref, has_init};
+  }
+
+  struct CallArgsData
+  {
+    std::string cpp_type_name;
+    std::string cpp_decl;
+    std::string cpp_call;
+  };
+
+  CallArgsData make_function_call_args(const Options &options,
+      const FunctionDataExtended &def, const std::string &fname)
+  {
+    CallArgsData result;
+
+    auto struct_name = klasstype + (klasstype.size() ? "_" : "") +
+                       unreserve(fname) + "_CallArgs";
+    // different options lead to different signature, so needs different type
+    std::vector<std::string> tags;
+    if (options.output != opt_output::PARAM) {
+      struct_name += "In";
+      tags.push_back("gi::ca_in_tag");
+    }
+    if (options.basic_container != opt_basic_container::DEFAULT) {
+      struct_name += "BC";
+      tags.push_back("gi::ca_bc_tag");
+    }
+    // in case of a variant, use a first argument tag type to allow unambiguous
+    // use of designated initializer syntax in call
+    if (!tags.empty())
+      result.cpp_decl =
+          fmt::format("gi::ca<{}>, ", boost::algorithm::join(tags, ","));
+
+    // let's make it
+    std::ostringstream argtype;
+    argtype << "struct " << struct_name << " { " << std::endl;
+
+    std::vector<std::string> varnames;
+    const std::string argname = "args";
+    int count = 0;
+    int optional = 0;
+    // at least this much is needed in function signature
+    // given the type name, a name clash is unlikely
+    // but place into args sub-namespace, also for sake of convenience/clarity
+    result.cpp_decl +=
+        fmt::format("{}{}{} {}", GI_NS_ARGS, GI_SCOPE, struct_name, argname);
+    // collect declarations
+    for (const auto &e : def.cpp_decl) {
+      // skip error, maintained as separate parameter
+      auto [cpptype, varname, is_ref, has_init] = parse_var_name(e.second);
+      if (e.first != INDEX_ERROR) {
+        ++count;
+        auto member = e.second;
+        // ref is already required
+        // if it has init, already optional
+        optional += !!has_init;
+        if (!is_ref && !has_init) {
+          // lookup type
+          auto it = paraminfo.find(e.first);
+          if (it == paraminfo.end()) {
+            // should not happen, where does it come from then
+            throw skip("unexpected parameter", skip::TODO);
+          }
+          auto &pinfo = it->second;
+          if (pinfo.nullable || pinfo.optional) {
+            ++optional;
+            // arrange init
+            // callback does not allow (accidental) default construction
+            member += (pinfo.tinfo.flags & TYPE_CALLBACK) ? "{nullptr}" : "{}";
+          } else {
+            member = fmt::format("gi::required<{}> {}", cpptype, varname);
+          }
+        }
+        argtype << indent << member << ";" << std::endl;
+        varname.insert(0, argname + '.');
+        // mind move-only owning types, so move all non-refs
+        if (!is_ref)
+          varname = fmt::format("{}({})", MOVE, varname);
+      } else {
+        result.cpp_decl += ", " + e.second;
+      }
+      varnames.push_back(varname);
+    }
+    argtype << "};";
+
+    // only really create if needed
+    // perhaps no input, only output arguments, or depending on options
+    if (!count || ctx.options.call_args < 0 ||
+        optional < ctx.options.call_args || !call_args_decl)
+      return result;
+
+    // ok, makes sense, finish up
+    result.cpp_type_name = struct_name;
+    result.cpp_call = boost::algorithm::join(varnames, ", ");
+
+    // could have seen this type before, in another signature variation
+    // NOTE the other parts could be different this time though
+    auto [_, inserted] = call_args_types.insert(struct_name);
+    if (inserted)
+      *call_args_decl << argtype.str() << std::endl << std::endl;
+
+    return result;
+  }
+
   void make_function(const Options &options, const FunctionDataExtended &def,
-      const std::string &fname)
+      const std::string &fname, bool use_call_args = false)
   {
     auto &name = func.name;
     // determine return type
@@ -1104,8 +1274,27 @@ public:
         nsg_impl.push(GI_NS_INTERNAL, false);
       }
       const char *CB_SUFFIX = "_CF";
+      CallArgsData ca_data;
+      if (use_call_args) {
+        try {
+          // always use original function name, not a shadow/renamed one
+          // otherwise different function (signatures) define same typename
+          ca_data = make_function_call_args(options, def, func.name);
+        } catch (const skip &exc) {
+          auto msg = fmt::format("fname CallArgs failed; {}", exc.what());
+          logger(Log::WARNING, msg);
+          oss_decl << "// " << msg << std::endl;
+        }
+        // bail out if not really applicable
+        if (ca_data.cpp_type_name.empty())
+          return;
+        // arrange forward declare
+        deps.insert(
+            {GI_NS_ARGS, std::string("struct ") + ca_data.cpp_type_name});
+      }
+      bool vm = kind == EL_VIRTUAL_METHOD;
+      auto rfname = unreserve(fname, vm);
       auto make_sig = [&](bool impl) {
-        bool vm = kind == EL_VIRTUAL_METHOD;
         auto funcsuffix = kind == EL_CALLBACK ? CB_SUFFIX : "";
         auto prefix =
             impl
@@ -1119,9 +1308,10 @@ public:
         // virtual method might throw in addition to error parameter
         auto sig =
             prefix +
-            fmt::format("{} {}{}{} ({}){}{}{}", cpp_ret, klprefix,
-                unreserve(fname, vm), funcsuffix,
-                boost::algorithm::join(cpp_decl, ", "),
+            fmt::format("{} {}{}{} ({}){}{}{}", cpp_ret, klprefix, rfname,
+                funcsuffix,
+                use_call_args ? ca_data.cpp_decl
+                              : boost::algorithm::join(cpp_decl, ", "),
                 (const_method ? " const" : ""),
                 (((options.except == opt_except::THROW) || (vm && func.throws))
                         ? ""
@@ -1135,6 +1325,19 @@ public:
         oss_decl << def.cf_ctype << ';' << std::endl;
       oss_decl << make_sig(false) << ";" << std::endl;
       oss_impl << make_sig(true) << std::endl;
+      // in CallArgs case, simply forward to existing standard function
+      if (use_call_args) {
+        // no ADL occurs for a method, which finds a declaration in a class
+        // but for functions, it might find a similar method in another ns
+        // (depending on the arguments involved)
+        // mind static functions
+        if (klasstype.empty() && kind == EL_FUNCTION)
+          rfname.insert(0, ns + GI_SCOPE);
+        oss_impl << "{ return " << rfname << " (" << ca_data.cpp_call << "); }"
+                 << std::endl
+                 << std::endl;
+        return;
+      }
       // transform to list for joining
       std::vector<std::string> temp;
       for (auto &&e : def.c_call)
@@ -1725,6 +1928,8 @@ public:
           for (auto &&nullable : do_nullable) {
             // context for this option run
             Options options(except, output, nullable);
+          resume:
+            do_basic_container.clear();
             def = make_definition(options);
 
             // only care about callbacks with (trailing) user_data
@@ -1756,6 +1961,19 @@ public:
               // mark ok
               def.name = name;
               signatures.insert(cpp_sig);
+              // also produce a CallArgs variant if desired
+              // full signature is needed
+              if (ctx.options.call_args >= 0 && func.lib_symbol &&
+                  options.nullable == opt_nullable::PRESENT)
+                make_function(options, def, fname, true);
+              // another signature alternative
+              // unlike other ones, this one is discovered in make_definition
+              // so dynamically add another run to these loops
+              if (ctx.options.basic_collection && func.lib_symbol &&
+                  do_basic_container.size()) {
+                options.basic_container = *do_basic_container.begin();
+                goto resume;
+              }
             }
           }
         }
@@ -1889,7 +2107,8 @@ FunctionDefinition
 process_element_function(GeneratorContext &_ctx, const std::string _ns,
     const pt::ptree::value_type &entry, std::ostream &out, std::ostream &impl,
     const std::string &klass, const std::string &klasstype,
-    std::set<std::string> &deps, bool allow_deprecated)
+    GeneratorBase::DepsSet &deps, std::ostream *call_args,
+    bool allow_deprecated)
 {
   ElementFunction func;
 
@@ -1904,8 +2123,10 @@ process_element_function(GeneratorContext &_ctx, const std::string _ns,
   func.c_id = (kind == EL_VIRTUAL_METHOD) ? klasstype + "::" + c_name : c_name;
   // global qualifier needed as c_name might otherwise resolve wrongly
   // e.g. if g_mkdir is macro to mkdir (and resolve to namespaced mkdir)
+  // in case of dl loading, the symbol name is needed as-is
   std::string qualifier =
-      (kind == EL_FUNCTION || kind == EL_METHOD) ? "::" : "";
+      (kind == EL_FUNCTION || kind == EL_METHOD) && !_ctx.options.dl ? "::"
+                                                                     : "";
   func.functionexp = kind == EL_VIRTUAL_METHOD
                          ? fmt::format("get_struct_()->{}", c_name)
                          : qualifier + c_name;
@@ -1916,7 +2137,7 @@ process_element_function(GeneratorContext &_ctx, const std::string _ns,
       (kind == EL_FUNCTION || kind == EL_METHOD || kind == EL_CONSTRUCTOR);
 
   FunctionGenerator gen(
-      _ctx, _ns, func, klass, klasstype, deps, allow_deprecated);
+      _ctx, _ns, func, klass, klasstype, deps, call_args, allow_deprecated);
   gen.const_method = (kind == EL_METHOD) && _ctx.options.const_method;
   return gen.process(&entry, nullptr, out, impl);
 }
@@ -1925,8 +2146,8 @@ FunctionDefinition
 process_element_function(GeneratorContext &_ctx, const std::string _ns,
     const ElementFunction &func, const std::vector<Parameter> &params,
     std::ostream &out, std::ostream &impl, const std::string &klass,
-    const std::string &klasstype, std::set<std::string> &deps)
+    const std::string &klasstype, GeneratorBase::DepsSet &deps)
 {
-  FunctionGenerator gen(_ctx, _ns, func, klass, klasstype, deps);
+  FunctionGenerator gen(_ctx, _ns, func, klass, klasstype, deps, nullptr);
   return gen.process(nullptr, &params, out, impl);
 }

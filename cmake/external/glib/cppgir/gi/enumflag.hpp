@@ -5,8 +5,7 @@
 #include "exception.hpp"
 #include "value.hpp"
 
-#include <type_traits>
-
+GI_MODULE_EXPORT
 namespace gi
 {
 namespace detail
@@ -227,53 +226,7 @@ operator^=(FlagType &lhs, FlagType rhs)
 // so also explicitly add operators in generated namespace
 // (by means of macro to simplify generation)
 
-#define GI_FLAG_OPERATORS(FlagType) \
-  inline FlagType operator|(FlagType lhs, FlagType rhs) \
-  { \
-    return static_cast<FlagType>( \
-        static_cast<unsigned>(lhs) | static_cast<unsigned>(rhs)); \
-  } \
-\
-  inline FlagType operator&(FlagType lhs, FlagType rhs) \
-  { \
-    return static_cast<FlagType>( \
-        static_cast<unsigned>(lhs) & static_cast<unsigned>(rhs)); \
-  } \
-\
-  inline FlagType operator^(FlagType lhs, FlagType rhs) \
-  { \
-    return static_cast<FlagType>( \
-        static_cast<unsigned>(lhs) ^ static_cast<unsigned>(rhs)); \
-  } \
-\
-  inline FlagType operator~(FlagType flags) \
-  { \
-    return static_cast<FlagType>(~static_cast<unsigned>(flags)); \
-  } \
-\
-  inline FlagType &operator|=(FlagType &lhs, FlagType rhs) \
-  { \
-    return (lhs = static_cast<FlagType>( \
-                static_cast<unsigned>(lhs) | static_cast<unsigned>(rhs))); \
-  } \
-\
-  inline FlagType &operator&=(FlagType &lhs, FlagType rhs) \
-  { \
-    return (lhs = static_cast<FlagType>( \
-                static_cast<unsigned>(lhs) & static_cast<unsigned>(rhs))); \
-  } \
-\
-  inline FlagType &operator^=(FlagType &lhs, FlagType rhs) \
-  { \
-    return (lhs = static_cast<FlagType>( \
-                static_cast<unsigned>(lhs) ^ static_cast<unsigned>(rhs))); \
-  }
-
-#define GI_ENUM_NUMERIC(EnumType) \
-  inline std::underlying_type<EnumType>::type operator+(EnumType e) \
-  { \
-    return static_cast<std::underlying_type<EnumType>::type>(e); \
-  }
+// see macro interface
 
 /* NOTE:
  *

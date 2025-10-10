@@ -7,8 +7,19 @@
 
 #include "assert.h"
 
-//#define GI_INLINE 1
+#ifndef USE_GI_MODULE
+// no inline as the implementation is provided by other TUs
+// #define GI_INLINE 1
 #include <gst/gst.hpp>
+#else
+// optional, but recommended if gi macros are used
+#include <gi/gi_inc.hpp>
+// we also use some gst macros and api
+#include <gst/gst.h>
+// import used modules
+import gi.repo.gobject;
+import gi.repo.gst;
+#endif
 
 namespace GLib = gi::repository::GLib;
 namespace Gst = gi::repository::Gst;
@@ -105,6 +116,23 @@ public:
       // in case of a typical single-use async callback (with no GDestroyNotify)
       // use true as AUTODESTROY template parameter
       // (then it will auto-clean up after invoking callback)
+    }
+    // alternatively, maybe there is some API that accepts a Closure
+    // the following are some convenient ways to get a closure
+    if (false) {
+      GLib::LogFunc h = [](gi::cstring_v log_domain,
+                            GLib::LogLevelFlags log_level,
+                            gi::cstring_v message) {
+        (void)log_domain;
+        (void)log_level;
+        (void)message;
+      };
+      GObject_::Closure::from_callback(h);
+    }
+    // likewise, but with a bit more manual (C++) signature specification
+    if (false) {
+      auto h = [](GObject_::Object, int) {};
+      GObject_::Closure::from_functor<void(GObject_::Object, int)>(h);
     }
 
     say("Setting pipeline to PAUSED ...");
@@ -260,12 +288,16 @@ public:
         for (int j = 0; j < ntags; ++j) {
           auto tname = taglist.nth_tag_name(j);
           auto value = taglist.get_value_index(tname, 0);
+#if GI_CONFIG_EXCEPTIONS
           try {
+#endif
             auto sval = value.transform_value<std::string>();
             oss << "  " << tname << ": " << sval << std::endl;
+#if GI_CONFIG_EXCEPTIONS
           } catch (...) {
             // could be object or otherwise, never mind
           }
+#endif
         }
       }
     }
@@ -318,6 +350,7 @@ public:
   }
 };
 
+#ifdef GI_CLASS_IMPL
 // not used in the above, but serves as a subclass example
 class ChattyBin : public Gst::impl::BinImpl
 {
@@ -340,6 +373,7 @@ public:
     return Gst::impl::BinImpl::add_element_(element);
   }
 };
+#endif
 
 int
 main(int argc, char **argv)
@@ -353,11 +387,15 @@ main(int argc, char **argv)
   std::string url = argv[1];
   // make it URL if not so
   if (!Gst::Uri::is_valid(url)) {
+#if GI_CONFIG_EXCEPTIONS
     try {
+#endif
       url = gi::expect(Gst::filename_to_uri(url));
+#if GI_CONFIG_EXCEPTIONS
     } catch (const GLib::Error &ex) {
       die(ex.what());
     }
+#endif
   }
 
   say("Playing " + url);

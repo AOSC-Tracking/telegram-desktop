@@ -3,28 +3,13 @@
 
 #include "base.hpp"
 
-// used for hash
-#include <functional>
-#include <limits>
-#include <string>
-#if __cplusplus >= 201703L
-#include <optional>
-#include <string_view>
-#endif
-
-// define << operator if not unwanted
-#ifndef GI_NO_STRING_IOS
-#include <iostream>
-#endif
-
-#include "string.h"
-
 #ifdef __has_builtin
 #define GI_HAS_BUILTIN(x) __has_builtin(x)
 #else
 #define GI_HAS_BUILTIN(x) 0
 #endif
 
+GI_MODULE_EXPORT
 namespace gi
 {
 namespace convert
@@ -49,22 +34,42 @@ struct converter_base : public std::true_type
   typedef To to_type;
 };
 
-// check whether conversion possible
+// conversion check for complete type
 template<typename From, typename To, typename Enable = void>
-struct is_convertible : public std::false_type
+struct is_convertible_impl : public std::false_type
 {};
 
 template<typename From, typename To>
-struct is_convertible<From, To,
+struct is_convertible_impl<From, To,
     typename std::enable_if<std::is_base_of<To, From>::value>::type>
     : public std::false_type
 {};
 
 template<typename From, typename To>
-struct is_convertible<From, To,
-    typename std::enable_if<std::is_pointer<
-        typename converter<From, To>::from_type *>::value>::type>
+struct is_convertible_impl<From, To,
+    typename std::enable_if<!std::is_base_of<To, From>::value &&
+                            std::is_pointer<typename converter<From,
+                                To>::from_type *>::value>::type>
     : public std::true_type
+{};
+
+template<typename From, typename To, bool complete>
+struct is_convertible_pre
+{
+  using type = std::false_type;
+};
+
+template<typename From, typename To>
+struct is_convertible_pre<From, To, true>
+{
+  using type = is_convertible_impl<From, To>;
+};
+
+// check whether conversion possible
+// reject incomplete forward declared types
+template<typename From, typename To, typename Enable = void>
+struct is_convertible : public is_convertible_pre<From, To,
+                            gi::traits::is_type_complete<To>::value>::type
 {};
 } // namespace convert
 
@@ -839,6 +844,7 @@ struct cpptype<char *, transfer_none_t>
 } // namespace gi
 
 // specialize std::hash for suitable use
+GI_MODULE_EXPORT
 namespace std
 {
 template<>

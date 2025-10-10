@@ -56,6 +56,9 @@ sources are also installed along with some documentation.
 As such, the meson system only builds and install the (most) relevant parts,
 as may be useful when used as a subproject.
 
+For either build system, an [example](examples/external) shows how `cppgir`
+can be used in a project.
+
 ## Release numbering and API stability
 
 The generated code for an even-numbered major version should be (compile) API

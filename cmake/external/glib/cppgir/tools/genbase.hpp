@@ -23,6 +23,11 @@ struct GeneratorOptions
   bool const_method;
   // generate top-level helpers in rootdir
   bool output_top;
+  // min number of non-required function arguments
+  // that triggers generation a CallArgs variant
+  int call_args;
+  // also generate collection signature for input collection of basic type
+  bool basic_collection;
 };
 
 struct GeneratorContext
@@ -94,7 +99,9 @@ public:
   static std::string make_ctype(
       const ArgInfo &info, const std::string &direction, bool callerallocates);
 
-  void track_dependency(std::set<std::string> &deps, const ArgInfo &info) const;
+  // set of (ns, dep), where dep = [struct|class ]type
+  using DepsSet = std::set<std::pair<std::string, std::string>>;
+  void track_dependency(DepsSet &deps, const ArgInfo &info) const;
 
   static std::string make_wrap_format(const ArgInfo &info,
       const std::string &transfer, const std::string &outtype = {});
