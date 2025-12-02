@@ -44,8 +44,8 @@ namespace Window {
 class SessionNavigation;
 } // namespace Window
 
-[[nodiscard]] rpl::producer<QString> GiftDurationValue(int months);
-[[nodiscard]] QString GiftDuration(int months);
+[[nodiscard]] rpl::producer<QString> GiftDurationValue(int days);
+[[nodiscard]] QString GiftDuration(int days);
 
 void GiftCodeBox(
 	not_null<Ui::GenericBox*> box,
@@ -78,7 +78,8 @@ void AddStarGiftTable(
 	Settings::CreditsEntryBoxStyleOverrides st,
 	const Data::CreditsHistoryEntry &entry,
 	Fn<void()> convertToStars,
-	Fn<void()> startUpgrade);
+	Fn<void()> startUpgrade,
+	Fn<void(Fn<void()> removed)> removeDetails);
 void AddTransferGiftTable(
 	std::shared_ptr<ChatHelpers::Show> show,
 	not_null<Ui::VerticalLayout*> container,

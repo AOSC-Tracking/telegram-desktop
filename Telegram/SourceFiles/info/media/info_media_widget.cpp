@@ -70,6 +70,8 @@ Memento::Memento(not_null<Controller*> controller)
 		? controller->peer()
 		: controller->storiesPeer()
 		? controller->storiesPeer()
+		: controller->musicPeer()
+		? controller->musicPeer()
 		: controller->parentController()->session().user()),
 	controller->topic(),
 	controller->sublist(),
@@ -78,6 +80,8 @@ Memento::Memento(not_null<Controller*> controller)
 		? Type::File
 		: controller->section().type() == Section::Type::Stories
 		? Type::PhotoVideo
+		: controller->section().type() == Section::Type::SavedMusic
+		? Type::MusicFile
 		: controller->section().mediaType())) {
 }
 
@@ -86,7 +90,7 @@ Memento::Memento(not_null<PeerData*> peer, PeerId migratedPeerId, Type type)
 }
 
 Memento::Memento(not_null<Data::ForumTopic*> topic, Type type)
-: Memento(topic->channel(), topic, nullptr, PeerId(), type) {
+: Memento(topic->peer(), topic, nullptr, PeerId(), type) {
 }
 
 Memento::Memento(not_null<Data::SavedSublist*> sublist, Type type)

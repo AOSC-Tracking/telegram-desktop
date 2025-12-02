@@ -1,10 +1,12 @@
 /*
  * Copyright © 2016 Red Hat, Inc
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,7 +35,7 @@
 #include <gio/gunixfdlist.h>
 
 #include "print.h"
-#include "request.h"
+#include "xdp-request.h"
 #include "xdp-dbus.h"
 #include "xdp-impl-dbus.h"
 #include "xdp-utils.h"
@@ -67,7 +69,7 @@ print_done (GObject *source,
             GAsyncResult *result,
             gpointer data)
 {
-  g_autoptr(Request) request = data;
+  g_autoptr(XdpRequest) request = data;
   guint response = 2;
   g_autoptr(GVariant) options = NULL;
   g_autoptr(GError) error = NULL;
@@ -87,20 +89,54 @@ print_done (GObject *source,
 
   if (request->exported)
     {
-      GVariantBuilder opt_builder;
-
-      g_variant_builder_init (&opt_builder, G_VARIANT_TYPE_VARDICT);
+      g_auto(GVariantBuilder) opt_builder =
+        G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
 
       xdp_dbus_request_emit_response (XDP_DBUS_REQUEST (request),
                                       response,
                                       g_variant_builder_end (&opt_builder));
-      request_unexport (request);
+      xdp_request_unexport (request);
     }
+}
+
+static gboolean
+validate_supported_output_file_formats (const char  *key,
+                                        GVariant    *value,
+                                        GVariant    *options,
+                                        GError     **error)
+{
+  const char * const supported_output_file_formats[] = {
+    "pdf",
+    "ps",
+    "svg",
+    NULL,
+  };
+  g_auto(GStrv) strv = g_variant_dup_strv (value, NULL);
+
+  if (g_strv_length (strv) == 0)
+    {
+      g_set_error (error, XDG_DESKTOP_PORTAL_ERROR, XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
+                   "Empty list of output file formats");
+      return FALSE;
+    }
+
+  for (size_t i = 0; strv && strv[i]; i++)
+    {
+      if (!g_strv_contains (supported_output_file_formats, strv[i]))
+        {
+          g_set_error (error, XDG_DESKTOP_PORTAL_ERROR, XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
+                       "Output file format \"%s\" is not one of: pdf, ps, svg", strv[i]);
+          return FALSE;
+        }
+    }
+
+  return TRUE;
 }
 
 static XdpOptionKey print_options[] = {
   { "token", G_VARIANT_TYPE_UINT32, NULL },
   { "modal", G_VARIANT_TYPE_BOOLEAN, NULL },
+  { "supported_output_file_formats", G_VARIANT_TYPE_STRING_ARRAY, validate_supported_output_file_formats },
 };
 
 static gboolean
@@ -112,11 +148,12 @@ handle_print (XdpDbusPrint *object,
               GVariant *arg_fd,
               GVariant *arg_options)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpRequest *request = xdp_request_from_invocation (invocation);
   const char *app_id = xdp_app_info_get_id (request->app_info);
   g_autoptr(GError) error = NULL;
   g_autoptr(XdpDbusImplRequest) impl_request = NULL;
-  GVariantBuilder opt_builder;
+  g_auto(GVariantBuilder) opt_builder =
+    G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
 
   if (xdp_dbus_impl_lockdown_get_disable_printing (lockdown))
     {
@@ -142,10 +179,9 @@ handle_print (XdpDbusPrint *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  request_set_impl_request (request, impl_request);
-  request_export (request, g_dbus_method_invocation_get_connection (invocation));
+  xdp_request_set_impl_request (request, impl_request);
+  xdp_request_export (request, g_dbus_method_invocation_get_connection (invocation));
 
-  g_variant_builder_init (&opt_builder, G_VARIANT_TYPE_VARDICT);
   xdp_filter_options (arg_options, &opt_builder,
                       print_options, G_N_ELEMENTS (print_options), NULL);
   xdp_dbus_impl_print_call_print(impl,
@@ -176,7 +212,7 @@ prepare_print_done (GObject *source,
                     GAsyncResult *result,
                     gpointer data)
 {
-  g_autoptr(Request) request = data;
+  g_autoptr(XdpRequest) request = data;
   guint response = 2;
   g_autoptr(GVariant) options = NULL;
   g_autoptr(GError) error = NULL;
@@ -195,9 +231,8 @@ prepare_print_done (GObject *source,
 
   if (request->exported)
     {
-      GVariantBuilder opt_builder;
-
-      g_variant_builder_init (&opt_builder, G_VARIANT_TYPE_VARDICT);
+      g_auto(GVariantBuilder) opt_builder =
+        G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
 
       if (response == 0)
         xdp_filter_options (options, &opt_builder,
@@ -208,13 +243,14 @@ prepare_print_done (GObject *source,
                                       response,
                                       g_variant_builder_end (&opt_builder));
 
-      request_unexport (request);
+      xdp_request_unexport (request);
     }
 }
 
 static XdpOptionKey prepare_print_options[] = {
   { "modal", G_VARIANT_TYPE_BOOLEAN },
-  { "accept_label", G_VARIANT_TYPE_STRING }
+  { "accept_label", G_VARIANT_TYPE_STRING },
+  { "supported_output_file_formats", G_VARIANT_TYPE_STRING_ARRAY, validate_supported_output_file_formats },
 };
 
 static gboolean
@@ -226,11 +262,12 @@ handle_prepare_print (XdpDbusPrint *object,
                       GVariant *arg_page_setup,
                       GVariant *arg_options)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpRequest *request = xdp_request_from_invocation (invocation);
   const char *app_id = xdp_app_info_get_id (request->app_info);
   g_autoptr(GError) error = NULL;
   g_autoptr(XdpDbusImplRequest) impl_request = NULL;
-  GVariantBuilder opt_builder;
+  g_auto(GVariantBuilder) opt_builder =
+    G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
 
   if (xdp_dbus_impl_lockdown_get_disable_printing (lockdown))
     {
@@ -255,10 +292,9 @@ handle_prepare_print (XdpDbusPrint *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  request_set_impl_request (request, impl_request);
-  request_export (request, g_dbus_method_invocation_get_connection (invocation));
+  xdp_request_set_impl_request (request, impl_request);
+  xdp_request_export (request, g_dbus_method_invocation_get_connection (invocation));
 
-  g_variant_builder_init (&opt_builder, G_VARIANT_TYPE_VARDICT);
   xdp_filter_options (arg_options, &opt_builder,
                       prepare_print_options, G_N_ELEMENTS (prepare_print_options), NULL);
   xdp_dbus_impl_print_call_prepare_print (impl,
@@ -288,7 +324,7 @@ print_iface_init (XdpDbusPrintIface *iface)
 static void
 print_init (Print *print)
 {
-  xdp_dbus_print_set_version (XDP_DBUS_PRINT (print), 2);
+  xdp_dbus_print_set_version (XDP_DBUS_PRINT (print), 3);
 }
 
 static void

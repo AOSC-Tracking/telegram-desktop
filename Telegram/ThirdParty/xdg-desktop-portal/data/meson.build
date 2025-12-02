@@ -9,7 +9,6 @@ portal_sources = files(
   'org.freedesktop.portal.Background.xml',
   'org.freedesktop.portal.Camera.xml',
   'org.freedesktop.portal.Clipboard.xml',
-  'org.freedesktop.portal.Device.xml',
   'org.freedesktop.portal.Documents.xml',
   'org.freedesktop.portal.DynamicLauncher.xml',
   'org.freedesktop.portal.Email.xml',
@@ -36,7 +35,12 @@ portal_sources = files(
   'org.freedesktop.portal.Session.xml',
   'org.freedesktop.portal.Settings.xml',
   'org.freedesktop.portal.Trash.xml',
+  'org.freedesktop.portal.Usb.xml',
   'org.freedesktop.portal.Wallpaper.xml',
+)
+
+portal_host_sources = files(
+  'org.freedesktop.host.portal.Registry.xml',
 )
 
 portal_impl_sources = files(
@@ -62,6 +66,7 @@ portal_impl_sources = files(
   'org.freedesktop.impl.portal.Secret.xml',
   'org.freedesktop.impl.portal.Session.xml',
   'org.freedesktop.impl.portal.Settings.xml',
+  'org.freedesktop.impl.portal.Usb.xml',
   'org.freedesktop.impl.portal.Wallpaper.xml',
 )
 
@@ -69,6 +74,6 @@ background_monitor_sources = files(
   'org.freedesktop.background.Monitor.xml',
 )
 
-install_data([portal_sources, portal_impl_sources],
+install_data([portal_sources, portal_host_sources, portal_impl_sources],
     install_dir: datadir / 'dbus-1' / 'interfaces',
 )

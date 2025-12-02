@@ -1,10 +1,12 @@
 /*
  * Copyright © 2018 Red Hat, Inc
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -28,11 +30,11 @@
 #include <gio/gdesktopappinfo.h>
 
 #include "location.h"
-#include "request.h"
-#include "permissions.h"
+#include "xdp-request.h"
+#include "xdp-permissions.h"
 #include "xdp-dbus.h"
 #include "xdp-utils.h"
-#include "session.h"
+#include "xdp-session.h"
 #include "geoclue-dbus.h"
 #include <geoclue.h>
 
@@ -51,7 +53,7 @@ typedef enum {
 
 typedef struct
 {
-  Session parent;
+  XdpSession parent;
 
   LocationSessionState state;
 
@@ -64,12 +66,24 @@ typedef struct
 
 typedef struct
 {
-  SessionClass parent_class;
+  XdpSessionClass parent_class;
 } LocationSessionClass;
 
 GType location_session_get_type (void);
 
-G_DEFINE_TYPE (LocationSession, location_session, session_get_type ())
+G_DEFINE_TYPE (LocationSession, location_session, xdp_session_get_type ())
+
+G_GNUC_UNUSED static inline LocationSession *
+LOCATION_SESSION (gpointer ptr)
+{
+  return G_TYPE_CHECK_INSTANCE_CAST (ptr, location_session_get_type (), LocationSession);
+}
+
+G_GNUC_UNUSED static inline gboolean
+IS_LOCATION_SESSION (gpointer ptr)
+{
+  return G_TYPE_CHECK_INSTANCE_TYPE (ptr, location_session_get_type ());
+}
 
 static void
 location_session_init (LocationSession *session)
@@ -80,9 +94,9 @@ location_session_init (LocationSession *session)
 }
 
 static void
-location_session_close (Session *session)
+location_session_close (XdpSession *session)
 {
-  LocationSession *loc_session = (LocationSession *)session;
+  LocationSession *loc_session = LOCATION_SESSION (session);
 
   loc_session->state = LOCATION_SESSION_STATE_CLOSED;
 
@@ -95,7 +109,7 @@ location_session_close (Session *session)
 static void
 location_session_finalize (GObject *object)
 {
-  LocationSession *loc_session = (LocationSession *)object;
+  LocationSession *loc_session = LOCATION_SESSION (object);
 
   g_clear_object (&loc_session->client);
 
@@ -106,7 +120,7 @@ static void
 location_session_class_init (LocationSessionClass *klass)
 {
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
-  SessionClass *session_class = (SessionClass *)klass;
+  XdpSessionClass *session_class = (XdpSessionClass *)klass;
 
   object_class->finalize = location_session_finalize;
 
@@ -120,8 +134,8 @@ location_session_new (GVariant *options,
 {
   GDBusConnection *connection = g_dbus_method_invocation_get_connection (invocation);
   const gchar *sender = g_dbus_method_invocation_get_sender (invocation);
-  XdpAppInfo *app_info = xdp_invocation_lookup_app_info_sync (invocation, NULL, NULL);
-  Session *session;
+  XdpAppInfo *app_info = xdp_invocation_ensure_app_info_sync (invocation, NULL, NULL);
+  XdpSession *session;
 
   session = g_initable_new (location_session_get_type (), NULL, error,
                             "sender", sender,
@@ -144,7 +158,7 @@ location_updated (GeoclueClient *client,
                   const char *new_location,
                   gpointer data)
 {
-  Session *session = data;
+  XdpSession *session = data;
   g_autoptr(GVariant) ret = NULL;
   g_autoptr(GError) error = NULL;
   g_autoptr(GVariant) dict = NULL;
@@ -229,9 +243,9 @@ location_session_start (LocationSession *loc_session)
       return FALSE;
     }
 
-  g_debug ("location session '%s', GeoClue client '%s'", ((Session*)loc_session)->id, client_id);
+  g_debug ("location session '%s', GeoClue client '%s'", ((XdpSession*)loc_session)->id, client_id);
   g_debug ("location session '%s', distance-threshold %d, time-threshold %d, accuracy %s",
-           ((Session *)loc_session)->id,
+           XDP_SESSION (loc_session)->id,
            loc_session->distance_threshold,
            loc_session->time_threshold,
            gclue_accuracy_level_to_string (loc_session->accuracy));
@@ -257,7 +271,7 @@ location_session_start (LocationSession *loc_session)
   g_debug ("GeoClue client '%s' started", client_id);
 
   loc_session->state = LOCATION_SESSION_STATE_STARTED;
-  g_debug ("location session '%s' started", ((Session*)loc_session)->id);
+  g_debug ("location session '%s' started", ((XdpSession*)loc_session)->id);
 
   return TRUE;
 }
@@ -339,7 +353,7 @@ get_location_permissions (XdpAppInfo *app_info,
 
   g_debug ("Getting location permissions for '%s'", app_id);
 
-  perms = get_permissions_sync (app_id, PERMISSION_TABLE, PERMISSION_ID);
+  perms = xdp_get_permissions_sync (app_id, PERMISSION_TABLE, PERMISSION_ID);
 
   if (perms == NULL)
     return FALSE;
@@ -376,7 +390,7 @@ set_location_permissions (const char *app_id,
 
   g_debug ("set permission store accuracy: %d -> %s", accuracy, permissions[0]);
 
-  set_permissions_sync (app_id, PERMISSION_TABLE, PERMISSION_ID, permissions);
+  xdp_set_permissions_sync (app_id, PERMISSION_TABLE, PERMISSION_ID, permissions);
 }
 
 /*** Location boilerplace ***/
@@ -409,7 +423,8 @@ handle_create_session (XdpDbusLocation *object,
                        GVariant *arg_options)
 {
   g_autoptr(GError) error = NULL;
-  LocationSession *session;
+  LocationSession *loc_session;
+  XdpSession *session;
   guint threshold;
   guint accuracy;
 
@@ -423,31 +438,33 @@ handle_create_session (XdpDbusLocation *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  session = location_session_new (arg_options, invocation, &error);
-  if (!session)
+  loc_session = location_session_new (arg_options, invocation, &error);
+  if (!loc_session)
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
+  session = XDP_SESSION (loc_session);
+
   if (g_variant_lookup (arg_options, "distance-threshold", "u", &threshold))
-    session->distance_threshold = threshold;
+    loc_session->distance_threshold = threshold;
   if (g_variant_lookup (arg_options, "time-threshold", "u", &threshold))
-    session->time_threshold = threshold;
+    loc_session->time_threshold = threshold;
   if (g_variant_lookup (arg_options, "accuracy", "u", &accuracy))
     {
       if (accuracy == 0)
-        session->accuracy = GCLUE_ACCURACY_LEVEL_NONE;
+        loc_session->accuracy = GCLUE_ACCURACY_LEVEL_NONE;
       else if (accuracy == 1)
-        session->accuracy = GCLUE_ACCURACY_LEVEL_COUNTRY;
+        loc_session->accuracy = GCLUE_ACCURACY_LEVEL_COUNTRY;
       else if (accuracy == 2)
-        session->accuracy = GCLUE_ACCURACY_LEVEL_CITY;
+        loc_session->accuracy = GCLUE_ACCURACY_LEVEL_CITY;
       else if (accuracy == 3)
-        session->accuracy = GCLUE_ACCURACY_LEVEL_NEIGHBORHOOD;
+        loc_session->accuracy = GCLUE_ACCURACY_LEVEL_NEIGHBORHOOD;
       else if (accuracy == 4)
-        session->accuracy = GCLUE_ACCURACY_LEVEL_STREET;
+        loc_session->accuracy = GCLUE_ACCURACY_LEVEL_STREET;
       else if (accuracy == 5)
-        session->accuracy = GCLUE_ACCURACY_LEVEL_EXACT;
+        loc_session->accuracy = GCLUE_ACCURACY_LEVEL_EXACT;
       else
         {
           g_dbus_method_invocation_return_error (invocation,
@@ -458,18 +475,18 @@ handle_create_session (XdpDbusLocation *object,
         }
     }
 
-  if (!session_export ((Session *)session, &error))
+  if (!xdp_session_export (session, &error))
     {
        g_warning ("Failed to export session: %s", error->message);
-       session_close ((Session *)session, FALSE);
+       xdp_session_close (session, FALSE);
     }
   else
     {
-      g_debug ("CreateSession new session '%s'",  ((Session *)session)->id);
-      session_register ((Session *)session);
+      g_debug ("CreateSession new session '%s'",  session->id);
+      xdp_session_register (session);
     }
 
-  xdp_dbus_location_complete_create_session (object, invocation, ((Session *)session)->id);
+  xdp_dbus_location_complete_create_session (object, invocation, session->id);
 
   return G_DBUS_METHOD_INVOCATION_HANDLED;
 }
@@ -482,13 +499,13 @@ handle_start_in_thread_func (GTask *task,
                              gpointer task_data,
                              GCancellable *cancellable)
 {
-  Request *request = (Request *)task_data;
+  XdpRequest *request = XDP_REQUEST (task_data);
   const char *parent_window;
   const char *id;
   gint64 last_used = 0;
   g_autoptr(GError) error = NULL;
   guint response = 2;
-  Session *session;
+  XdpSession *session;
   LocationSession *loc_session;
   GClueAccuracyLevel accuracy;
 
@@ -497,7 +514,7 @@ handle_start_in_thread_func (GTask *task,
   session = g_object_get_qdata (G_OBJECT (request), quark_request_session);
   SESSION_AUTOLOCK_UNREF (g_object_ref (session));
   g_object_set_qdata (G_OBJECT (request), quark_request_session, NULL);
-  loc_session = (LocationSession *)session;
+  loc_session = LOCATION_SESSION (session);
 
   parent_window = (const char *)g_object_get_data (G_OBJECT (request), "parent-window");
 
@@ -508,7 +525,8 @@ handle_start_in_thread_func (GTask *task,
       guint access_response = 2;
       g_autoptr(GVariant) access_results = NULL;
       g_autoptr(XdpDbusImplRequest) impl_request = NULL;
-      GVariantBuilder access_opt_builder;
+      g_auto(GVariantBuilder) access_opt_builder =
+        G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
       g_autofree char *app_id = NULL;
       g_autofree char *title = NULL;
       g_autofree char *subtitle = NULL;
@@ -520,9 +538,8 @@ handle_start_in_thread_func (GTask *task,
                                                            request->id,
                                                            NULL, NULL);
 
-      request_set_impl_request (request, impl_request);
+      xdp_request_set_impl_request (request, impl_request);
 
-      g_variant_builder_init (&access_opt_builder, G_VARIANT_TYPE_VARDICT);
       g_variant_builder_add (&access_opt_builder, "{sv}",
                              "deny_label", g_variant_new_string (_("Deny Access")));
       g_variant_builder_add (&access_opt_builder, "{sv}",
@@ -532,10 +549,8 @@ handle_start_in_thread_func (GTask *task,
 
       if (g_strcmp0 (id, "") != 0)
         {
-          g_autoptr(GAppInfo) info = NULL;
+          GAppInfo *info = xdp_app_info_get_gappinfo (request->app_info);
           const gchar *name = NULL;
-
-          info = xdp_app_info_load_app_info (request->app_info);
 
           if (info)
             {
@@ -585,7 +600,7 @@ handle_start_in_thread_func (GTask *task,
           goto out;
         }
 
-      request_set_impl_request (request, NULL);
+      xdp_request_set_impl_request (request, NULL);
 
       accuracy = (access_response == 0) ? GCLUE_ACCURACY_LEVEL_EXACT : GCLUE_ACCURACY_LEVEL_NONE;
     }
@@ -609,7 +624,7 @@ handle_start_in_thread_func (GTask *task,
       loc_session->accuracy = accuracy;
     }
 
-  if (location_session_start ((LocationSession*)session))
+  if (location_session_start (loc_session))
     response = 0;
   else
     response = 2;
@@ -617,20 +632,20 @@ handle_start_in_thread_func (GTask *task,
 out:
   if (request->exported)
     {
-      GVariantBuilder opt_builder;
+      g_auto(GVariantBuilder) opt_builder =
+        G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
 
       g_debug ("sending response: %d", response);
-      g_variant_builder_init (&opt_builder, G_VARIANT_TYPE_VARDICT);
       xdp_dbus_request_emit_response (XDP_DBUS_REQUEST (request),
                                       response,
                                       g_variant_builder_end (&opt_builder));
-      request_unexport (request);
+      xdp_request_unexport (request);
     }  
 
   if (response != 0)
     {
        g_debug ("closing session");
-       session_close ((Session *)session, FALSE);
+       xdp_session_close (session, FALSE);
     }
 }
 
@@ -641,8 +656,8 @@ handle_start (XdpDbusLocation *object,
               const char *arg_parent_window,
               GVariant *arg_options)
 {
-  Request *request = request_from_invocation (invocation);
-  Session *session;
+  XdpRequest *request = xdp_request_from_invocation (invocation);
+  XdpSession *session;
   LocationSession *loc_session;
   g_autoptr(GTask) task = NULL;
 
@@ -658,7 +673,7 @@ handle_start (XdpDbusLocation *object,
 
   REQUEST_AUTOLOCK (request);
 
-  session = acquire_session (arg_session_handle, request);
+  session = xdp_session_from_request (arg_session_handle, request);
   if (!session)
     {
       g_dbus_method_invocation_return_error (invocation,
@@ -670,7 +685,7 @@ handle_start (XdpDbusLocation *object,
 
   SESSION_AUTOLOCK_UNREF (session);
 
-  loc_session = (LocationSession *)session;
+  loc_session = LOCATION_SESSION (session);
   switch (loc_session->state)
     {
     case LOCATION_SESSION_STATE_INIT:
@@ -690,7 +705,7 @@ handle_start (XdpDbusLocation *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  request_export (request, g_dbus_method_invocation_get_connection (invocation));
+  xdp_request_export (request, g_dbus_method_invocation_get_connection (invocation));
 
   g_object_set_data_full (G_OBJECT (request), "parent-window", g_strdup (arg_parent_window), g_free);
 

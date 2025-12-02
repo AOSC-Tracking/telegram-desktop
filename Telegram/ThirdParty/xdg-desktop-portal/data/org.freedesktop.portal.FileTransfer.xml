@@ -2,10 +2,12 @@
 <!--
  Copyright (C) 2018 Red Hat, Inc.
 
+ SPDX-License-Identifier: LGPL-2.1-or-later
+
  This library is free software; you can redistribute it and/or
  modify it under the terms of the GNU Lesser General Public
  License as published by the Free Software Foundation; either
- version 2 of the License, or (at your option) any later version.
+ version 2.1 of the License, or (at your option) any later version.
 
  This library is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -41,7 +43,7 @@
 
        The D-Bus interface for the this portal is available under the
        bus name org.freedesktop.portal.Documents and the object path
-       /org/freedesktop/portal/documents.
+       ``/org/freedesktop/portal/documents``.
 
        This documentation describes version 1 of this interface.
   -->
@@ -52,6 +54,7 @@
         @key: a key that needs to be passed to org.freedesktop.portal.FileTransfer.RetrieveFiles() to obtain the files
 
         Starts a session for a file transfer.
+
         The caller should call org.freedesktop.portal.FileTransfer.AddFiles()
         at least once, to add files to this session.
 
@@ -60,28 +63,26 @@
         it has the @key.
 
         Supported keys in the @options vardict include:
-        <variablelist>
-          <varlistentry>
-            <term>writable b</term>
-            <listitem><para>
-              Whether to allow the chosen application to write to the files.
-              Default: False
-            </para><para>
-              This key only takes effect for files that need to be exported
-              in the document portal for the receiving app. But it does require
-              the passed-in file descriptors to be writable.
-            </para></listitem>
-          </varlistentry>
-          <varlistentry>
-            <term>autostop b</term>
-            <listitem><para>
-              Whether to stop the transfer automatically after the first
-              org.freedesktop.portal.FileTransfer.RetrieveFiles() call. Default: True
-            </para></listitem>
-          </varlistentry>
-        </variablelist>
+
+        * ``writable`` (``b``)
+
+          Whether to allow the chosen application to write to the files.
+
+          This key only takes effect for files that need to be exported
+          in the document portal for the receiving app. But it does require
+          the passed-in file descriptors to be writable.
+
+          Default: False
+
+        * ``autostop`` (``b``)
+
+          Whether to stop the transfer automatically after the first
+          org.freedesktop.portal.FileTransfer.RetrieveFiles() call.
+
+          Default: True
     -->
     <method name="StartTransfer">
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="s" name="key" direction="out"/>
     </method>
@@ -105,7 +106,9 @@
     <method name="AddFiles">
       <annotation name="org.gtk.GDBus.C.UnixFD" value="true"/>
       <arg type="s" name="key" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QList&lt;QDBusUnixFileDescriptor&gt;"/>
       <arg type="ah" name="fds" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In2" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
     </method>
 
@@ -127,6 +130,7 @@
     -->
     <method name="RetrieveFiles">
       <arg type="s" name="key" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="as" name="files" direction="out"/>
     </method>

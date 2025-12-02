@@ -1,10 +1,12 @@
 /*
  * Copyright © 2022 Matthew Leeds
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -35,9 +37,10 @@
 #include <gio/gdesktopappinfo.h>
 #include <glib/gi18n.h>
 
+#include "xdp-call.h"
 #include "dynamic-launcher.h"
-#include "request.h"
-#include "call.h"
+#include "xdp-app-launch-context.h"
+#include "xdp-request.h"
 #include "xdp-dbus.h"
 #include "xdp-impl-dbus.h"
 #include "xdp-utils.h"
@@ -106,11 +109,11 @@ get_launcher_data_and_revoke_token (const char *token)
 }
 
 static gboolean
-validate_desktop_file_id (const char  *app_id,
+validate_desktop_file_id (XdpAppInfo  *app_info,
                           const char  *desktop_file_id,
                           GError     **error)
 {
-  const char *after_app_id;
+  g_autofree char *no_dot_desktop = NULL;
 
   if (!g_str_has_suffix (desktop_file_id, ".desktop"))
     {
@@ -120,20 +123,49 @@ validate_desktop_file_id (const char  *app_id,
       return FALSE;
     }
 
-  if (app_id == NULL || *app_id == '\0')
-    return TRUE;
+  no_dot_desktop = g_strndup (desktop_file_id,
+                              strlen(desktop_file_id) - strlen (".desktop"));
 
-  after_app_id = desktop_file_id + strlen (app_id);
-  if (!g_str_has_prefix (desktop_file_id, app_id) || *after_app_id != '.')
+  if (!xdp_app_info_is_valid_sub_app_id (app_info, no_dot_desktop))
     {
       g_set_error (error,
                    XDG_DESKTOP_PORTAL_ERROR, XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
-                   _("Desktop file id missing app id prefix '%s.': %s"),
-                   app_id, desktop_file_id);
+                   _("Desktop file id is not valid"));
       return FALSE;
     }
 
   return TRUE;
+}
+
+static gboolean
+validate_serialized_icon (GVariant  *arg_icon_v,
+                          char     **icon_format,
+                          char     **icon_size)
+{
+  GBytes *bytes;
+  g_autoptr(GIcon) icon = NULL;
+  g_autoptr(GVariant) icon_v = NULL;
+  g_autoptr(XdpSealedFd) sealed_icon = NULL;
+
+  if (!arg_icon_v)
+    return FALSE;
+
+  if (!(icon_v = g_variant_get_variant (arg_icon_v)))
+    return FALSE;
+
+  icon = g_icon_deserialize (icon_v);
+
+  if (!G_IS_BYTES_ICON (icon))
+    return FALSE;
+
+  bytes = g_bytes_icon_get_bytes (G_BYTES_ICON (icon));
+  sealed_icon = xdp_sealed_fd_new_from_bytes (bytes, NULL);
+
+  return sealed_icon &&
+         xdp_validate_icon (sealed_icon,
+                            XDP_ICON_TYPE_DESKTOP,
+                            icon_format,
+                            icon_size);
 }
 
 static gboolean
@@ -172,35 +204,98 @@ write_icon_to_disk (GVariant    *icon_v,
   return TRUE;
 }
 
-static GKeyFile *
-save_icon_and_get_desktop_entry (const char  *desktop_file_id,
-                                 const char  *desktop_entry,
-                                 GVariant    *launcher_data,
-                                 XdpAppInfo  *xdp_app_info,
-                                 char       **out_icon_path,
-                                 GError     **error)
+static void
+get_icon_path (const char  *desktop_file_id,
+               const char *icon_extension,
+               const char *icon_size,
+               char       **icon_dir_path_out,
+               char       **icon_path_out)
 {
-  g_autoptr(GVariant) icon_v = NULL;
-  g_autoptr(GDesktopAppInfo) desktop_app_info = NULL;
+  g_autofree char *no_dot_desktop = NULL;
+  g_autofree char *icon_name = NULL;
+  g_autofree char *subdir = NULL;
+
+  no_dot_desktop = g_strndup (desktop_file_id,
+                              strlen(desktop_file_id) - strlen (".desktop"));
+  icon_name = g_strconcat (no_dot_desktop, ".", icon_extension, NULL);
+
+  /* Put the icon in a per-size subdirectory so the size is discernible
+   * without reading the file
+   */
+  if (g_strcmp0 (icon_extension, "svg") == 0)
+    subdir = g_strdup ("scalable");
+  else
+    subdir = g_strdup_printf ("%sx%s", icon_size, icon_size);
+
+  *icon_dir_path_out = g_build_filename (g_get_user_data_dir (),
+                                         XDG_PORTAL_ICONS_DIR,
+                                         subdir,
+                                         NULL);
+  *icon_path_out = g_build_filename (*icon_dir_path_out,
+                                     icon_name,
+                                     NULL);
+}
+
+static gboolean
+write_keyfile_to_disk (const char  *desktop_file_id,
+                       GKeyFile    *desktop_keyfile,
+                       GError     **error)
+{
+  g_autofree char *desktop_dir = NULL;
+  g_autofree char *desktop_path = NULL;
+  g_autofree char *link_dir = NULL;
+  g_autofree char *link_path = NULL;
+  g_autofree char *relative_path = NULL;
+  g_autoptr(GFile) link_file = NULL;
+
+  /* Put the desktop file in ~/.local/share/xdg-desktop-portal/applications/ so
+   * there's no ambiguity about which launchers were created by this portal.
+   */
+  desktop_dir = g_build_filename (g_get_user_data_dir (),
+                                  XDG_PORTAL_APPLICATIONS_DIR,
+                                  NULL);
+  g_mkdir_with_parents (desktop_dir, 0700);
+  desktop_path = g_build_filename (desktop_dir, desktop_file_id, NULL);
+
+  if (!g_key_file_save_to_file (desktop_keyfile, desktop_path, error))
+    return FALSE;
+
+  /* Make a sym link in ~/.local/share/applications so the launcher shows up in
+   * the desktop environment's menu.
+   */
+  link_dir = g_build_filename (g_get_user_data_dir (),
+                               "applications",
+                               NULL);
+  g_mkdir_with_parents (link_dir, 0700);
+  link_path = g_build_filename (link_dir, desktop_file_id, NULL);
+
+  relative_path = g_build_filename ("..",
+                                    XDG_PORTAL_APPLICATIONS_DIR,
+                                    desktop_file_id,
+                                    NULL);
+
+  link_file = g_file_new_for_path (link_path);
+  g_file_delete (link_file, NULL, NULL);
+
+  if (!g_file_make_symbolic_link (link_file, relative_path, NULL, error))
+    {
+      remove (desktop_path);
+      return FALSE;
+    }
+
+  return TRUE;
+}
+
+static GKeyFile *
+get_desktop_entry (const char  *desktop_file_id,
+                   const char  *desktop_entry,
+                   const char  *name,
+                   const char  *app_id,
+                   char        *icon_path,
+                   GError     **error)
+{
   g_autoptr(GKeyFile) key_file = g_key_file_new ();
-  g_autofree char *exec = NULL;
-  g_auto(GStrv) exec_strv = NULL;
-  g_auto(GStrv) prefixed_exec_strv = NULL;
   g_auto(GStrv) groups = NULL;
-  g_autofree char *prefixed_exec = NULL;
-  g_autofree char *tryexec_path = NULL;
-  g_autofree char *icon_path = NULL;
-  g_autofree char *icon_subdir = NULL;
-  const char *name, *icon_extension, *icon_size;
-  const char *app_id;
-
-  g_variant_get (launcher_data, "(&sv&s&s)", &name, &icon_v, &icon_extension, &icon_size);
-  g_assert (name != NULL && name[0] != '\0');
-  g_assert (icon_v);
-  g_assert (icon_extension != NULL && icon_extension[0] != '\0');
-  g_assert (icon_size != NULL && icon_size[0] != '\0');
-
-  app_id = xdp_app_info_get_id (xdp_app_info);
 
   if (!g_key_file_load_from_data (key_file, desktop_entry, -1,
                                   G_KEY_FILE_KEEP_COMMENTS | G_KEY_FILE_KEEP_TRANSLATIONS,
@@ -216,97 +311,18 @@ save_icon_and_get_desktop_entry (const char  *desktop_file_id,
    * there's a security risk.
    */
   groups = g_key_file_get_groups (key_file, NULL);
-  if (g_strv_length (groups) > 1 || !g_strv_contains ((const char * const *)groups, G_KEY_FILE_DESKTOP_GROUP))
+  if (g_strv_length (groups) != 1 ||
+      !g_strv_contains ((const char * const *)groups, G_KEY_FILE_DESKTOP_GROUP))
     {
       g_set_error (error,
                    XDG_DESKTOP_PORTAL_ERROR, XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
-                   _("Desktop entry given to Install() must have only one group"));
+                   _("Desktop entry given to Install() must have exactly one group"));
       return NULL;
     }
 
   /* Overwrite Name= and Icon= if they are present */
   g_key_file_set_string (key_file, G_KEY_FILE_DESKTOP_GROUP, "Name", name);
-
-  {
-    g_autofree char *no_dot_desktop = NULL;
-    g_autofree char *icon_name = NULL;
-    g_autofree char *subdir = NULL;
-
-    no_dot_desktop = g_strndup (desktop_file_id, strlen(desktop_file_id) - strlen (".desktop"));
-    icon_name = g_strconcat (no_dot_desktop, ".", icon_extension, NULL);
-
-    /* Put the icon in a per-size subdirectory so the size is discernible
-     * without reading the file
-     */
-    if (g_strcmp0 (icon_extension, "svg") == 0)
-      subdir = g_strdup ("scalable");
-    else
-      subdir = g_strdup_printf ("%sx%s", icon_size, icon_size);
-
-    icon_subdir = g_build_filename (g_get_user_data_dir (), XDG_PORTAL_ICONS_DIR, subdir, NULL);
-    icon_path = g_build_filename (icon_subdir, icon_name, NULL);
-
-    g_key_file_set_string (key_file, G_KEY_FILE_DESKTOP_GROUP, "Icon", icon_path);
-  }
-
-  exec = g_key_file_get_string (key_file, G_KEY_FILE_DESKTOP_GROUP, "Exec", error);
-  if (exec == NULL)
-    return NULL;
-
-  if (!g_shell_parse_argv (exec, NULL, &exec_strv, error))
-    return NULL;
-
-  /* Don't let the app give itself access to host files */
-  if (xdp_app_info_get_kind (xdp_app_info) == XDP_APP_INFO_KIND_FLATPAK &&
-      g_strv_contains ((const char * const *)exec_strv, "--file-forwarding"))
-    {
-      g_set_error (error,
-                   XDG_DESKTOP_PORTAL_ERROR, XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
-                   _("Desktop entry given to Install() must not use --file-forwarding"));
-      return NULL;
-    }
-
-  prefixed_exec_strv = xdp_app_info_rewrite_commandline (xdp_app_info,
-                                                         (const char * const *)exec_strv,
-                                                         TRUE /* quote escape */);
-  if (prefixed_exec_strv == NULL)
-    {
-      g_set_error (error,
-                   XDG_DESKTOP_PORTAL_ERROR, XDG_DESKTOP_PORTAL_ERROR_FAILED,
-                   _("DynamicLauncher install not supported for: %s"), app_id);
-      return NULL;
-    }
-
-  prefixed_exec = g_strjoinv (" ", prefixed_exec_strv);
-  g_key_file_set_value (key_file, G_KEY_FILE_DESKTOP_GROUP, "Exec", prefixed_exec);
-
-  tryexec_path = xdp_app_info_get_tryexec_path (xdp_app_info);
-  if (tryexec_path != NULL)
-    g_key_file_set_value (key_file, G_KEY_FILE_DESKTOP_GROUP, "TryExec", tryexec_path);
-
-  if (xdp_app_info_get_kind (xdp_app_info) == XDP_APP_INFO_KIND_FLATPAK)
-    {
-      /* Flatpak checks for this key */
-      g_key_file_set_value (key_file, G_KEY_FILE_DESKTOP_GROUP, "X-Flatpak", app_id);
-      /* Flatpak removes this one for security */
-      g_key_file_remove_key (key_file, G_KEY_FILE_DESKTOP_GROUP, "X-GNOME-Bugzilla-ExtraInfoScript", NULL);
-    }
-
-  desktop_app_info = g_desktop_app_info_new_from_keyfile (key_file);
-  if (desktop_app_info == NULL)
-    {
-      g_set_error (error,
-                   XDG_DESKTOP_PORTAL_ERROR, XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
-                   _("Desktop entry given to Install() not valid"));
-      return NULL;
-    }
-
-  /* Write the icon last so it's only on-disk if other checks passed */
-  if (!write_icon_to_disk (icon_v, icon_subdir, icon_path, error))
-    return NULL;
-
-  if (out_icon_path)
-    *out_icon_path = g_steal_pointer (&icon_path);
+  g_key_file_set_string (key_file, G_KEY_FILE_DESKTOP_GROUP, "Icon", icon_path);
 
   return g_steal_pointer (&key_file);
 }
@@ -319,18 +335,17 @@ handle_install (XdpDbusDynamicLauncher *object,
                 const gchar            *arg_desktop_entry,
                 GVariant               *arg_options)
 {
-  Call *call = call_from_invocation (invocation);
+  XdpCall *call = xdp_call_from_invocation (invocation);
   const char *app_id = xdp_app_info_get_id (call->app_info);
   g_autoptr(GVariant) launcher_data = NULL;
   g_autoptr(GError) error = NULL;
   g_autoptr(GKeyFile) desktop_keyfile = NULL;
-  g_autofree char *icon_path = NULL;
-  g_autofree char *desktop_dir = NULL;
-  g_autofree char *desktop_path = NULL;
-  g_autofree char *link_path = NULL;
-  g_autofree char *relative_path = NULL;
-  g_autoptr(GFile) link_file = NULL;
   gsize desktop_entry_length = G_MAXSIZE;
+  g_autoptr(GVariant) icon_v = NULL;
+  const char *name, *icon_extension, *icon_size;
+  g_autofree char *icon_dir_path = NULL;
+  g_autofree char *icon_path = NULL;
+  g_autoptr(GDesktopAppInfo) desktop_app_info = NULL;
 
   launcher_data = get_launcher_data_and_revoke_token (arg_token);
   if (launcher_data == NULL)
@@ -342,23 +357,48 @@ handle_install (XdpDbusDynamicLauncher *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
+  g_variant_get (launcher_data, "(&sv&s&s)", &name, &icon_v, &icon_extension, &icon_size);
+  g_assert (name != NULL && name[0] != '\0');
+  g_assert (icon_v);
+  g_assert (icon_extension != NULL && icon_extension[0] != '\0');
+  g_assert (icon_size != NULL && icon_size[0] != '\0');
 
-  if (!validate_desktop_file_id (app_id, arg_desktop_file_id, &error))
+  if (!validate_desktop_file_id (call->app_info, arg_desktop_file_id, &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  desktop_keyfile = save_icon_and_get_desktop_entry (arg_desktop_file_id,
-                                                     arg_desktop_entry,
-                                                     launcher_data,
-                                                     call->app_info,
-                                                     &icon_path,
-                                                     &error);
+  get_icon_path (arg_desktop_file_id, icon_extension, icon_size,
+                 &icon_dir_path, &icon_path);
+
+  desktop_keyfile = get_desktop_entry (arg_desktop_file_id,
+                                       arg_desktop_entry,
+                                       name,
+                                       app_id,
+                                       icon_path,
+                                       &error);
   if (desktop_keyfile == NULL)
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
       return G_DBUS_METHOD_INVOCATION_HANDLED;
+    }
+
+  if (!xdp_app_info_validate_dynamic_launcher (call->app_info,
+                                               desktop_keyfile,
+                                               &error))
+    {
+      g_dbus_method_invocation_return_gerror (invocation, error);
+      return G_DBUS_METHOD_INVOCATION_HANDLED;
+    }
+
+  desktop_app_info = g_desktop_app_info_new_from_keyfile (desktop_keyfile);
+  if (desktop_app_info == NULL)
+    {
+      g_set_error (&error,
+                   XDG_DESKTOP_PORTAL_ERROR, XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
+                   _("Desktop entry given to Install() not valid"));
+      goto error;
     }
 
   g_free (g_key_file_to_data (desktop_keyfile, &desktop_entry_length, NULL));
@@ -371,33 +411,21 @@ handle_install (XdpDbusDynamicLauncher *object,
       goto error;
     }
 
-  /* Put the desktop file in ~/.local/share/xdg-desktop-portal/applications/ so
-   * there's no ambiguity about which launchers were created by this portal.
-   */
-  desktop_dir = g_build_filename (g_get_user_data_dir (), XDG_PORTAL_APPLICATIONS_DIR, NULL);
-  g_mkdir_with_parents (desktop_dir, 0700);
-  desktop_path = g_build_filename (desktop_dir, arg_desktop_file_id, NULL);
-  if (!g_key_file_save_to_file (desktop_keyfile, desktop_path, &error))
+  /* Write the files last so it's only on-disk if other checks passed */
+  if (!write_icon_to_disk (icon_v, icon_dir_path, icon_path, &error))
     goto error;
 
-  /* Make a sym link in ~/.local/share/applications so the launcher shows up in
-   * the desktop environment's menu.
-   */
-  link_path = g_build_filename (g_get_user_data_dir (), "applications", arg_desktop_file_id, NULL);
-  link_file = g_file_new_for_path (link_path);
-  relative_path = g_build_filename ("..", XDG_PORTAL_APPLICATIONS_DIR, arg_desktop_file_id, NULL);
-  g_file_delete (link_file, NULL, NULL);
-  if (!g_file_make_symbolic_link (link_file, relative_path, NULL, &error))
-    goto error;
+  if (!write_keyfile_to_disk (arg_desktop_file_id, desktop_keyfile, &error))
+    {
+      remove (icon_path);
+      goto error;
+    }
 
   xdp_dbus_dynamic_launcher_complete_install (object, invocation);
   return G_DBUS_METHOD_INVOCATION_HANDLED;
 
 error:
   g_dbus_method_invocation_return_gerror (invocation, error);
-  remove (icon_path);
-  remove (desktop_path);
-  remove (link_path);
   return G_DBUS_METHOD_INVOCATION_HANDLED;
 }
 
@@ -411,10 +439,10 @@ static gboolean
 install_token_timeout (gpointer data)
 {
   g_autoptr(GVariant) launcher_data = NULL;
+  const char *token = data;
 
-  g_debug ("Revoking install token %s", (char *)data);
-  launcher_data = get_launcher_data_and_revoke_token ((char *)data);
-  g_free (data);
+  g_debug ("Revoking install token %s", token);
+  launcher_data = get_launcher_data_and_revoke_token (token);
 
   return G_SOURCE_REMOVE;
 }
@@ -425,7 +453,7 @@ set_launcher_data_for_token (const char *token,
 {
   g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&transient_permissions_lock);
   guint timeout_id;
-  GVariant *launcher_data_wrapped;
+  g_autoptr(GVariant) launcher_data_wrapped = NULL;
 
   if (!transient_permissions)
     {
@@ -438,11 +466,12 @@ set_launcher_data_for_token (const char *token,
    */
   timeout_id = g_timeout_add_seconds_full (G_PRIORITY_DEFAULT, 300, install_token_timeout,
                                            g_strdup (token), g_free);
-  launcher_data_wrapped = g_variant_new ("(vu)", launcher_data, timeout_id);
+  launcher_data_wrapped =
+    g_variant_ref_sink (g_variant_new ("(vu)", launcher_data, timeout_id));
 
   g_hash_table_insert (transient_permissions,
                        g_strdup (token),
-                       g_variant_ref_sink (launcher_data_wrapped));
+                       g_steal_pointer (&launcher_data_wrapped));
 }
 
 static void
@@ -450,16 +479,14 @@ prepare_install_done (GObject      *source,
                       GAsyncResult *result,
                       gpointer      data)
 {
-  g_autoptr(Request) request = data;
-  GVariant *launcher_data;
+  g_autoptr(XdpRequest) request = data;
   guint response = 2;
   g_autoptr(GVariant) results = NULL;
   g_autoptr(GError) error = NULL;
-  GVariantBuilder results_builder;
+  g_auto(GVariantBuilder) results_builder =
+    G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
 
   REQUEST_AUTOLOCK (request);
-
-  g_variant_builder_init (&results_builder, G_VARIANT_TYPE_VARDICT);
 
   if (!xdp_dbus_impl_dynamic_launcher_call_prepare_install_finish (XDP_DBUS_IMPL_DYNAMIC_LAUNCHER (source),
                                                                    &response,
@@ -478,7 +505,7 @@ prepare_install_done (GObject      *source,
       const char *chosen_name = NULL;
       const char *icon_format = NULL;
       const char *icon_size = NULL;
-      GVariant *chosen_icon = NULL;
+      g_autoptr(GVariant) chosen_icon = NULL;
 
       icon_format = g_object_get_data (G_OBJECT (request), "icon-format");
       g_assert (icon_format != NULL && icon_format[0] != '\0');
@@ -498,6 +525,8 @@ prepare_install_done (GObject      *source,
         }
       else
         {
+          GVariant *launcher_data;
+
           /* Save the token in memory and return it to the caller */
           launcher_data = g_variant_new ("(svss)", chosen_name, chosen_icon, icon_format, icon_size);
           set_launcher_data_for_token (token, launcher_data);
@@ -512,11 +541,7 @@ out:
                                       response,
                                       g_variant_builder_end (&results_builder));
 
-      request_unexport (request);
-    }
-  else
-    {
-      g_variant_builder_clear (&results_builder);
+      xdp_request_unexport (request);
     }
 }
 
@@ -588,11 +613,12 @@ handle_prepare_install (XdpDbusDynamicLauncher *object,
                         GVariant               *arg_icon_v,
                         GVariant               *arg_options)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpRequest *request = xdp_request_from_invocation (invocation);
   const char *app_id = xdp_app_info_get_id (request->app_info);
   g_autoptr(GError) error = NULL;
   g_autoptr(XdpDbusImplRequest) impl_request = NULL;
-  GVariantBuilder opt_builder;
+  g_auto(GVariantBuilder) opt_builder =
+    G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
   g_autofree char *icon_format = NULL;
   g_autofree char *icon_size = NULL;
   g_autoptr(GVariant) icon_v = NULL;
@@ -610,10 +636,9 @@ handle_prepare_install (XdpDbusDynamicLauncher *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  request_set_impl_request (request, impl_request);
-  request_export (request, g_dbus_method_invocation_get_connection (invocation));
+  xdp_request_set_impl_request (request, impl_request);
+  xdp_request_export (request, g_dbus_method_invocation_get_connection (invocation));
 
-  g_variant_builder_init (&opt_builder, G_VARIANT_TYPE_VARDICT);
   if (!xdp_filter_options (arg_options, &opt_builder,
                            prepare_install_options, G_N_ELEMENTS (prepare_install_options), &error))
     {
@@ -622,9 +647,7 @@ handle_prepare_install (XdpDbusDynamicLauncher *object,
     }
 
   /* Do some validation on the icon before passing it along */
-  icon_v = g_variant_get_variant (arg_icon_v);
-  if (!icon_v || !xdp_validate_serialized_icon (icon_v, TRUE /* bytes_only */,
-                                                &icon_format, &icon_size))
+  if (!validate_serialized_icon (arg_icon_v, &icon_format, &icon_size))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              XDG_DESKTOP_PORTAL_ERROR,
@@ -659,10 +682,9 @@ handle_request_install_token (XdpDbusDynamicLauncher *object,
                               GVariant               *arg_icon_v,
                               GVariant               *arg_options)
 {
-  Call *call = call_from_invocation (invocation);
+  XdpCall *call = xdp_call_from_invocation (invocation);
   const char *app_id = xdp_app_info_get_id (call->app_info);
   g_autoptr(GError) error = NULL;
-  GVariant *launcher_data;
   g_autofree char *token = NULL;
   g_autofree char *icon_format = NULL;
   g_autofree char *icon_size = NULL;
@@ -692,10 +714,10 @@ handle_request_install_token (XdpDbusDynamicLauncher *object,
 
   if (response == 0)
     {
+      GVariant *launcher_data;
+
       /* Do some validation on the icon before saving it */
-      icon_v = g_variant_get_variant (arg_icon_v);
-      if (!icon_v || !xdp_validate_serialized_icon (icon_v, TRUE /* bytes_only */,
-                                                    &icon_format, &icon_size))
+      if (!validate_serialized_icon (arg_icon_v, &icon_format, &icon_size))
         {
           g_dbus_method_invocation_return_error (invocation,
                                                  XDG_DESKTOP_PORTAL_ERROR,
@@ -729,8 +751,7 @@ handle_uninstall (XdpDbusDynamicLauncher *object,
                   const gchar            *arg_desktop_file_id,
                   GVariant               *arg_options)
 {
-  Call *call = call_from_invocation (invocation);
-  const char *app_id = xdp_app_info_get_id (call->app_info);
+  XdpCall *call = xdp_call_from_invocation (invocation);
   g_autoptr(GError) error = NULL;
   g_autoptr(GError) desktop_file_error = NULL;
   g_autofree char *icon_dir = NULL;
@@ -741,7 +762,7 @@ handle_uninstall (XdpDbusDynamicLauncher *object,
   g_autoptr(GFile) link_file = NULL;
   g_autoptr(GKeyFile) desktop_keyfile = NULL;
 
-  if (!validate_desktop_file_id (app_id, arg_desktop_file_id, &error))
+  if (!validate_desktop_file_id (call->app_info, arg_desktop_file_id, &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
       return G_DBUS_METHOD_INVOCATION_HANDLED;
@@ -788,15 +809,14 @@ handle_get_desktop_entry (XdpDbusDynamicLauncher *object,
                           GDBusMethodInvocation  *invocation,
                           const gchar            *arg_desktop_file_id)
 {
-  Call *call = call_from_invocation (invocation);
-  const char *app_id = xdp_app_info_get_id (call->app_info);
+  XdpCall *call = xdp_call_from_invocation (invocation);
   g_autoptr(GError) error = NULL;
   g_autofree char *desktop_dir = NULL;
   g_autofree char *contents = NULL;
   g_autofree char *desktop_path = NULL;
   gsize length;
 
-  if (!validate_desktop_file_id (app_id, arg_desktop_file_id, &error))
+  if (!validate_desktop_file_id (call->app_info, arg_desktop_file_id, &error))
     goto error;
 
   desktop_dir = g_build_filename (g_get_user_data_dir (), XDG_PORTAL_APPLICATIONS_DIR, NULL);
@@ -826,8 +846,7 @@ handle_get_icon (XdpDbusDynamicLauncher *object,
                  GDBusMethodInvocation  *invocation,
                  const gchar            *arg_desktop_file_id)
 {
-  Call *call = call_from_invocation (invocation);
-  const char *app_id = xdp_app_info_get_id (call->app_info);
+  XdpCall *call = xdp_call_from_invocation (invocation);
   g_autoptr(GError) error = NULL;
   g_autofree char *desktop_dir = NULL;
   g_autofree char *contents = NULL;
@@ -845,7 +864,7 @@ handle_get_icon (XdpDbusDynamicLauncher *object,
   const gchar *icon_format = NULL;
   int icon_size = 0;
 
-  if (!validate_desktop_file_id (app_id, arg_desktop_file_id, &error))
+  if (!validate_desktop_file_id (call->app_info, arg_desktop_file_id, &error))
     goto error;
 
   desktop_dir = g_build_filename (g_get_user_data_dir (), XDG_PORTAL_APPLICATIONS_DIR, NULL);
@@ -941,16 +960,16 @@ handle_launch (XdpDbusDynamicLauncher *object,
                const gchar            *arg_desktop_file_id,
                GVariant               *arg_options)
 {
-  Call *call = call_from_invocation (invocation);
-  const char *app_id = xdp_app_info_get_id (call->app_info);
+  XdpCall *call = xdp_call_from_invocation (invocation);
   g_autoptr(GError) error = NULL;
   g_autofree char *desktop_dir = NULL;
   g_autofree char *desktop_path = NULL;
   const char *activation_token = NULL;
-  g_autoptr(GAppLaunchContext) launch_context = NULL;
+  g_autoptr(XdpAppLaunchContext) xdp_launch_context = NULL;
+  GAppLaunchContext *launch_context = NULL;
   g_autoptr(GDesktopAppInfo) app_info = NULL;
 
-  if (!validate_desktop_file_id (app_id, arg_desktop_file_id, &error))
+  if (!validate_desktop_file_id (call->app_info, arg_desktop_file_id, &error))
     goto error;
 
   desktop_dir = g_build_filename (g_get_user_data_dir (), XDG_PORTAL_APPLICATIONS_DIR, NULL);
@@ -964,14 +983,15 @@ handle_launch (XdpDbusDynamicLauncher *object,
       goto error;
     }
 
-  /* Unset env var set in main() */
-  launch_context = g_app_launch_context_new ();
-  g_app_launch_context_unsetenv (launch_context, "GIO_USE_VFS");
-
-  /* Set activation token for focus stealing prevention */
   g_variant_lookup (arg_options, "activation_token", "&s", &activation_token);
-  if (activation_token)
-    g_app_launch_context_setenv (launch_context, "XDG_ACTIVATION_TOKEN", activation_token);
+
+  xdp_launch_context = xdp_app_launch_context_new ();
+  launch_context = G_APP_LAUNCH_CONTEXT (xdp_launch_context);
+  /* Unset env var set in main() */
+  g_app_launch_context_unsetenv (launch_context, "GIO_USE_VFS");
+  /* Set activation token for focus stealing prevention */
+  xdp_app_launch_context_set_activation_token (xdp_launch_context,
+                                               activation_token);
 
   app_info = g_desktop_app_info_new_from_filename (desktop_path);
   if (app_info == NULL)

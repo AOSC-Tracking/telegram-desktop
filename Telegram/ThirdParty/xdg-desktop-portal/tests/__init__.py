@@ -3,48 +3,221 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
 # This file is formatted with Python Black
-#
-
-# Shared setup for portal tests. To test a portal, subclass TestPortal with
-# your portal's name (e.g. TestEmail). This will auto-fill your portal
-# name into some of the functions.
-#
-# Make sure the portal is listed in tests/portals/test.portal  and you have a
-# dbusmock template for the impl.portal of your portal in tests/templates. See
-# the dbusmock documentation for details on those templates.
-#
-# Environment variables:
-#   G_TEST_BUILDDIR: override the path to the tests/ build
-#                    directory (default: $PWD)
-#   LIBEXECDIR: run xdg-desktop-portal from that dir
-#   XDP_DBUS_MONITOR: if set, starts dbus_monitor on the custom bus, useful
-#                     for debugging
 
 from dbus.mainloop.glib import DBusGMainLoop
-from gi.repository import GLib
+from gi.repository import GLib, Gio
 from itertools import count
-from typing import Any, Dict, Optional, NamedTuple
-from pathlib import Path
+from typing import Any, Dict, Optional, NamedTuple, Callable, List
 
+import os
 import dbus
 import dbus.proxies
 import dbusmock
-import fcntl
 import logging
-import os
 import subprocess
-import time
+
 
 DBusGMainLoop(set_as_default=True)
 
 # Anything that takes longer than 5s needs to fail
-MAX_TIMEOUT = 5000
+DBUS_TIMEOUT = int(os.environ.get("XDP_DBUS_TIMEOUT", "5000"))
 
 _counter = count()
 
 ASV = Dict[str, Any]
 
-logger = logging.getLogger("tests")
+
+def init_logger(name: str) -> logging.Logger:
+    """
+    Common logging setup for tests. Use as:
+
+        >>> import tests as xdp
+        >>> logger = xdp.init_logger(__name__)
+        >>> logger.debug("foo")
+
+    """
+    logging.basicConfig(
+        format="%(levelname).1s|%(name)s: %(message)s", level=logging.DEBUG
+    )
+    logger = logging.getLogger(f"xdp.{name}")
+    logger.setLevel(logging.DEBUG)
+    return logger
+
+
+logger = init_logger("utils")
+
+
+def is_in_ci() -> bool:
+    return os.environ.get("XDP_TEST_IN_CI") is not None
+
+
+def is_in_container() -> bool:
+    return is_in_ci() or (
+        "container" in os.environ
+        and (os.environ["container"] == "docker" or os.environ["container"] == "podman")
+    )
+
+
+def run_long_tests() -> bool:
+    return os.environ.get("XDP_TEST_RUN_LONG") is not None
+
+
+def check_program_success(cmd) -> bool:
+    proc = subprocess.Popen(
+        cmd, stdout=None, stderr=None, shell=True, universal_newlines=True
+    )
+    _ = proc.communicate()
+    return proc.returncode == 0
+
+
+class FuseNotSupportedException(Exception):
+    pass
+
+
+def ensure_fuse_supported() -> None:
+    if not check_program_success("fusermount3 --version"):
+        raise FuseNotSupportedException("no fusermount3")
+
+    if not check_program_success(
+        "capsh --print | grep -q 'Bounding set.*[^a-z]cap_sys_admin'"
+    ):
+        raise FuseNotSupportedException(
+            "No cap_sys_admin in bounding set, can't use FUSE"
+        )
+
+    if not check_program_success("[ -w /dev/fuse ]"):
+        raise FuseNotSupportedException("no write access to /dev/fuse")
+
+    if not check_program_success("[ -e /etc/mtab ]"):
+        raise FuseNotSupportedException("no /etc/mtab")
+
+
+def wait(ms: int):
+    """
+    Waits for the specified amount of milliseconds.
+    """
+    mainloop = GLib.MainLoop()
+    GLib.timeout_add(ms, mainloop.quit)
+    mainloop.run()
+
+
+def wait_for(fn: Callable[[], bool]):
+    """
+    Waits and dispatches to mainloop until the function fn returns true. This is
+    useful in combination with a lambda which captures a variable:
+
+        my_var = False
+        def callback():
+            my_var = True
+        do_something_later(callback)
+        xdp.wait_for(lambda: my_var)
+    """
+    mainloop = GLib.MainLoop()
+    while not fn():
+        GLib.timeout_add(50, mainloop.quit)
+        mainloop.run()
+
+
+def get_permission_store_iface(bus: dbus.Bus) -> dbus.Interface:
+    """
+    Returns the dbus interface of the xdg-permission-store.
+    """
+    obj = bus.get_object(
+        "org.freedesktop.impl.portal.PermissionStore",
+        "/org/freedesktop/impl/portal/PermissionStore",
+    )
+    return dbus.Interface(obj, "org.freedesktop.impl.portal.PermissionStore")
+
+
+def get_document_portal_iface(bus: dbus.Bus) -> dbus.Interface:
+    """
+    Returns the dbus interface of the xdg-document-portal.
+    """
+    obj = bus.get_object(
+        "org.freedesktop.portal.Documents",
+        "/org/freedesktop/portal/documents",
+    )
+    return dbus.Interface(obj, "org.freedesktop.portal.Documents")
+
+
+def get_mock_iface(bus: dbus.Bus, bus_name: Optional[str] = None) -> dbus.Interface:
+    """
+    Returns the mock interface of the xdg-desktop-portal.
+    """
+    if not bus_name:
+        bus_name = "org.freedesktop.impl.portal.Test"
+
+    obj = bus.get_object(bus_name, "/org/freedesktop/portal/desktop")
+    return dbus.Interface(obj, dbusmock.MOCK_IFACE)
+
+
+def portal_interface_name(portal_name: str, domain: Optional[str] = None) -> str:
+    """
+    Returns the fully qualified interface for a portal name.
+    """
+    if domain:
+        return f"org.freedesktop.{domain}.portal.{portal_name}"
+    else:
+        return f"org.freedesktop.portal.{portal_name}"
+
+
+def get_portal_iface(
+    bus: dbus.Bus, name: str, domain: Optional[str] = None
+) -> dbus.Interface:
+    """
+    Returns the dbus interface for a portal name.
+    """
+    name = portal_interface_name(name, domain)
+    return get_iface(bus, name)
+
+
+def get_iface(bus: dbus.Bus, name: str) -> dbus.Interface:
+    """
+    Returns a named interface of the main portal object.
+    """
+    try:
+        ifaces = bus._xdp_portal_ifaces
+    except AttributeError:
+        ifaces = bus._xdp_portal_ifaces = {}
+
+    try:
+        intf = ifaces[name]
+    except KeyError:
+        intf = dbus.Interface(get_xdp_dbus_object(bus), name)
+        assert intf
+        ifaces[name] = intf
+    return intf
+
+
+def get_xdp_dbus_object(bus: dbus.Bus) -> dbus.proxies.ProxyObject:
+    """
+    Returns the main portal object.
+    """
+    try:
+        obj = getattr(bus, "_xdp_dbus_object")
+    except AttributeError:
+        obj = bus.get_object(
+            "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop"
+        )
+        assert obj
+        bus._xdp_dbus_object = obj
+    return obj
+
+
+def check_version(bus: dbus.Bus, portal_name: str, expected_version: int):
+    """
+    Checks that the portal_name portal version is equal to expected_version.
+    """
+    properties_intf = dbus.Interface(
+        get_xdp_dbus_object(bus), "org.freedesktop.DBus.Properties"
+    )
+    portal_iface_name = portal_interface_name(portal_name)
+    try:
+        portal_version = properties_intf.Get(portal_iface_name, "version")
+        assert int(portal_version) == expected_version
+    except dbus.exceptions.DBusException as e:
+        logger.critical(e)
+        assert e is None, str(e)
 
 
 class Response(NamedTuple):
@@ -76,7 +249,7 @@ class Closable:
         # GLib makes assertions in callbacks impossible, so we wrap all
         # callbacks into a try: except and store the error on the request to
         # be raised later when we're back in the main context
-        self.error = None
+        self.error: Optional[Exception] = None
 
         self._mainloop: Optional[GLib.MainLoop] = None
         self._impl_closed = False
@@ -117,7 +290,7 @@ class Closable:
         signal_match = self._bus.add_signal_receiver(
             cb_impl_closed_by_portal,
             f"{self._closable}Closed",
-            dbus_interface="org.freedesktop.impl.portal.Test",
+            dbus_interface="org.freedesktop.impl.portal.Mock",
         )
 
         logger.debug(f"Closing {self._closable} {self.objpath}")
@@ -127,7 +300,7 @@ class Closable:
         """
         Schedule an automatic Close() on the given timeout in milliseconds.
         """
-        assert 0 < timeout_ms < MAX_TIMEOUT
+        assert 0 < timeout_ms < DBUS_TIMEOUT
         GLib.timeout_add(timeout_ms, self.close)
 
 
@@ -219,7 +392,7 @@ class Request(Closable):
 
         # Anything that takes longer than 5s needs to fail
         self._mainloop = GLib.MainLoop()
-        GLib.timeout_add(MAX_TIMEOUT, self._mainloop.quit)
+        GLib.timeout_add(DBUS_TIMEOUT, self._mainloop.quit)
 
         method = getattr(self.interface, methodname)
         assert method
@@ -327,186 +500,121 @@ class Session(Closable):
         return cls(bus, response.results["session_handle"])
 
 
-class PortalMock:
+class GDBusIfaceSignal:
     """
-    Parent class for portal tests.
+    Helper class which represents a connected signal on a GDBusIface and can be
+    used to disconnect from the signal.
     """
 
-    def __init__(self, session_bus, portal_name: str):
-        self.bus = session_bus
-        self.portal_name = portal_name
-        self.p_mock = None
-        self.xdp = None
-        self.portal_interfaces: Dict[str, dbus.Interface] = {}
-        self.dbus_monitor = None
+    def __init__(self, signal_id: int, proxy: Gio.DBusProxy):
+        self.signal_id = signal_id
+        self.proxy = proxy
 
-    @property
-    def interface_name(self) -> str:
-        return f"org.freedesktop.portal.{self.portal_name}"
-
-    @property
-    def dbus_con(self):
-        return self.bus.dbus_con
-
-    def start_impl_portal(self, params=None, portal=None):
+    def disconnect(self):
         """
-        Start the impl.portal for the given portal name. If missing,
-        the portal name is derived from the class name of the test, e.g.
-        ``TestFoo`` will start ``org.freedesktop.impl.portal.Foo``.
+        Disconnects the signal
         """
-        portal = portal or self.portal_name
-        self.p_mock, self.obj_portal = self.bus.spawn_server_template(
-            template=f"tests/templates/{portal.lower()}.py",
-            parameters=params,
-            stdout=subprocess.PIPE,
+        self.proxy.disconnect(self.signal_id)
+
+
+class GDBusIface:
+    """
+    Helper class for calling dbus interfaces with complex arguments.
+    Usually you want to use python-dbus on the dbus_con fixture with
+    get_portal_iface , get_mock_iface or get_iface. This is convenient but
+    might not be sufficient for complex arguments or for asynchronously calling
+    a method.
+    """
+
+    def __init__(self, bus: str, obj: str, iface: str):
+        """
+        Creates a GDBusIface for a specific bus, object and interface on the
+        session bus.
+        """
+        address = Gio.dbus_address_get_for_bus_sync(Gio.BusType.SESSION, None)
+        session_bus = Gio.DBusConnection.new_for_address_sync(
+            address,
+            Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+            | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+            None,
+            None,
         )
-        flags = fcntl.fcntl(self.p_mock.stdout, fcntl.F_GETFL)
-        fcntl.fcntl(self.p_mock.stdout, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-        self.mock_interface = dbus.Interface(self.obj_portal, dbusmock.MOCK_IFACE)
-
-        self.start_dbus_monitor()
-
-    def add_template(self, portal, params: Dict[str, Any] = {}):
-        """
-        Add an additional template to the portal object
-        """
-
-        self.obj_portal.AddTemplate(
-            f"tests/templates/{portal.lower()}.py",
-            dbus.Dictionary(params, signature="sv"),
-            dbus_interface=dbusmock.MOCK_IFACE,
+        assert session_bus
+        self._proxy = Gio.DBusProxy.new_sync(
+            session_bus,
+            Gio.DBusProxyFlags.NONE,
+            None,
+            bus,
+            obj,
+            iface,
+            None,
         )
 
-    def start_xdp(self):
+    def _call(
+        self, method_name: str, args_variant: GLib.Variant, fds: List[int] = []
+    ) -> GLib.Variant:
         """
-        Start the xdg-desktop-portal process
+        Calls a method synchronously with the arguments passed in args_variant,
+        passing the file descriptors specified in fds.
+        Returns the result of the dbus call.
+        """
+        fdlist = Gio.UnixFDList.new()
+        for fd in fds:
+            fdlist.append(fd)
+
+        return self._proxy.call_with_unix_fd_list_sync(
+            method_name,
+            args_variant,
+            0,
+            -1,
+            fdlist,
+            None,
+        )
+
+    def _call_async(
+        self,
+        method_name: str,
+        args_variant: GLib.Variant,
+        fds: List[int] = [],
+        cb: Optional[Callable[[GLib.Variant], None]] = None,
+    ) -> None:
+        """
+        Calls a method asynchronously with the arguments passed in args_variant,
+        passing the file descriptors specified in fds.
+        Invokes the callback cb when the call finished.
+        """
+        fdlist = Gio.UnixFDList.new()
+        for fd in fds:
+            fdlist.append(fd)
+
+        def internal_cb(s, res, _):
+            res = s.call_finish(res)
+            if cb:
+                cb(res)
+
+        self._proxy.call_with_unix_fd_list(
+            method_name,
+            args_variant,
+            0,
+            -1,
+            fdlist,
+            None,
+            internal_cb,
+            None,
+        )
+
+    def connect_to_signal(
+        self, name: str, cb: Callable[[GLib.Variant], None]
+    ) -> GDBusIfaceSignal:
+        """
+        Connects to the dbus signal name to the callback cb. Returns an object
+        representing the connection which can be used to disconnect it again.
         """
 
-        # This roughly resembles test-portals.c and glib's test behavior
-        # but preferences in-tree testing by running pytest in meson's
-        # project_build_root
-        libexecdir = os.getenv("LIBEXECDIR")
-        if libexecdir:
-            xdp_path = Path(libexecdir) / "xdg-desktop-portal"
-        else:
-            xdp_path = (
-                Path(os.getenv("G_TEST_BUILDDIR") or "tests")
-                / ".."
-                / "src"
-                / "xdg-desktop-portal"
-            )
+        def internal_cb(proxy, sender_name, signal_name, parameters):
+            if signal_name != name:
+                return
+            cb(parameters)
 
-        if not xdp_path.exists():
-            raise FileNotFoundError(
-                f"{xdp_path} does not exist, try running from meson build dir or setting G_TEST_BUILDDIR"
-            )
-
-        portal_dir = Path(os.getenv("G_TEST_BUILDDIR") or "tests") / "portals" / "test"
-        if not portal_dir.exists():
-            raise FileNotFoundError(
-                f"{portal_dir} does not exist, try running from meson build dir or setting G_TEST_SRCDIR"
-            )
-
-        argv = [xdp_path]
-        env = os.environ.copy()
-        env["G_DEBUG"] = "fatal-criticals"
-        env["XDG_DESKTOP_PORTAL_DIR"] = portal_dir
-        env["XDG_CURRENT_DESKTOP"] = "test"
-
-        xdp = subprocess.Popen(argv, env=env)
-
-        for _ in range(50):
-            if self.bus.dbus_con.name_has_owner("org.freedesktop.portal.Desktop"):
-                break
-            time.sleep(0.1)
-        else:
-            assert (
-                False
-            ), "Timeout while waiting for xdg-desktop-portal to claim the bus"
-
-        self.xdp = xdp
-
-    def start_dbus_monitor(self):
-        if not os.getenv("XDP_DBUS_MONITOR"):
-            return
-
-        argv = ["dbus-monitor", "--session"]
-        self.dbus_monitor = subprocess.Popen(argv)
-
-    def tearDown(self):
-        if self.dbus_monitor:
-            self.dbus_monitor.terminate()
-            self.dbus_monitor.wait()
-
-        if self.xdp:
-            self.xdp.terminate()
-            self.xdp.wait()
-
-        if self.p_mock:
-            if self.p_mock.stdout:
-                out = (self.p_mock.stdout.read() or b"").decode("utf-8")
-                if out:
-                    print(out)
-                self.p_mock.stdout.close()
-            self.p_mock.terminate()
-            self.p_mock.wait()
-
-    def get_xdp_dbus_object(self) -> dbus.proxies.ProxyObject:
-        """
-        Return the object that is the org.freedesktop.portal.Desktop proxy
-        """
-        try:
-            return self._xdp_dbus_object
-        except AttributeError:
-            obj = self.bus.dbus_con.get_object(
-                "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop"
-            )
-            # Useful for debugging:
-            # print(obj.Introspect(dbus_interface="org.freedesktop.DBus.Introspectable"))
-            assert obj
-            self._xdp_dbus_object: dbus.proxies.ProxyObject = obj
-            return self._xdp_dbus_object
-
-    def get_dbus_interface(self, name=None) -> dbus.Interface:
-        """
-        Return the interface with the given name.
-
-            >>> my_portal_intf = self.get_dbus_interface()
-            >>> rd_portal_intf = self.get_dbus_interface("RemoteDesktop")
-            >>> dbus_intf = self.get_dbus_interface("org.freedesktop.DBus.Introspectable")
-
-        For portals, it's enough to specify the portal name (e.g. "InputCapture").
-        If no name is provided, guess from the test class name.
-        """
-        name = name or self.interface_name
-        if "." not in name:
-            name = f"org.freedesktop.portal.{name}"
-
-        try:
-            intf = getattr(self, "portal_interfaces", {})[name]
-        except KeyError:
-            intf = dbus.Interface(self.get_xdp_dbus_object(), name)
-            assert intf
-            self.portal_interfaces[name] = intf
-        return intf
-
-    def create_request(self, intf_name: Optional[str] = None) -> Request:
-        intf = self.get_dbus_interface(intf_name)
-        return Request(self.dbus_con, intf)
-
-    def check_version(self, expected_version):
-        """
-        Helper function to check for a portal's version. Use as:
-
-            >>> class TestFoo(PortalMock):
-            ...     def test_version(self):
-            ...         self.check_version(2)
-            >>>
-        """
-        properties_intf = self.get_dbus_interface("org.freedesktop.DBus.Properties")
-        try:
-            portal_version = properties_intf.Get(self.interface_name, "version")
-            assert int(portal_version) == expected_version
-        except dbus.exceptions.DBusException as e:
-            logger.critical(e)
-            assert e is None, str(e)
+        signal_id = self._proxy.connect("g-signal", internal_cb)
+        return GDBusIfaceSignal(signal_id, self._proxy)

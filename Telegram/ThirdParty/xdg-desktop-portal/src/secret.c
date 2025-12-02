@@ -1,10 +1,12 @@
 /*
  * Copyright © 2019 Red Hat, Inc
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,7 +35,7 @@
 #include <gio/gunixfdlist.h>
 
 #include "secret.h"
-#include "request.h"
+#include "xdp-request.h"
 #include "xdp-dbus.h"
 #include "xdp-impl-dbus.h"
 #include "xdp-utils.h"
@@ -71,11 +73,10 @@ send_response_in_thread_func (GTask *task,
                               gpointer task_data,
                               GCancellable *cancellable)
 {
-  Request *request = task_data;
+  XdpRequest *request = task_data;
   guint response;
-  GVariantBuilder new_results;
-
-  g_variant_builder_init (&new_results, G_VARIANT_TYPE_VARDICT);
+  g_auto(GVariantBuilder) new_results =
+    G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
 
   REQUEST_AUTOLOCK (request);
 
@@ -86,7 +87,7 @@ send_response_in_thread_func (GTask *task,
       xdp_dbus_request_emit_response (XDP_DBUS_REQUEST (request),
                                       response,
                                       g_variant_builder_end (&new_results));
-      request_unexport (request);
+      xdp_request_unexport (request);
     }
 }
 
@@ -95,7 +96,7 @@ retrieve_secret_done (GObject *source,
 		      GAsyncResult *result,
 		      gpointer data)
 {
-  g_autoptr(Request) request = data;
+  g_autoptr(XdpRequest) request = data;
   guint response = 2;
   g_autoptr(GVariant) results = NULL;
   g_autoptr(GError) error = NULL;
@@ -126,11 +127,12 @@ handle_retrieve_secret (XdpDbusSecret *object,
 			GVariant *arg_fd,
 			GVariant *arg_options)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpRequest *request = xdp_request_from_invocation (invocation);
   const char *app_id = xdp_app_info_get_id (request->app_info);
   g_autoptr(GError) error = NULL;
   g_autoptr(XdpDbusImplRequest) impl_request = NULL;
-  GVariantBuilder options;
+  g_auto(GVariantBuilder) options =
+    G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
 
   REQUEST_AUTOLOCK (request);
 
@@ -146,8 +148,6 @@ handle_retrieve_secret (XdpDbusSecret *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  g_variant_builder_init (&options, G_VARIANT_TYPE_VARDICT);
-
   if (!xdp_filter_options (arg_options, &options,
                            retrieve_secret_options, G_N_ELEMENTS (retrieve_secret_options),
                            &error))
@@ -156,8 +156,8 @@ handle_retrieve_secret (XdpDbusSecret *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  request_set_impl_request (request, impl_request);
-  request_export (request, g_dbus_method_invocation_get_connection (invocation));
+  xdp_request_set_impl_request (request, impl_request);
+  xdp_request_export (request, g_dbus_method_invocation_get_connection (invocation));
 
   xdp_dbus_secret_complete_retrieve_secret (object, invocation, NULL, request->id);
 

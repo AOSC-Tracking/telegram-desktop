@@ -1,10 +1,12 @@
 /*
  * Copyright 2022 Google LLC
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -22,7 +24,7 @@
 
 #include "clipboard.h"
 #include "remote-desktop.h"
-#include "session.h"
+#include "xdp-session.h"
 #include "xdp-dbus.h"
 #include "xdp-impl-dbus.h"
 #include "xdp-utils.h"
@@ -62,11 +64,11 @@ handle_request_clipboard (XdpDbusClipboard *object,
                           const char *arg_session_handle,
                           GVariant *arg_options)
 {
-  Call *call = call_from_invocation (invocation);
-  Session *session;
+  XdpCall *call = xdp_call_from_invocation (invocation);
+  XdpSession *session;
   RemoteDesktopSession *remote_desktop_session;
 
-  session = acquire_session_from_call (arg_session_handle, call);
+  session = xdp_session_from_call (arg_session_handle, call);
   if (!session)
     {
       g_dbus_method_invocation_return_error (invocation,
@@ -78,7 +80,7 @@ handle_request_clipboard (XdpDbusClipboard *object,
 
   SESSION_AUTOLOCK_UNREF (session);
 
-  if (!is_remote_desktop_session (session))
+  if (!IS_REMOTE_DESKTOP_SESSION (session))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              G_DBUS_ERROR,
@@ -86,7 +88,7 @@ handle_request_clipboard (XdpDbusClipboard *object,
                                              "Invalid session type");
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
-  remote_desktop_session = (RemoteDesktopSession *)session;
+  remote_desktop_session = REMOTE_DESKTOP_SESSION (session);
 
   if (!remote_desktop_session_can_request_clipboard (remote_desktop_session))
     {
@@ -110,13 +112,14 @@ handle_set_selection (XdpDbusClipboard *object,
                       const char *arg_session_handle,
                       GVariant *arg_options)
 {
-  Call *call = call_from_invocation (invocation);
-  Session *session;
-  GVariantBuilder options_builder;
-  GVariant *options;
+  XdpCall *call = xdp_call_from_invocation (invocation);
+  XdpSession *session;
+  g_auto(GVariantBuilder) options_builder =
+    G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
+  g_autoptr(GVariant) options = NULL;
   g_autoptr(GError) error = NULL;
 
-  session = acquire_session_from_call (arg_session_handle, call);
+  session = xdp_session_from_call (arg_session_handle, call);
   if (!session)
     {
       g_dbus_method_invocation_return_error (invocation,
@@ -128,7 +131,7 @@ handle_set_selection (XdpDbusClipboard *object,
 
   SESSION_AUTOLOCK_UNREF (session);
 
-  if (!is_remote_desktop_session (session))
+  if (!IS_REMOTE_DESKTOP_SESSION (session))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              G_DBUS_ERROR,
@@ -137,7 +140,7 @@ handle_set_selection (XdpDbusClipboard *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
   else if (!remote_desktop_session_is_clipboard_enabled (
-             (RemoteDesktopSession *)session))
+             REMOTE_DESKTOP_SESSION (session)))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              G_DBUS_ERROR,
@@ -146,7 +149,6 @@ handle_set_selection (XdpDbusClipboard *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  g_variant_builder_init (&options_builder, G_VARIANT_TYPE_VARDICT);
   if (!xdp_filter_options (arg_options,
                            &options_builder,
                            clipboard_set_selection_options,
@@ -156,7 +158,7 @@ handle_set_selection (XdpDbusClipboard *object,
       g_dbus_method_invocation_return_gerror (invocation, error);
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
-  options = g_variant_builder_end (&options_builder);
+  options = g_variant_ref_sink (g_variant_builder_end (&options_builder));
 
   xdp_dbus_impl_clipboard_call_set_selection (
     impl, arg_session_handle, options, NULL, NULL, NULL);
@@ -176,8 +178,6 @@ selection_write_done (GObject *source_object,
   g_autoptr(GUnixFDList) fd_list = NULL;
   g_autoptr(GVariant) fd_handle = NULL;
   g_autoptr(GError) error = NULL;
-  int fd;
-  int fd_id;
   int out_fd_id = -1;
 
   if (!xdp_dbus_impl_clipboard_call_selection_write_finish (
@@ -191,22 +191,34 @@ selection_write_done (GObject *source_object,
 
   if (fd_handle)
     {
-      fd_id = g_variant_get_handle (fd_handle);
-      fd = g_unix_fd_list_get (fd_list, fd_id, &error);
+      int fd_id = g_variant_get_handle (fd_handle);
 
-      out_fd_id = g_unix_fd_list_append (out_fd_list, fd, &error);
-
-      close (fd);
-
-      if (out_fd_id == -1)
+      if (fd_id < g_unix_fd_list_get_length (fd_list))
         {
-          g_dbus_method_invocation_return_error (
-            invocation,
-            XDG_DESKTOP_PORTAL_ERROR,
-            XDG_DESKTOP_PORTAL_ERROR_FAILED,
-            "Failed to append fd: %s",
-            error->message);
+          g_autofd int fd = -1;
+
+          fd = g_unix_fd_list_get (fd_list, fd_id, &error);
+
+          if (fd >= 0)
+            out_fd_id = g_unix_fd_list_append (out_fd_list, fd, &error);
         }
+      else
+        {
+          g_set_error_literal (&error, XDG_DESKTOP_PORTAL_ERROR,
+                               XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
+                               "Bad file descriptor index");
+        }
+    }
+
+  if (out_fd_id == -1)
+    {
+      g_dbus_method_invocation_return_error (
+        invocation,
+        XDG_DESKTOP_PORTAL_ERROR,
+        XDG_DESKTOP_PORTAL_ERROR_FAILED,
+        "Failed to append fd: %s",
+        error->message);
+      return;
     }
 
   xdp_dbus_clipboard_complete_selection_write (
@@ -223,10 +235,10 @@ handle_selection_write (XdpDbusClipboard *object,
                         const char *arg_session_handle,
                         guint arg_serial)
 {
-  Call *call = call_from_invocation (invocation);
-  Session *session;
+  XdpCall *call = xdp_call_from_invocation (invocation);
+  XdpSession *session;
 
-  session = acquire_session_from_call (arg_session_handle, call);
+  session = xdp_session_from_call (arg_session_handle, call);
   if (!session)
     {
       g_dbus_method_invocation_return_error (invocation,
@@ -238,7 +250,7 @@ handle_selection_write (XdpDbusClipboard *object,
 
   SESSION_AUTOLOCK_UNREF (session);
 
-  if (!is_remote_desktop_session (session))
+  if (!IS_REMOTE_DESKTOP_SESSION (session))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              G_DBUS_ERROR,
@@ -247,7 +259,7 @@ handle_selection_write (XdpDbusClipboard *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
   else if (!remote_desktop_session_is_clipboard_enabled (
-             (RemoteDesktopSession *)session))
+             REMOTE_DESKTOP_SESSION (session)))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              G_DBUS_ERROR,
@@ -274,10 +286,10 @@ handle_selection_write_done (XdpDbusClipboard *object,
                              guint arg_serial,
                              gboolean arg_success)
 {
-  Call *call = call_from_invocation (invocation);
-  Session *session;
+  XdpCall *call = xdp_call_from_invocation (invocation);
+  XdpSession *session;
 
-  session = acquire_session_from_call (arg_session_handle, call);
+  session = xdp_session_from_call (arg_session_handle, call);
   if (!session)
     {
       g_dbus_method_invocation_return_error (invocation,
@@ -289,7 +301,7 @@ handle_selection_write_done (XdpDbusClipboard *object,
 
   SESSION_AUTOLOCK_UNREF (session);
 
-  if (!is_remote_desktop_session (session))
+  if (!IS_REMOTE_DESKTOP_SESSION (session))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              G_DBUS_ERROR,
@@ -298,7 +310,7 @@ handle_selection_write_done (XdpDbusClipboard *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
   else if (!remote_desktop_session_is_clipboard_enabled (
-             (RemoteDesktopSession *)session))
+             REMOTE_DESKTOP_SESSION (session)))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              G_DBUS_ERROR,
@@ -325,10 +337,7 @@ selection_read_done (GObject *source_object,
   g_autoptr(GUnixFDList) fd_list = NULL;
   g_autoptr(GVariant) fd_handle = NULL;
   g_autoptr(GError) error = NULL;
-
-  int fd;
-  int fd_id;
-  int out_fd_id;
+  int out_fd_id = -1;
 
   if (!xdp_dbus_impl_clipboard_call_selection_read_finish (
         impl, &fd_handle, &fd_list, res, &error))
@@ -337,12 +346,28 @@ selection_read_done (GObject *source_object,
       g_warning ("A backend call failed: %s", error->message);
     }
 
-  fd_id = g_variant_get_handle (fd_handle);
-  fd = g_unix_fd_list_get (fd_list, fd_id, &error);
-
   out_fd_list = g_unix_fd_list_new ();
-  out_fd_id = g_unix_fd_list_append (out_fd_list, fd, &error);
-  close (fd);
+
+  if (fd_handle)
+    {
+      int fd_id = g_variant_get_handle (fd_handle);
+
+      if (fd_id < g_unix_fd_list_get_length (fd_list))
+        {
+          g_autofd int fd = -1;
+
+          fd = g_unix_fd_list_get (fd_list, fd_id, &error);
+
+          if (fd >= 0)
+            out_fd_id = g_unix_fd_list_append (out_fd_list, fd, &error);
+        }
+      else
+        {
+          g_set_error_literal (&error, XDG_DESKTOP_PORTAL_ERROR,
+                               XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
+                               "Bad file descriptor index");
+        }
+    }
 
   if (out_fd_id == -1)
     {
@@ -351,6 +376,7 @@ selection_read_done (GObject *source_object,
                                              XDG_DESKTOP_PORTAL_ERROR_FAILED,
                                              "Failed to append fd: %s",
                                              error->message);
+      return;
     }
 
   xdp_dbus_clipboard_complete_selection_read (
@@ -364,10 +390,10 @@ handle_selection_read (XdpDbusClipboard *object,
                        const char *arg_session_handle,
                        const char *arg_mime_type)
 {
-  Call *call = call_from_invocation (invocation);
-  Session *session;
+  XdpCall *call = xdp_call_from_invocation (invocation);
+  XdpSession *session;
 
-  session = acquire_session_from_call (arg_session_handle, call);
+  session = xdp_session_from_call (arg_session_handle, call);
   if (!session)
     {
       g_dbus_method_invocation_return_error (invocation,
@@ -379,7 +405,7 @@ handle_selection_read (XdpDbusClipboard *object,
 
   SESSION_AUTOLOCK_UNREF (session);
 
-  if (!is_remote_desktop_session (session))
+  if (!IS_REMOTE_DESKTOP_SESSION (session))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              G_DBUS_ERROR,
@@ -388,7 +414,7 @@ handle_selection_read (XdpDbusClipboard *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
   else if (!remote_desktop_session_is_clipboard_enabled (
-             (RemoteDesktopSession *)session))
+              REMOTE_DESKTOP_SESSION (session)))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              G_DBUS_ERROR,
@@ -439,9 +465,9 @@ selection_transfer_cb (XdpDbusImplClipboard *impl,
 {
   GDBusConnection *connection =
     g_dbus_proxy_get_connection (G_DBUS_PROXY (impl));
-  Session *session;
+  XdpSession *session;
 
-  session = lookup_session (arg_session_handle);
+  session = xdp_session_lookup (arg_session_handle);
   if (!session)
     {
       g_warning ("Cannot find session");
@@ -450,8 +476,7 @@ selection_transfer_cb (XdpDbusImplClipboard *impl,
 
   SESSION_AUTOLOCK_UNREF (session);
 
-  RemoteDesktopSession *remote_desktop_session =
-    (RemoteDesktopSession *)session;
+  RemoteDesktopSession *remote_desktop_session = REMOTE_DESKTOP_SESSION (session);
 
   if (remote_desktop_session &&
       remote_desktop_session_is_clipboard_enabled (remote_desktop_session) &&
@@ -476,9 +501,9 @@ selection_owner_changed_cb (XdpDbusImplClipboard *impl,
 {
   GDBusConnection *connection =
     g_dbus_proxy_get_connection (G_DBUS_PROXY (impl));
-  Session *session;
+  XdpSession *session;
 
-  session = lookup_session (arg_session_handle);
+  session = xdp_session_lookup (arg_session_handle);
   if (!session)
     {
       g_warning ("Cannot find session");
@@ -487,8 +512,7 @@ selection_owner_changed_cb (XdpDbusImplClipboard *impl,
 
   SESSION_AUTOLOCK_UNREF (session);
 
-  RemoteDesktopSession *remote_desktop_session =
-    (RemoteDesktopSession *)session;
+  RemoteDesktopSession *remote_desktop_session = REMOTE_DESKTOP_SESSION (session);
 
   if (remote_desktop_session &&
       remote_desktop_session_is_clipboard_enabled (remote_desktop_session) &&

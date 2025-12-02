@@ -62,7 +62,6 @@ Action::Action(
 , _height(_st.itemPadding.top()
 	+ _st.itemStyle.font->height
 	+ _st.itemPadding.bottom()) {
-
 	setAcceptBoth(true);
 
 	initResizeHook(parent->sizeValue());
@@ -139,6 +138,8 @@ void Action::paint(Painter &p) {
 }
 
 void Action::processAction() {
+	accessibilityNameChanged();
+
 	setPointerCursor(isEnabled());
 	if (_action->text().isEmpty()) {
 		_shortcut = QString();

@@ -344,11 +344,11 @@ QString Generator::valueAssignmentCode(
 				return QString();
 			}
 			auto color = valueAssignmentCode(part.color);
-			auto offset = valueAssignmentCode(part.offset);
+			auto padding = valueAssignmentCode(part.padding);
 			parts.push_back(QString("MonoIcon{ &iconMask%1, %2, %3 }").arg(
 				QString::number(maskIndex),
 				color,
-				offset));
+				padding));
 		}
 		return QString("{ %1 }").arg(parts.join(", "));
 	} break;
@@ -446,12 +446,13 @@ bool Generator::writePaletteDefinition() {
 class palette;\n\
 class palette_data {\n\
 public:\n\
-	static constexpr auto kCount = " << (1 + module_.variablesCount()) << ";\n\
+	static constexpr auto kCount = " << (2 + module_.variablesCount()) << ";\n\
 	static int32 Checksum();\n\
 \n\
-	inline const color &transparent() const { return _colors[0]; }; // special color\n";
+	inline const color &transparent() const { return _colors[0]; }; // special color\n\
+	inline const color &white() const { return _colors[1]; }; // special color\n";
 
-	auto indexInPalette = 1;
+	auto indexInPalette = 2;
 	if (!module_.enumVariables([&](const Variable &variable) -> bool {
 		auto name = variable.name.back();
 		if (variable.value.type().tag != structure::TypeTag::Color) {
@@ -581,6 +582,7 @@ bool Generator::writeRefsDeclarations() {
 
 	if (isPalette_) {
 		header_->stream() << "extern const style::color &transparent; // special color\n";
+		header_->stream() << "extern const style::color &white; // special color\n";
 	}
 	bool result = module_.enumVariables([&](const Variable &value) -> bool {
 		auto name = value.name.back();
@@ -675,6 +677,7 @@ bool Generator::writeRefsDefinition() {
 
 	if (isPalette_) {
 		source_->stream() << "const style::color &transparent(_palette.transparent()); // special color\n";
+		source_->stream() << "const style::color &white(_palette.white()); // special color\n";
 	}
 	bool result = module_.enumVariables([&](const Variable &variable) -> bool {
 		auto name = variable.name.back();
@@ -700,7 +703,8 @@ bool Generator::writeRefsDefinition() {
 bool Generator::writeSetPaletteColor() {
 	source_->stream() << "\n\
 void palette_data::finalize(palette &that) {\n\
-	that.compute(0, -1, { 255, 255, 255, 0}); // special color\n";
+	that.compute(0, -1, { 255, 255, 255, 0}); // special color transparent\n\
+	that.compute(1, -1, { 255, 255, 255, 255}); // special color white\n";
 
 	QList<structure::FullName> names;
 	module_.enumVariables([&](const Variable &variable) -> bool {
@@ -709,9 +713,10 @@ void palette_data::finalize(palette &that) {\n\
 	});
 
 	QString dataRows;
-	int indexInPalette = 1;
+	int indexInPalette = 2;
 	QByteArray checksumString;
 	checksumString.append("&transparent:{ 255, 255, 255, 0 }");
+	checksumString.append("&white:{ 255, 255, 255, 255 }");
 	auto result = module_.enumVariables([&](const Variable &variable) -> bool {
 		auto name = variable.name.back();
 		auto index = indexInPalette++;
@@ -729,8 +734,8 @@ void palette_data::finalize(palette &that) {\n\
 		auto isCopy = !variable.value.copyOf().isEmpty();
 		auto colorString = paletteColorValue(color);
 		auto fallbackName = QString();
-		if (fallbackIndex > 0) {
-			auto fallbackVariable = module_.findVariableInModule(names[fallbackIndex - 1], module_);
+		if (fallbackIndex > 1) {
+			auto fallbackVariable = module_.findVariableInModule(names[fallbackIndex - 2], module_);
 			if (fallbackVariable && fallbackVariable->value.type().tag == structure::TypeTag::Color) {
 				fallbackName = fallbackVariable->name.back();
 			}
@@ -1253,8 +1258,11 @@ bool Generator::collectUniqueValues() {
 		case Tag::Icon: {
 			auto v(value.Icon());
 			for (auto &part : v.parts) {
-				pxValues_.insert(part.offset.Point().x, true);
-				pxValues_.insert(part.offset.Point().y, true);
+				auto p(part.padding.Margins());
+				pxValues_.insert(p.left, true);
+				pxValues_.insert(p.top, true);
+				pxValues_.insert(p.right, true);
+				pxValues_.insert(p.bottom, true);
 				if (!iconMasks_.contains(part.filename)) {
 					iconMasks_.insert(part.filename, ++iconMaskIndex);
 				}

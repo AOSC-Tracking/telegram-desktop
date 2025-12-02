@@ -1,10 +1,12 @@
 /*
  * Copyright © 2019 Red Hat, Inc
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,15 +27,16 @@
 #include <gio/gio.h>
 #include <gio/gdesktopappinfo.h>
 
-#include "call.h"
+#include "xdp-call.h"
 #include "background.h"
-#include "background-monitor.h"
-#include "request.h"
-#include "permissions.h"
+#include "xdp-background-monitor.h"
+#include "flatpak-instance.h"
+#include "xdp-permissions.h"
+#include "xdp-request.h"
 #include "xdp-dbus.h"
 #include "xdp-impl-dbus.h"
+#include "xdp-app-info.h"
 #include "xdp-utils.h"
-#include "flatpak-instance.h"
 
 /* Implementation notes:
  *
@@ -72,7 +75,7 @@ struct _Background
 {
   XdpDbusBackgroundSkeleton parent_instance;
 
-  BackgroundMonitor *monitor;
+  XdpBackgroundMonitor *monitor;
 };
 
 struct _BackgroundClass
@@ -105,11 +108,6 @@ typedef enum {
   IGNORE = 2
 } NotifyResult;
 
-typedef enum {
-  AUTOSTART_FLAGS_NONE = 0,
-  AUTOSTART_FLAGS_ACTIVATABLE = 1 << 0,
-} AutostartFlags;
-
 static GVariant *
 get_all_permissions (void)
 {
@@ -117,7 +115,7 @@ get_all_permissions (void)
   g_autoptr(GVariant) out_perms = NULL;
   g_autoptr(GVariant) out_data = NULL;
 
-  if (!xdp_dbus_impl_permission_store_call_lookup_sync (get_permission_store (),
+  if (!xdp_dbus_impl_permission_store_call_lookup_sync (xdp_get_permission_store (),
                                                         PERMISSION_TABLE,
                                                         PERMISSION_ID,
                                                         &out_perms,
@@ -133,7 +131,7 @@ get_all_permissions (void)
   return g_steal_pointer (&out_perms);
 }
 
-static Permission
+static XdpPermission
 get_one_permission (const char *app_id,
                     GVariant   *perms)
 {
@@ -143,39 +141,39 @@ get_one_permission (const char *app_id,
     {
       g_debug ("No background permissions found");
 
-      return PERMISSION_UNSET;
+      return XDP_PERMISSION_UNSET;
     }
   else if (!g_variant_lookup (perms, app_id, "^a&s", &permissions))
     {
       g_debug ("No background permissions stored for: app %s", app_id);
 
-      return PERMISSION_UNSET;
+      return XDP_PERMISSION_UNSET;
     }
   else if (g_strv_length ((char **)permissions) != 1)
     {
       g_autofree char *a = g_strjoinv (" ", (char **)permissions);
       g_warning ("Wrong background permission format, ignoring (%s)", a);
-      return PERMISSION_UNSET;
+      return XDP_PERMISSION_UNSET;
     }
 
   g_debug ("permission store: background, app %s -> %s", app_id, permissions[0]);
 
   if (strcmp (permissions[0], "yes") == 0)
-    return PERMISSION_YES;
+    return XDP_PERMISSION_YES;
   else if (strcmp (permissions[0], "no") == 0)
-    return PERMISSION_NO;
+    return XDP_PERMISSION_NO;
   else if (strcmp (permissions[0], "ask") == 0)
-    return PERMISSION_ASK;
+    return XDP_PERMISSION_ASK;
   else
     {
       g_autofree char *a = g_strjoinv (" ", (char **)permissions);
       g_warning ("Wrong permission format, ignoring (%s)", a);
     }
 
-  return PERMISSION_UNSET;
+  return XDP_PERMISSION_UNSET;
 }
 
-static Permission
+static XdpPermission
 get_permission (const char *app_id)
 {
   g_autoptr(GVariant) perms = NULL;
@@ -184,21 +182,21 @@ get_permission (const char *app_id)
   if (perms)
     return get_one_permission (app_id, perms);
 
-  return PERMISSION_UNSET;
+  return XDP_PERMISSION_UNSET;
 }
 
 static void
 set_permission (const char *app_id,
-                Permission permission)
+                XdpPermission permission)
 {
   g_autoptr(GError) error = NULL;
   const char *permissions[2];
 
-  if (permission == PERMISSION_ASK)
+  if (permission == XDP_PERMISSION_ASK)
     permissions[0] = "ask";
-  else if (permission == PERMISSION_YES)
+  else if (permission == XDP_PERMISSION_YES)
     permissions[0] = "yes";
-  else if (permission == PERMISSION_NO)
+  else if (permission == XDP_PERMISSION_NO)
     permissions[0] = "no";
   else
     {
@@ -207,7 +205,7 @@ set_permission (const char *app_id,
     }
   permissions[1] = NULL;
 
-  if (!xdp_dbus_impl_permission_store_call_set_permission_sync (get_permission_store (),
+  if (!xdp_dbus_impl_permission_store_call_set_permission_sync (xdp_get_permission_store (),
                                                                 PERMISSION_TABLE,
                                                                 TRUE,
                                                                 PERMISSION_ID,
@@ -284,7 +282,7 @@ typedef struct {
   AppState state;
   char *handle;
   gboolean notified;
-  Permission permission;
+  XdpPermission permission;
   char *status_message;
 } InstanceData;
 
@@ -354,18 +352,18 @@ remove_outdated_instances (int stamp)
 static void
 update_background_monitor_properties (void)
 {
-  GVariantBuilder builder;
+  g_auto(GVariantBuilder) builder =
+    G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE ("aa{sv}"));
   GHashTableIter iter;
   InstanceData *data;
   char *id;
-
-  g_variant_builder_init (&builder, G_VARIANT_TYPE ("aa{sv}"));
 
   G_LOCK (applications);
   g_hash_table_iter_init (&iter, applications);
   while (g_hash_table_iter_next (&iter, (gpointer *)&id, (gpointer *)&data))
     {
-      GVariantBuilder app_builder;
+      g_auto(GVariantBuilder) app_builder =
+        G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
       const char *app_id;
       const char *id;
 
@@ -379,7 +377,6 @@ update_background_monitor_properties (void)
       app_id = flatpak_instance_get_app (data->instance);
       g_assert (app_id != NULL);
 
-      g_variant_builder_init (&app_builder, G_VARIANT_TYPE_VARDICT);
       g_variant_builder_add (&app_builder, "{sv}", "app_id", g_variant_new_string (app_id));
       g_variant_builder_add (&app_builder, "{sv}", "instance", g_variant_new_string (id));
       if (data->status_message)
@@ -417,7 +414,7 @@ typedef struct {
   char *app_id;
   char *id;
   char *name;
-  Permission perm;
+  XdpPermission perm;
   pid_t child_pid;
 } NotificationData;
 
@@ -464,15 +461,15 @@ notify_background_done (GObject *source,
     {
       g_debug ("Allowing app %s to run in background", nd->app_id);
 
-      if (nd->perm != PERMISSION_ASK)
-        nd->perm = PERMISSION_YES;
+      if (nd->perm != XDP_PERMISSION_ASK)
+        nd->perm = XDP_PERMISSION_YES;
     }
   else if (result == FORBID)
     {
       g_debug ("Forbid app %s to run in background", nd->app_id);
 
-      if (nd->perm != PERMISSION_ASK)
-        nd->perm = PERMISSION_NO;
+      if (nd->perm != XDP_PERMISSION_ASK)
+        nd->perm = XDP_PERMISSION_NO;
 
       g_message ("Terminating app %s (process %d) because the app does not "
                  "have permission to run in the background. You may be able to "
@@ -489,7 +486,7 @@ notify_background_done (GObject *source,
   else
     g_debug ("Unexpected response from NotifyBackground: %u", result);
 
-  if (nd->perm != PERMISSION_UNSET)
+  if (nd->perm != XDP_PERMISSION_UNSET)
     set_permission (nd->app_id, nd->perm);
 
   G_LOCK (applications);
@@ -581,15 +578,15 @@ check_background_apps (void)
 
       switch (idata->permission)
         {
-        case PERMISSION_NO:
+        case XDP_PERMISSION_NO:
           idata->stamp = 0;
 
           g_debug ("Kill app %s (pid %d)", app_id, child_pid);
           kill (child_pid, SIGKILL);
           break;
 
-        case PERMISSION_ASK:
-        case PERMISSION_UNSET:
+        case XDP_PERMISSION_ASK:
+        case XDP_PERMISSION_UNSET:
           {
             NotificationData *nd = g_new0 (NotificationData, 1);
 
@@ -613,7 +610,7 @@ check_background_apps (void)
           }
           break;
 
-        case PERMISSION_YES:
+        case XDP_PERMISSION_YES:
         default:
           break;
         }
@@ -689,25 +686,110 @@ instances_changed (gpointer data)
   g_main_context_wakeup (monitor_context);
 }
 
+gboolean
+enable_autostart_sync (XdpAppInfo          *app_info,
+                       gboolean             enable,
+                       const char * const  *autostart_exec,
+                       gboolean             activatable,
+                       gboolean            *out_enabled,
+                       GError             **error)
+{
+  GStrv exec = (GStrv)autostart_exec;
+  g_autofree char *cmd = NULL;
+  g_autofree char *file = NULL;
+  g_autofree char *dir = NULL;
+  g_autofree char *path = NULL;
+  g_autoptr(GKeyFile) keyfile = NULL;
+  const char *appid = xdp_app_info_get_id (app_info);
+
+  if (!appid)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                   "Autostart not supported");
+      return FALSE;
+    }
+
+  file = g_strconcat (appid, ".desktop", NULL);
+  dir = g_build_filename (g_get_user_config_dir (), "autostart", NULL);
+  path = g_build_filename (dir, file, NULL);
+
+  if (!enable)
+    {
+      unlink (path);
+
+      *out_enabled = FALSE;
+      return TRUE;
+    }
+
+  if (g_mkdir_with_parents (dir, 0755) != 0)
+    {
+      g_set_error (error, G_FILE_ERROR, g_file_error_from_errno (errno),
+                   "Could not create directory for Autostart files");
+      return FALSE;
+    }
+
+  keyfile = g_key_file_new ();
+
+  g_key_file_set_string (keyfile,
+                         G_KEY_FILE_DESKTOP_GROUP,
+                         G_KEY_FILE_DESKTOP_KEY_TYPE,
+                         "Application");
+  g_key_file_set_string (keyfile,
+                         G_KEY_FILE_DESKTOP_GROUP,
+                         G_KEY_FILE_DESKTOP_KEY_NAME,
+                         appid); /* FIXME: The app id isn't the name */
+  g_key_file_set_string (keyfile,
+                         G_KEY_FILE_DESKTOP_GROUP,
+                         "X-XDP-Autostart",
+                         appid);
+
+  if (exec)
+    cmd = g_strjoinv (" ", exec);
+
+  if (cmd)
+    {
+      g_key_file_set_string (keyfile,
+                             G_KEY_FILE_DESKTOP_GROUP,
+                             G_KEY_FILE_DESKTOP_KEY_EXEC,
+                             cmd);
+    }
+
+  if (activatable)
+    {
+      g_key_file_set_boolean (keyfile,
+                              G_KEY_FILE_DESKTOP_GROUP,
+                              G_KEY_FILE_DESKTOP_KEY_DBUS_ACTIVATABLE,
+                              TRUE);
+    }
+
+  if (!xdp_app_info_validate_autostart (app_info, keyfile, autostart_exec,
+                                        NULL, error))
+    return FALSE;
+
+  if (!g_key_file_save_to_file (keyfile, path, error))
+    return FALSE;
+
+  *out_enabled = TRUE;
+  return TRUE;
+}
+
 static void
 handle_request_background_in_thread_func (GTask *task,
                                           gpointer source_object,
                                           gpointer task_data,
                                           GCancellable *cancellable)
 {
-  Request *request = (Request *)task_data;
+  XdpRequest *request = XDP_REQUEST (task_data);
   GVariant *options;
   const char *id;
-  Permission permission;
+  XdpPermission permission;
   const char *reason = NULL;
   gboolean autostart_requested = FALSE;
   gboolean autostart_enabled;
   gboolean allowed;
   g_autoptr(GError) error = NULL;
-  const char * const *autostart_exec = { NULL };
-  AutostartFlags autostart_flags = AUTOSTART_FLAGS_NONE;
+  g_autofree const char **autostart_exec = { NULL };
   gboolean activatable = FALSE;
-  g_auto(GStrv) commandline = NULL;
 
   REQUEST_AUTOLOCK (request);
 
@@ -717,21 +799,19 @@ handle_request_background_in_thread_func (GTask *task,
   g_variant_lookup (options, "commandline", "^a&s", &autostart_exec);
   g_variant_lookup (options, "dbus-activatable", "b", &activatable);
 
-  if (activatable)
-    autostart_flags |= AUTOSTART_FLAGS_ACTIVATABLE;
-
   id = xdp_app_info_get_id (request->app_info);
 
   if (xdp_app_info_is_host (request->app_info))
-    permission = PERMISSION_YES;
+    permission = XDP_PERMISSION_YES;
   else
     permission = get_permission (id);
 
   g_debug ("Handle RequestBackground for '%s'", id);
 
-  if (permission == PERMISSION_ASK)
+  if (permission == XDP_PERMISSION_ASK)
     {
-      GVariantBuilder opt_builder;
+      g_auto(GVariantBuilder) opt_builder =
+        G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
       g_autofree char *app_id = NULL;
       g_autofree char *title = NULL;
       g_autofree char *subtitle = NULL;
@@ -739,9 +819,9 @@ handle_request_background_in_thread_func (GTask *task,
       guint32 response = 2;
       g_autoptr(GVariant) results = NULL;
       g_autoptr(GError) error = NULL;
-      g_autoptr(GAppInfo) info = NULL;
+      GAppInfo *info = NULL;
 
-      info = xdp_app_info_load_app_info (request->app_info);
+      info = xdp_app_info_get_gappinfo (request->app_info);
       app_id = info ? xdp_get_app_id_from_desktop_id (g_app_info_get_id (info)) : g_strdup (id);
 
       title = g_strdup_printf (_("Allow %s to run in the background?"), info ? g_app_info_get_display_name (info) : id);
@@ -755,7 +835,6 @@ handle_request_background_in_thread_func (GTask *task,
 
       g_debug ("Calling backend for background access for: %s", id);
 
-      g_variant_builder_init (&opt_builder, G_VARIANT_TYPE_VARDICT);
       g_variant_builder_add (&opt_builder, "{sv}", "deny_label", g_variant_new_string (_("Don't allow")));
       g_variant_builder_add (&opt_builder, "{sv}", "grant_label", g_variant_new_string (_("Allow")));
       if (!xdp_dbus_impl_access_call_access_dialog_sync (access_impl,
@@ -779,9 +858,9 @@ handle_request_background_in_thread_func (GTask *task,
     }
   else
     {
-      allowed = permission != PERMISSION_NO;
-      if (permission == PERMISSION_UNSET)
-        set_permission (id, PERMISSION_YES);
+      allowed = permission != XDP_PERMISSION_NO;
+      if (permission == XDP_PERMISSION_UNSET)
+        set_permission (id, XDP_PERMISSION_YES);
     }
 
   g_debug ("Setting autostart for %s to %s", id,
@@ -789,20 +868,12 @@ handle_request_background_in_thread_func (GTask *task,
 
   autostart_enabled = FALSE;
 
-  commandline = xdp_app_info_rewrite_commandline (request->app_info, autostart_exec,
-                                                  FALSE /* don't quote escape */);
-  if (commandline == NULL)
-    {
-      g_debug ("Autostart not supported for: %s", id);
-    }
-  else if (!xdp_dbus_impl_background_call_enable_autostart_sync (background_impl,
-                                                                 id,
-                                                                 allowed && autostart_requested,
-                                                                 (const char * const *)commandline,
-                                                                 autostart_flags,
-                                                                 &autostart_enabled,
-                                                                 NULL,
-                                                                 &error))
+  if (!enable_autostart_sync (request->app_info,
+                              allowed && autostart_requested,
+                              autostart_exec,
+                              activatable,
+                              &autostart_enabled,
+                              &error))
     {
       g_warning ("EnableAutostart call failed: %s", error->message);
       g_clear_error (&error);
@@ -811,9 +882,9 @@ handle_request_background_in_thread_func (GTask *task,
   if (request->exported)
     {
       XdgDesktopPortalResponseEnum portal_response;
-      GVariantBuilder results;
+      g_auto(GVariantBuilder) results =
+        G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
 
-      g_variant_builder_init (&results, G_VARIANT_TYPE_VARDICT);
       g_variant_builder_add (&results, "{sv}", "background", g_variant_new_boolean (allowed));
       g_variant_builder_add (&results, "{sv}", "autostart", g_variant_new_boolean (autostart_enabled));
 
@@ -825,7 +896,7 @@ handle_request_background_in_thread_func (GTask *task,
       xdp_dbus_request_emit_response (XDP_DBUS_REQUEST (request),
                                       portal_response,
                                       g_variant_builder_end (&results));
-      request_unexport (request);
+      xdp_request_unexport (request);
     }
 }
 
@@ -899,16 +970,16 @@ handle_request_background (XdpDbusBackground *object,
                            const char *arg_window,
                            GVariant *arg_options)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpRequest *request = xdp_request_from_invocation (invocation);
   g_autoptr(GError) error = NULL;
   g_autoptr(XdpDbusImplRequest) impl_request = NULL;
   g_autoptr(GTask) task = NULL;
-  GVariantBuilder opt_builder;
+  g_auto(GVariantBuilder) opt_builder =
+    G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
   g_autoptr(GVariant) options = NULL;
 
   REQUEST_AUTOLOCK (request);
 
-  g_variant_builder_init (&opt_builder, G_VARIANT_TYPE_VARDICT);
   if (!xdp_filter_options (arg_options, &opt_builder,
                            background_options, G_N_ELEMENTS (background_options),
                            &error))
@@ -934,8 +1005,8 @@ handle_request_background (XdpDbusBackground *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  request_set_impl_request (request, impl_request);
-  request_export (request, g_dbus_method_invocation_get_connection (invocation));
+  xdp_request_set_impl_request (request, impl_request);
+  xdp_request_export (request, g_dbus_method_invocation_get_connection (invocation));
 
   xdp_dbus_background_complete_request_background (object, invocation, request->id);
 
@@ -981,9 +1052,9 @@ handle_set_status_in_thread_func (GTask        *task,
   InstanceData *data;
   const char *id = NULL;
   GVariant *options;
-  Call *call;
+  XdpCall *call;
 
-  call = call_from_invocation (invocation);
+  call = xdp_call_from_invocation (invocation);
   id = xdp_app_info_get_instance (call->app_info);
 
   options = g_object_get_data (G_OBJECT (invocation), "options");
@@ -1088,11 +1159,12 @@ handle_set_status (XdpDbusBackground     *object,
   g_autoptr(GVariant) options = NULL;
   g_autoptr(GError) error = NULL;
   g_autoptr(GTask) task = NULL;
-  GVariantBuilder opt_builder;
+  g_auto(GVariantBuilder) opt_builder =
+    G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
   const char *id = NULL;
-  Call *call;
+  XdpCall *call;
 
-  call = call_from_invocation (invocation);
+  call = xdp_call_from_invocation (invocation);
 
   g_debug ("Handling SetStatus call from %s", xdp_app_info_get_id (call->app_info));
 
@@ -1115,7 +1187,6 @@ handle_set_status (XdpDbusBackground     *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  g_variant_builder_init (&opt_builder, G_VARIANT_TYPE_VARDICT);
   if (!xdp_filter_options (arg_options, &opt_builder,
                            set_status_options,
                            G_N_ELEMENTS (set_status_options),
@@ -1194,7 +1265,7 @@ background_create (GDBusConnection *connection,
 
   g_dbus_proxy_set_default_timeout (G_DBUS_PROXY (background_impl), G_MAXINT);
   background = g_object_new (background_get_type (), NULL);
-  background->monitor = background_monitor_new (NULL, &error);
+  background->monitor = xdp_background_monitor_new (NULL, &error);
   if (background->monitor == NULL)
     {
       g_warning ("Failed to create background monitor: %s", error->message);

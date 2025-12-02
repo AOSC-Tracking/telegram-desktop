@@ -1,21 +1,60 @@
 # Steps for doing a xdg-desktop-portal release
 
- - git clean -fxd
- - meson setup . _build && meson compile -C _build/ xdg-desktop-portal-update-po
- - git add po/*po &&  git commit -m "Update po files"
- - git clean -fxd
- - add content to NEWS
- - git commit -m <version>
- - git push origin main
- - meson setup . _build -Ddocbook-docs=enabled 
- - meson dist -C _build
- - git tag <version>
- - git push origin refs/tags/<version>
- - upload tarball to github as release
- - edit release, copy NEWS section in
- - update portal api docs in the gh-pages branch
- - bump version in meson.build
- - git commit -m "Post-release version bump"
- - git push origin main
- - Update SECURITY.md if this is a new stable release
- - Update .github/ISSUE_TEMPLATE/bug-report.yml if this is a new stable release
+### Prepare the release
+
+- Make sure the version in `meson.build` is correct
+- Create a branch
+```sh
+$ git checkout -b release-${version}
+```
+- Update translations
+```sh
+$ ninja -C ${builddir} xdg-desktop-portal-update-po
+$ git add po/
+$ git commit -m "Update translations"
+```
+- Add your changelog to the `NEWS.md` file
+```sh
+$ git add NEWS.md
+$ git commit -m ${version}
+```
+- Push your branch
+```sh
+$ git push -u ${fork} release-${version}
+```
+- Open a pull request
+
+### Create a Signed Tag
+
+**NOTE**: Only project maintainers can create a tag.
+
+Make sure that:
+ - You're on the `main` branch, or a stable branch;
+ - The tip of the branch is a release commit (e.g. `1.19.4`)
+ - The version in `meson.build` is correct
+
+Then create the tag:
+
+```sh
+$ git evtag sign ${version}
+$ git push -u origin ${version}
+```
+
+### Post-Release
+
+- Update version number in `meson.build` to the next release version
+- Start a new section in `NEWS.md`
+```md
+Changes in ${nextVersion}
+=================
+Released: Not yet
+...
+```
+
+### Post-Branching
+
+After creating a stable branch:
+ 
+- Update version number in `meson.build` to the next unstable release version
+- Update `SECURITY.md`
+- Update `.github/ISSUE_TEMPLATE/bug-report.yml`

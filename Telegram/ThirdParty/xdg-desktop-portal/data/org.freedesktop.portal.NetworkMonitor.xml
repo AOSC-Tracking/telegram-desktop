@@ -2,10 +2,12 @@
 <!--
  Copyright (C) 2016 Red Hat, Inc.
 
+ SPDX-License-Identifier: LGPL-2.1-or-later
+
  This library is free software; you can redistribute it and/or
  modify it under the terms of the GNU Lesser General Public
  License as published by the Free Software Foundation; either
- version 2 of the License, or (at your option) any later version.
+ version 2.1 of the License, or (at your option) any later version.
 
  This library is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -49,7 +51,7 @@
         the available property.
     -->
     <method name="GetAvailable">
-      <arg type='b' name='available' direction='out'/>
+      <arg type="b" name="available" direction="out"/>
     </method>
     <!--
         GetMetered:
@@ -64,7 +66,7 @@
         the metered property.
     -->
     <method name="GetMetered">
-      <arg type='b' name='metered' direction='out'/>
+      <arg type="b" name="metered" direction="out"/>
     </method>
     <!--
         GetConnectivity:
@@ -72,18 +74,17 @@
 
         Returns more detailed information about the host's network
         connectivity. The meaning of the value is:
-        <simplelist>
-          <member>1: Local only. The host is not configured with a route to the internet.</member>
-          <member>2: Limited connectivity. The host is connected to a network, but can't reach the full internet.</member>
-          <member>3: Captive portal. The host is behind a captive portal and cannot reach the full internet.</member>
-          <member>4: Full network. The host connected to a network, and can reach the full internet.</member>
-        </simplelist>
+
+        - ``1``: Local only. The host is not configured with a route to the internet.
+        - ``2``: Limited connectivity. The host is connected to a network, but can't reach the full internet.
+        - ``3``: Captive portal. The host is behind a captive portal and cannot reach the full internet.
+        - ``4``: Full network. The host connected to a network, and can reach the full internet.
 
         This method was added in version 2 to replace
         the connectivity property.
     -->
     <method name="GetConnectivity">
-      <arg type='u' name='connectivity' direction='out'/>
+      <arg type="u" name="connectivity" direction="out"/>
     </method>
     <!--
         GetStatus:
@@ -92,31 +93,24 @@
         Returns the three values all at once.
 
         The following results get returned via @status:
-        <variablelist>
-          <varlistentry>
-            <term>available b</term>
-            <listitem><para>
-              Whether the network is available.
-            </para></listitem>
-          </varlistentry>
-          <varlistentry>
-            <term>metered b</term>
-            <listitem><para>
-              Whether the network is metered.
-            </para></listitem>
-          </varlistentry>
-          <varlistentry>
-            <term>connectivity u</term>
-            <listitem><para>
-              The level of connectivity.
-            </para></listitem>
-          </varlistentry>
-        </variablelist>
+
+        * ``available`` (``b``)
+
+          Whether the network is available.
+
+        * ``metered`` (``b``)
+
+          Whether the network is metered.
+
+        * ``connectivity`` (``u``)
+
+          The level of connectivity.
 
         This method was added in version 3 to avoid multiple round-trips.
     -->
     <method name="GetStatus">
-      <arg type='a{sv}' name='status' direction='out'/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+      <arg type="a{sv}" name="status" direction="out"/>
     </method>
 
     <!--
@@ -129,9 +123,9 @@
         This method was added in version 3.
     -->
     <method name="CanReach">
-      <arg type='s' name='hostname' direction='in'/>
-      <arg type='u' name='port' direction='in'/>
-      <arg type='b' name='reachable' direction='out'/>
+      <arg type="s" name="hostname" direction="in"/>
+      <arg type="u" name="port" direction="in"/>
+      <arg type="b" name="reachable" direction="out"/>
     </method>
 
     <property name="version" type="u" access="read"/>

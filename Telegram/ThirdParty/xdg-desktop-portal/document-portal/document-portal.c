@@ -2,10 +2,12 @@
  * Copyright © 2018 Red Hat, Inc
  * Copyright © 2023 GNOME Foundation Inc.
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -37,6 +39,7 @@
 #include "glib-backports.h"
 #include "document-portal-dbus.h"
 #include "document-store.h"
+#include "src/xdp-app-info.h"
 #include "src/xdp-utils.h"
 #include "permission-db.h"
 #include "permission-store-dbus.h"
@@ -379,7 +382,7 @@ validate_fd (int fd,
   g_autofree char *path = NULL;
   g_autofree char *dirname = NULL;
   g_autofree char *name = NULL;
-  xdp_autofd int dir_fd = -1;
+  g_autofd int dir_fd = -1;
   struct stat real_st_buf;
   g_autoptr(GError) local_error = NULL;
 
@@ -521,27 +524,6 @@ portal_add (GDBusMethodInvocation *invocation,
   g_dbus_method_invocation_return_value (invocation, g_variant_new ("(s)", ids[0]));
 }
 
-static char *
-get_output (GError     **error,
-            const char  *argv0,
-            ...)
-{
-  gboolean res;
-  g_autofree char *output = NULL;
-  va_list ap;
-
-  va_start (ap, argv0);
-  res = xdp_spawn (NULL, &output, 0, error, argv0, ap);
-  va_end (ap);
-
-  if (res)
-    {
-      g_strchomp (output);
-      return g_steal_pointer (&output);
-    }
-  return NULL;
-}
-
 /* out =>
      0 == hidden
      1 == read-only
@@ -658,15 +640,17 @@ app_has_file_access (const char *target_app_id,
 
   if (g_str_has_prefix (target_app_id, "snap."))
     {
-      res = get_output (&error, "snap", "routine", "file-access",
+      res = xdp_spawn (&error, "snap", "routine", "file-access",
                         target_app_id + strlen ("snap."), path, NULL);
     }
   else
     {
       /* First we try flatpak info --file-access=PATH APPID, which is supported on new versions */
       arg = g_strdup_printf ("--file-access=%s", path);
-      res = get_output (&error, "flatpak", "info", arg, target_app_id, NULL);
+      res = xdp_spawn (&error, "flatpak", "info", arg, target_app_id, NULL);
     }
+
+  g_strchomp (res);
 
   if (res)
     {
@@ -1194,7 +1178,7 @@ handle_method (GCallback              method_callback,
   g_autoptr(XdpAppInfo) app_info = NULL;
   PortalMethod portal_method = (PortalMethod)method_callback;
 
-  app_info = xdp_invocation_lookup_app_info_sync (invocation, NULL, &error);
+  app_info = xdp_invocation_ensure_app_info_sync (invocation, NULL, &error);
   if (app_info == NULL)
     g_dbus_method_invocation_return_gerror (invocation, error);
   else
@@ -1225,7 +1209,7 @@ portal_lookup (GDBusMethodInvocation *invocation,
 {
   const char *filename;
   g_autofree char *path = NULL;
-  xdp_autofd int fd = -1;
+  g_autofd int fd = -1;
   struct stat st_buf, real_dir_st_buf;
   g_autofree char *id = NULL;
   GError *error = NULL;
@@ -1416,6 +1400,101 @@ portal_list (GDBusMethodInvocation *invocation,
   return TRUE;
 }
 
+const char *
+get_host_path_internal (GDBusMethodInvocation *invocation,
+                        XdpAppInfo            *app_info,
+                        const char            *id,
+                        GError                **error)
+{
+  g_autoptr(PermissionDbEntry) entry = NULL;
+
+  XDP_AUTOLOCK (db);
+
+  entry = permission_db_lookup (db, id);
+
+  if (!entry)
+    {
+      if (error != NULL && *error == NULL)
+        {
+          g_set_error (error,
+                      XDG_DESKTOP_PORTAL_ERROR,
+                      XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
+                      "Invalid ID passed (%s)", id);
+        }
+
+      return NULL;
+    }
+
+  if (!xdp_app_info_is_host (app_info))
+    {
+      g_autofree const char **apps = NULL;
+      const char *app_id = NULL;
+      gboolean app_found = FALSE;
+
+      app_id = xdp_app_info_get_id (app_info);
+
+      apps = permission_db_entry_list_apps (entry);
+      for (size_t i = 0; apps[i] != NULL; i++)
+        {
+          if (g_strcmp0 (app_id, apps[i]) == 0)
+            {
+              app_found = TRUE;
+              break;
+            }
+        }
+
+      if (!app_found)
+        {
+          if (error != NULL && *error == NULL)
+            {
+              g_set_error (error,
+                           XDG_DESKTOP_PORTAL_ERROR,
+                           XDG_DESKTOP_PORTAL_ERROR_NOT_ALLOWED,
+                           "Not enough permissions");
+            }
+
+          return NULL;
+        }
+    }
+
+  return document_entry_get_path (entry);
+}
+
+static gboolean
+portal_get_host_paths (GDBusMethodInvocation *invocation,
+                       GVariant              *parameters,
+                       XdpAppInfo            *app_info)
+{
+  g_autofree const char **id_list = NULL;
+  GVariantBuilder builder;
+
+  g_variant_get (parameters, "(^a&s)", &id_list);
+
+  g_variant_builder_init (&builder, G_VARIANT_TYPE ("(a{say})"));
+  g_variant_builder_open (&builder, G_VARIANT_TYPE ("a{say}"));
+
+  for (size_t i = 0; id_list[i] != NULL; i++)
+    {
+      g_autoptr(GError) error = NULL;
+      const char *path = NULL;
+
+      path = get_host_path_internal (invocation, app_info, id_list[i], &error);
+      if (path == NULL)
+        {
+          g_warning ("Failed to get host path for %s: %s", id_list[i], error->message);
+          continue;
+        }
+
+      g_variant_builder_add (&builder, "{s@ay}", id_list[i], g_variant_new_bytestring (path));
+    }
+
+  g_variant_builder_close (&builder);
+
+  g_dbus_method_invocation_return_value (invocation, g_variant_builder_end (&builder));
+
+  return TRUE;
+}
+
 static void
 peer_died_cb (const char *name)
 {
@@ -1432,7 +1511,7 @@ on_bus_acquired (GDBusConnection *connection,
 
   dbus_api = xdp_dbus_documents_skeleton_new ();
 
-  xdp_dbus_documents_set_version (XDP_DBUS_DOCUMENTS (dbus_api), 4);
+  xdp_dbus_documents_set_version (XDP_DBUS_DOCUMENTS (dbus_api), 5);
 
   g_signal_connect_swapped (dbus_api, "handle-get-mount-point", G_CALLBACK (handle_get_mount_point), NULL);
   g_signal_connect_swapped (dbus_api, "handle-add", G_CALLBACK (handle_method), portal_add);
@@ -1445,6 +1524,7 @@ on_bus_acquired (GDBusConnection *connection,
   g_signal_connect_swapped (dbus_api, "handle-lookup", G_CALLBACK (handle_method), portal_lookup);
   g_signal_connect_swapped (dbus_api, "handle-info", G_CALLBACK (handle_method), portal_info);
   g_signal_connect_swapped (dbus_api, "handle-list", G_CALLBACK (handle_method), portal_list);
+  g_signal_connect_swapped (dbus_api, "handle-get-host-paths", G_CALLBACK (handle_method), portal_get_host_paths);
 
   file_transfer = file_transfer_create ();
   g_dbus_interface_skeleton_set_flags (file_transfer,
@@ -1616,15 +1696,23 @@ message_handler (const gchar   *log_domain,
 {
   /* Make this look like normal console output */
   if (log_level & G_LOG_LEVEL_DEBUG)
-    printf ("XDP: %s\n", message);
+    fprintf (stderr, "XDP: %s\n", message);
   else
-    printf ("%s: %s\n", g_get_prgname (), message);
+    fprintf (stderr, "%s: %s\n", g_get_prgname (), message);
 }
 
 static void
 printerr_handler (const gchar *string)
 {
-  fprintf (stderr, "error: %s\n", string);
+  int is_tty = isatty (1);
+  const char *prefix = "";
+  const char *suffix = "";
+  if (is_tty)
+    {
+      prefix = "\x1b[31m\x1b[1m"; /* red, bold */
+      suffix = "\x1b[22m\x1b[0m"; /* bold off, color reset */
+    }
+  fprintf (stderr, "%serror: %s%s\n", prefix, suffix, string);
 }
 
 int
@@ -1638,6 +1726,21 @@ main (int    argc,
   GDBusConnection *session_bus;
   g_autoptr(GOptionContext) context = NULL;
   GDBusMethodInvocation *invocation;
+
+  if (g_getenv ("XDG_DOCUMENT_PORTAL_WAIT_FOR_DEBUGGER") != NULL)
+    {
+      g_printerr ("document portal (PID %d) is waiting for a debugger. "
+                  "Use `gdb -p %d` to connect. \n",
+                  getpid (), getpid ());
+
+      if (raise (SIGSTOP) == -1)
+        {
+          g_printerr ("Failed waiting for debugger\n");
+          exit (1);
+        }
+
+      raise (SIGCONT);
+    }
 
   g_log_writer_default_set_use_stderr (TRUE);
 

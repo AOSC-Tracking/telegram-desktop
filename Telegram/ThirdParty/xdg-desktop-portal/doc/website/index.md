@@ -9,7 +9,7 @@ layout: default
 
 # XDG Desktop Portal
 
-A portal frontend service for [Flatpak](http://www.flatpak.org) and other
+A portal frontend service for [Flatpak](https://flatpak.org) and other
 desktop containment frameworks.
 
 xdg-desktop-portal works by exposing a series of D-Bus interfaces known as
@@ -20,14 +20,14 @@ The portal interfaces include APIs for file access, opening URIs, printing
 and others.
 
 
-<a href="https://flatpak.github.io/xdg-desktop-portal/docs" class="pixelbutton"><picture alt="Documentation for the available D-Bus interfaces">
+<a href="https://flatpak.github.io/xdg-desktop-portal/docs" class="pixelbutton"><picture>
     <source srcset="assets/docs-button-dark.png" media="(prefers-color-scheme: dark)">
-    <img src="assets/docs-button.png">
+    <img alt="Documentation for the available D-Bus interfaces" src="assets/docs-button.png">
 </picture></a>
 
 ## Version Numbering
 
-xdg-desktop-portal uses even minor vesion numbers for stable versions, and odd
+xdg-desktop-portal uses even minor version numbers for stable versions, and odd
 minor version numbers for unstable versions. During an unstable version cycle,
 portal APIs can make backward incompatible changes, meaning that applications
 should only depend on APIs defined in stable xdg-desktop-portal versions in
@@ -60,6 +60,7 @@ Here are some examples of available backends:
 - wlroots [xdg-desktop-portal-wlr](https://github.com/emersion/xdg-desktop-portal-wlr)
 - Deepin [xdg-desktop-portal-dde](https://github.com/linuxdeepin/xdg-desktop-portal-dde)
 - Xapp (Cinnamon, MATE, Xfce) [xdg-desktop-portal-xapp](https://github.com/linuxmint/xdg-desktop-portal-xapp)
+- COSMIC [xdg-desktop-portal-cosmic](https://github.com/pop-os/xdg-desktop-portal-cosmic)
 
 ## Design Considerations
 
@@ -69,7 +70,7 @@ code:
   GTK dialogs for GNOME, Qt dialogs for KDE)
 - One of the limitations of the D-Bus proxying in flatpak is that allowing a
   sandboxed app to talk to a name implicitly also allows it to talk to any other
-  name owned by the same unique name. Therefore, sandbox-facing D-Bus apis
+  name owned by the same unique name. Therefore, sandbox-facing D-Bus APIs
   should generally be hosted on a dedicated bus connection. For portals, the
   frontend takes care of this for us.
 - The frontend can handle all the interaction with _portal infrastructure_, such
@@ -82,7 +83,7 @@ The portal apis are all following the pattern of an initial method call, whose
 response returns an object handle for an _org.freedesktop.portal.Request_ object
 that represents the portal interaction. The end of the interaction is done via a
 _Response_ signal that gets emitted on that object. This pattern was chosen over
-a simple method call with return, since portal apis are expected to show dialogs
+a simple method call with return, since portal APIs are expected to show dialogs
 and interact with the user, which may well take longer than the maximum method
 call timeout of D-Bus. Another advantage is that the caller can cancel an
 ongoing interaction by calling the _Cancel_ method on the request object.
@@ -92,7 +93,7 @@ One consideration for deciding the shape of portal APIs is that we want them to
 possible to have apps use them _transparently_. For example, the OpenFile portal
 is working well as a backend for the GtkFileChooserNative API.
 
-When it comes to files, we need to be careful to not let portal apis subvert the
+When it comes to files, we need to be careful to not let portal APIs subvert the
 limited filesystem view that apps have in their sandbox. Therefore, files should
 only be passed into portal APIs in one of two forms:
 - As a document ID referring to a file that has been exported in the document
@@ -101,8 +102,8 @@ only be passed into portal APIs in one of two forms:
   and passing an fd proves that the app inside the sandbox has access to the
   file to open it.
 
-When it comes to processes, passing pids around is not useful in a sandboxed
-world where apps are likely in their own pid namespace. And passing pids from
+When it comes to processes, passing PIDs around is not useful in a sandboxed
+world where apps are likely in their own PID namespace. And passing PIDs from
 inside the sandbox is problematic, since the app can just lie.
 
 ## Contributing

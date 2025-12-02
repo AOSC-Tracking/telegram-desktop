@@ -178,6 +178,13 @@ public:
 		rpl::producer<QString> placeholder = nullptr,
 		const TextWithTags &value = TextWithTags());
 
+	QAccessible::Role accessibilityRole() override {
+		return QAccessible::Role::EditableText;
+	}
+	QString accessibilityName() override {
+		return _placeholderFull.current();
+	}
+
 	[[nodiscard]] const style::InputField &st() const {
 		return _st;
 	}
@@ -189,6 +196,7 @@ public:
 	void setMaxLength(int maxLength);
 	void setMinHeight(int minHeight);
 	void setMaxHeight(int maxHeight);
+	void setMode(Mode mode);
 
 	[[nodiscard]] const TextWithTags &getTextWithTags() const {
 		return _lastTextWithTags;
@@ -665,6 +673,7 @@ struct LengthLimitLabelOptions {
 	RpWidget *customParent = nullptr;
 	std::optional<int> customThreshold = std::nullopt;
 	Fn<QPoint(QSize parent, QSize label)> customUpdatePosition;
+	Fn<int()> customCharactersCount;
 	int limitLabelTop = 0;
 };
 void AddLengthLimitLabel(

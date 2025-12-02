@@ -17,16 +17,13 @@
 #include <QtWidgets/QWidget>
 #include <QtCore/QPointer>
 #include <QtGui/QtEvents>
-
-namespace Ui {
-
-void ToggleChildrenVisibility(not_null<QWidget*> widget, bool visible);
-
-} // namespace Ui
+#include <QAccessible>
 
 namespace Ui {
 
 class RpWidget;
+
+void ToggleChildrenVisibility(not_null<QWidget*> widget, bool visible);
 
 void ResizeFitChild(
 	not_null<RpWidget*> parent,
@@ -56,6 +53,7 @@ public:
 	[[nodiscard]] rpl::producer<not_null<QScreen*>> screenValue() const;
 	[[nodiscard]] rpl::producer<bool> windowActiveValue() const;
 	[[nodiscard]] rpl::producer<QRect> paintRequest() const;
+	void paintOn(Fn<void(QPainter&)> callback);
 	[[nodiscard]] rpl::producer<> alive() const;
 	[[nodiscard]] rpl::producer<> death() const;
 	[[nodiscard]] rpl::producer<> macWindowDeactivateEvents() const;
@@ -352,6 +350,17 @@ private:
 
 };
 
+// Add required fields from QAccessible::State when necessary.
+// Don't forget to amend the AccessibilityStatE::writeTo implementation.
+// This one allows universal initialization, like { .checkable = true }.
+struct AccessibilityState {
+	bool checkable : 1 = false;
+	bool checked : 1 = false;
+	bool pressed : 1 = false;
+
+	void writeTo(QAccessible::State &state);
+};
+
 class RpWidget : public RpWidgetBase<QWidget> {
 	// The Q_OBJECT meta info is used for qobject_cast above!
 	Q_OBJECT
@@ -372,6 +381,17 @@ public:
 			std::clamp(visibleTop, 0, max),
 			std::clamp(visibleBottom, 0, max));
 	}
+
+	[[nodiscard]] virtual QAccessibleInterface *accessibilityCreate();
+	[[nodiscard]] virtual QAccessible::Role accessibilityRole();
+	[[nodiscard]] virtual QString accessibilityName();
+	void accessibilityNameChanged();
+	[[nodiscard]] virtual QString accessibilityDescription();
+	void accessibilityDescriptionChanged();
+	[[nodiscard]] virtual AccessibilityState accessibilityState() const;
+	void accessibilityStateChanged(AccessibilityState changes);
+	[[nodiscard]] virtual QString accessibilityValue() const;
+	void accessibilityValueChanged();
 
 protected:
 	// e - from enterEvent() of child RpWidget

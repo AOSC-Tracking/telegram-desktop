@@ -1,10 +1,12 @@
 /*
  * Copyright © 2016 Red Hat, Inc
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,7 +26,8 @@
 #include <gio/gio.h>
 
 #include "network-monitor.h"
-#include "request.h"
+#include "xdp-call.h"
+#include "xdp-app-info.h"
 #include "xdp-dbus.h"
 #include "xdp-utils.h"
 
@@ -57,9 +60,9 @@ static gboolean
 handle_get_available (XdpDbusNetworkMonitor *object,
                       GDBusMethodInvocation *invocation)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpCall *call = xdp_call_from_invocation (invocation);
 
-  if (!xdp_app_info_has_network (request->app_info))
+  if (!xdp_app_info_has_network (call->app_info))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              XDG_DESKTOP_PORTAL_ERROR,
@@ -81,9 +84,9 @@ static gboolean
 handle_get_metered (XdpDbusNetworkMonitor *object,
                     GDBusMethodInvocation *invocation)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpCall *call = xdp_call_from_invocation (invocation);
 
-  if (!xdp_app_info_has_network (request->app_info))
+  if (!xdp_app_info_has_network (call->app_info))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              XDG_DESKTOP_PORTAL_ERROR,
@@ -105,9 +108,9 @@ static gboolean
 handle_get_connectivity (XdpDbusNetworkMonitor *object,
                          GDBusMethodInvocation *invocation)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpCall *call = xdp_call_from_invocation (invocation);
 
-  if (!xdp_app_info_has_network (request->app_info))
+  if (!xdp_app_info_has_network (call->app_info))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              XDG_DESKTOP_PORTAL_ERROR,
@@ -129,9 +132,9 @@ static gboolean
 handle_get_status (XdpDbusNetworkMonitor *object,
                    GDBusMethodInvocation *invocation)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpCall *call = xdp_call_from_invocation (invocation);
 
-  if (!xdp_app_info_has_network (request->app_info))
+  if (!xdp_app_info_has_network (call->app_info))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              XDG_DESKTOP_PORTAL_ERROR,
@@ -141,11 +144,11 @@ handle_get_status (XdpDbusNetworkMonitor *object,
   else
     {
       NetworkMonitor *nm = (NetworkMonitor *)object;
-      GVariantBuilder status;
+      g_auto(GVariantBuilder) status =
+        G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
       gboolean b;
       guint c;
 
-      g_variant_builder_init (&status, G_VARIANT_TYPE_VARDICT);
       b = g_network_monitor_get_network_available (nm->monitor);
       g_variant_builder_add (&status, "{sv}",
                              "available", g_variant_new_boolean (b));
@@ -181,9 +184,9 @@ handle_can_reach (XdpDbusNetworkMonitor *object,
                   const char            *hostname,
                   guint                  port)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpCall *call = xdp_call_from_invocation (invocation);
 
-  if (!xdp_app_info_has_network (request->app_info))
+  if (!xdp_app_info_has_network (call->app_info))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              XDG_DESKTOP_PORTAL_ERROR,

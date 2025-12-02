@@ -1,10 +1,12 @@
 /*
  * Copyright © 2017 Red Hat, Inc
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -33,8 +35,8 @@
 #include <gio/gunixfdlist.h>
 
 #include "email.h"
-#include "request.h"
-#include "documents.h"
+#include "xdp-request.h"
+#include "xdp-documents.h"
 #include "xdp-dbus.h"
 #include "xdp-impl-dbus.h"
 #include "xdp-utils.h"
@@ -68,11 +70,8 @@ send_response_in_thread_func (GTask        *task,
                               gpointer      task_data,
                               GCancellable *cancellable)
 {
-  Request *request = task_data;
+  XdpRequest *request = task_data;
   guint response;
-  GVariantBuilder new_results;
-
-  g_variant_builder_init (&new_results, G_VARIANT_TYPE_VARDICT);
 
   REQUEST_AUTOLOCK (request);
 
@@ -80,10 +79,13 @@ send_response_in_thread_func (GTask        *task,
 
   if (request->exported)
     {
+      g_auto(GVariantBuilder) new_results =
+        G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
+
       xdp_dbus_request_emit_response (XDP_DBUS_REQUEST (request),
                                       response,
                                       g_variant_builder_end (&new_results));
-      request_unexport (request);
+      xdp_request_unexport (request);
     }
 }
 
@@ -92,7 +94,7 @@ compose_email_done (GObject *source,
                     GAsyncResult *result,
                     gpointer data)
 {
-  g_autoptr(Request) request = data;
+  g_autoptr(XdpRequest) request = data;
   guint response = 2;
   g_autoptr(GVariant) results = NULL;
   g_autoptr(GError) error = NULL;
@@ -207,11 +209,12 @@ handle_compose_email (XdpDbusEmail *object,
                       const gchar *arg_parent_window,
                       GVariant *arg_options)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpRequest *request = xdp_request_from_invocation (invocation);
   const char *app_id = xdp_app_info_get_id (request->app_info);
   g_autoptr(GError) error = NULL;
   g_autoptr(XdpDbusImplRequest) impl_request = NULL;
-  GVariantBuilder options;
+  g_auto(GVariantBuilder) options =
+    G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
   g_autoptr(GVariant) attachment_fds = NULL;
 
   g_debug ("Handling ComposeEmail");
@@ -229,22 +232,29 @@ handle_compose_email (XdpDbusEmail *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  g_variant_builder_init (&options, G_VARIANT_TYPE_VARDICT);
-
   attachment_fds = g_variant_lookup_value (arg_options, "attachment_fds", G_VARIANT_TYPE ("ah"));
   if (attachment_fds)
     {
-      GVariantBuilder attachments;
+      g_auto(GVariantBuilder) attachments =
+        G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_STRING_ARRAY);
       int i;
 
-      g_variant_builder_init (&attachments, G_VARIANT_TYPE_STRING_ARRAY);
       for (i = 0; i < g_variant_n_children (attachment_fds); i++)
         {
           g_autofree char *path = NULL;
           int fd_id;
-          int fd;
+          g_autofd int fd = -1;
 
           g_variant_get_child (attachment_fds, i, "h", &fd_id);
+          if (fd_id >= g_unix_fd_list_get_length (fd_list))
+            {
+              g_dbus_method_invocation_return_error (invocation,
+                                                     XDG_DESKTOP_PORTAL_ERROR,
+                                                     XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
+                                                     "Bad file descriptor index");
+              return G_DBUS_METHOD_INVOCATION_HANDLED;
+            }
+
           fd = g_unix_fd_list_get (fd_list, fd_id, &error);
           if (fd == -1)
             {
@@ -260,7 +270,8 @@ handle_compose_email (XdpDbusEmail *object,
 
               /* Don't leak any info about real file path existence, etc */
               g_dbus_method_invocation_return_error (invocation,
-                                                     XDG_DESKTOP_PORTAL_ERROR, XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
+                                                     XDG_DESKTOP_PORTAL_ERROR,
+                                                     XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
                                                      "Invalid attachment fd passed");
               return G_DBUS_METHOD_INVOCATION_HANDLED;
             }
@@ -280,8 +291,8 @@ handle_compose_email (XdpDbusEmail *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  request_set_impl_request (request, impl_request);
-  request_export (request, g_dbus_method_invocation_get_connection (invocation));
+  xdp_request_set_impl_request (request, impl_request);
+  xdp_request_export (request, g_dbus_method_invocation_get_connection (invocation));
 
   xdp_dbus_email_complete_compose_email (object, invocation, NULL, request->id);
 

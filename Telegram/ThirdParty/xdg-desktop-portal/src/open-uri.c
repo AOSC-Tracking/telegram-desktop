@@ -1,10 +1,12 @@
 /*
  * Copyright © 2016 Red Hat, Inc
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -36,12 +38,13 @@
 #include <gio/gdesktopappinfo.h>
 
 #include "open-uri.h"
-#include "request.h"
+#include "xdp-request.h"
 #include "xdp-dbus.h"
 #include "xdp-impl-dbus.h"
 #include "xdp-utils.h"
-#include "permissions.h"
-#include "documents.h"
+#include "xdp-permissions.h"
+#include "xdp-app-launch-context.h"
+#include "xdp-documents.h"
 
 #define FILE_MANAGER_DBUS_NAME "org.freedesktop.FileManager1"
 #define FILE_MANAGER_DBUS_IFACE "org.freedesktop.FileManager1"
@@ -131,7 +134,7 @@ get_latest_choice_info (const char *app_id,
   g_autoptr(GVariant) out_perms = NULL;
   g_autoptr(GVariant) out_data = NULL;
 
-  if (!xdp_dbus_impl_permission_store_call_lookup_sync (get_permission_store (),
+  if (!xdp_dbus_impl_permission_store_call_lookup_sync (xdp_get_permission_store (),
                                                         PERMISSION_TABLE,
                                                         content_type,
                                                         &out_perms,
@@ -239,9 +242,10 @@ launch_application_with_uri (const char *choice_id,
 {
   g_autofree char *desktop_id = g_strconcat (choice_id, ".desktop", NULL);
   g_autoptr(GDesktopAppInfo) info = g_desktop_app_info_new (desktop_id);
-  g_autoptr(GAppLaunchContext) context = g_app_launch_context_new ();
+  g_autoptr(XdpAppLaunchContext) xdp_context = xdp_app_launch_context_new ();
+  GAppLaunchContext *context = G_APP_LAUNCH_CONTEXT (xdp_context);
   g_autofree char *ruri = NULL;
-  DocumentFlags flags = DOCUMENT_FLAG_NONE;
+  XdpDocumentFlags flags = XDP_DOCUMENT_FLAG_NONE;
   GList uris;
 
   if (info == NULL)
@@ -259,13 +263,13 @@ launch_application_with_uri (const char *choice_id,
 
       g_debug ("Registering %s for %s", uri, choice_id);
       if (writable)
-        flags |= DOCUMENT_FLAG_WRITABLE;
+        flags |= XDP_DOCUMENT_FLAG_WRITABLE;
 
-      ruri = register_document (uri, choice_id, flags, &local_error);
+      ruri = xdp_register_document (uri, choice_id, flags, &local_error);
       if (ruri == NULL)
         {
           g_warning ("Error registering %s for %s: %s", uri, choice_id, local_error->message);
-          g_propagate_error (error, local_error);
+          g_propagate_error (error, g_steal_pointer (&local_error));
           return FALSE;
         }
     }
@@ -274,8 +278,7 @@ launch_application_with_uri (const char *choice_id,
 
   g_app_launch_context_setenv (context, "PARENT_WINDOW_ID", parent_window);
 
-  if (activation_token)
-    g_app_launch_context_setenv (context, "XDG_ACTIVATION_TOKEN", activation_token);
+  xdp_app_launch_context_set_activation_token (xdp_context, activation_token);
 
   uris.data = (gpointer)ruri;
   uris.next = NULL;
@@ -326,7 +329,7 @@ update_permissions_store (const char *app_id,
            in_permissions[PERM_APP_THRESHOLD]);
 
 
-  if (!xdp_dbus_impl_permission_store_call_set_permission_sync (get_permission_store (),
+  if (!xdp_dbus_impl_permission_store_call_set_permission_sync (xdp_get_permission_store (),
                                                                 PERMISSION_TABLE,
                                                                 TRUE,
                                                                 content_type,
@@ -347,18 +350,15 @@ send_response_in_thread_func (GTask *task,
                               gpointer task_data,
                               GCancellable *cancellable)
 {
-  Request *request = (Request *)task_data;
+  XdpRequest *request = XDP_REQUEST (task_data);
   guint response;
   GVariant *options;
   const char *choice;
-  GVariantBuilder opt_builder;
 
   REQUEST_AUTOLOCK (request);
 
   response = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (request), "response"));
   options = (GVariant *)g_object_get_data (G_OBJECT (request), "options");
-
-  g_variant_builder_init (&opt_builder, G_VARIANT_TYPE_VARDICT);
 
   if (response != 0)
     goto out;
@@ -387,10 +387,13 @@ send_response_in_thread_func (GTask *task,
 out:
   if (request->exported)
     {
+      g_auto(GVariantBuilder) opt_builder =
+        G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
+
       xdp_dbus_request_emit_response (XDP_DBUS_REQUEST (request),
                                       response,
                                       g_variant_builder_end (&opt_builder));
-      request_unexport (request);
+      xdp_request_unexport (request);
     }
 }
 
@@ -399,7 +402,7 @@ app_chooser_done (GObject *source,
                   GAsyncResult *result,
                   gpointer data)
 {
-  g_autoptr (Request) request = data;
+  g_autoptr(XdpRequest) request = data;
   guint response = 2;
   g_autoptr(GVariant) options = NULL;
   g_autoptr(GError) error = NULL;
@@ -549,7 +552,7 @@ find_recommended_choices (const char *scheme,
 
 static void
 app_info_changed (GAppInfoMonitor *monitor,
-                  Request *request)
+                  XdpRequest *request)
 {
   const char *scheme;
   const char *content_type;
@@ -588,7 +591,7 @@ handle_open_in_thread_func (GTask *task,
                             gpointer task_data,
                             GCancellable *cancellable)
 {
-  Request *request = (Request *)task_data;
+  XdpRequest *request = XDP_REQUEST (task_data);
   const char *parent_window;
   const char *app_id = xdp_app_info_get_id (request->app_info);
   const char *activation_token;
@@ -604,14 +607,17 @@ handle_open_in_thread_func (GTask *task,
   gint latest_count;
   gint latest_threshold;
   gboolean ask_for_content_type;
-  GVariantBuilder opts_builder;
+  g_auto(GVariantBuilder) opts_builder =
+    G_VARIANT_BUILDER_INIT (G_VARIANT_TYPE_VARDICT);
   gboolean skip_app_chooser = FALSE;
-  g_auto(XdpFd) fd = -1;
+  g_autofd int fd = -1;
   gboolean writable = FALSE;
   gboolean ask = FALSE;
   gboolean open_dir = FALSE;
   gboolean use_default_app = FALSE;
   const char *reason;
+
+  REQUEST_AUTOLOCK (request);
 
   parent_window = (const char *)g_object_get_data (G_OBJECT (request), "parent-window");
   uri = g_strdup ((const char *)g_object_get_data (G_OBJECT (request), "uri"));
@@ -621,7 +627,7 @@ handle_open_in_thread_func (GTask *task,
   open_dir = GPOINTER_TO_INT (g_object_get_data (G_OBJECT (request), "open-dir"));
   activation_token = (const char *)g_object_get_data (G_OBJECT (request), "activation-token");
 
-  REQUEST_AUTOLOCK (request);
+  g_object_set_data (G_OBJECT (request), "fd", GINT_TO_POINTER (-1));
 
   /* Verify that either uri or fd is set, not both */
   if (uri != NULL && fd != -1)
@@ -629,32 +635,29 @@ handle_open_in_thread_func (GTask *task,
       g_warning ("Rejecting invalid open-uri request (both URI and fd are set)");
       if (request->exported)
         {
-          g_variant_builder_init (&opts_builder, G_VARIANT_TYPE_VARDICT);
           xdp_dbus_request_emit_response (XDP_DBUS_REQUEST (request),
                                           XDG_DESKTOP_PORTAL_RESPONSE_OTHER,
                                           g_variant_builder_end (&opts_builder));
-          request_unexport (request);
+          xdp_request_unexport (request);
         }
       return;
     }
 
   if (uri)
     {
-      GError *error = NULL;
+      g_autoptr (GError) local_error = NULL;
 
-      if (!g_uri_is_valid (uri, G_URI_FLAGS_NONE, &error))
+      if (!g_uri_is_valid (uri, G_URI_FLAGS_NONE, &local_error))
         {
-          g_debug ("Rejecting open request for invalid uri '%s': %s", uri, error->message);
-          g_clear_error (&error);
+          g_debug ("Rejecting open request for invalid uri '%s': %s", uri, local_error->message);
 
           /* Reject the request */
           if (request->exported)
             {
-              g_variant_builder_init (&opts_builder, G_VARIANT_TYPE_VARDICT);
               xdp_dbus_request_emit_response (XDP_DBUS_REQUEST (request),
                                               XDG_DESKTOP_PORTAL_RESPONSE_OTHER,
                                               g_variant_builder_end (&opts_builder));
-              request_unexport (request);
+              xdp_request_unexport (request);
             }
           return;
         }
@@ -666,11 +669,10 @@ handle_open_in_thread_func (GTask *task,
           if (request->exported)
             {
               g_debug ("Rejecting open request as content-type couldn't be fetched for '%s'", uri);
-              g_variant_builder_init (&opts_builder, G_VARIANT_TYPE_VARDICT);
               xdp_dbus_request_emit_response (XDP_DBUS_REQUEST (request),
                                               XDG_DESKTOP_PORTAL_RESPONSE_OTHER,
                                               g_variant_builder_end (&opts_builder));
-              request_unexport (request);
+              xdp_request_unexport (request);
             }
           return;
         }
@@ -686,7 +688,7 @@ handle_open_in_thread_func (GTask *task,
 
       if (path != NULL)
         {
-          host_path = get_real_path_for_doc_path (path, request->app_info);
+          host_path = xdp_get_real_path_for_doc_path (path, request->app_info);
           if (host_path)
             {
               g_debug ("OpenFile: translating path value '%s' to host path '%s'", path, host_path);
@@ -712,18 +714,17 @@ handle_open_in_thread_func (GTask *task,
 
           if (request->exported)
             {
-              g_variant_builder_init (&opts_builder, G_VARIANT_TYPE_VARDICT);
               xdp_dbus_request_emit_response (XDP_DBUS_REQUEST (request),
                                               XDG_DESKTOP_PORTAL_RESPONSE_OTHER,
                                               g_variant_builder_end (&opts_builder));
-              request_unexport (request);
+              xdp_request_unexport (request);
             }
           return;
         }
 
       if (open_dir)
         {
-          g_autofree char *real_path = get_real_path_for_doc_path (path, request->app_info);
+          g_autofree char *real_path = xdp_get_real_path_for_doc_path (path, request->app_info);
           /* Try opening the directory via the file manager interface, then
              fall back to a plain URI open */
           g_autoptr(GError) local_error = NULL;
@@ -763,11 +764,10 @@ handle_open_in_thread_func (GTask *task,
             }
           else
             {
-              g_variant_builder_init (&opts_builder, G_VARIANT_TYPE_VARDICT);
               xdp_dbus_request_emit_response (XDP_DBUS_REQUEST (request),
                                               XDG_DESKTOP_PORTAL_RESPONSE_SUCCESS,
                                               g_variant_builder_end (&opts_builder));
-              request_unexport (request);
+              xdp_request_unexport (request);
               return;
             }
 
@@ -781,9 +781,6 @@ handle_open_in_thread_func (GTask *task,
       scheme = g_strdup ("file");
       uri = g_filename_to_uri (path, NULL, NULL);
       g_object_set_data_full (G_OBJECT (request), "uri", g_strdup (uri), g_free);
-      close (fd);
-      fd = -1;
-      g_object_set_data (G_OBJECT (request), "fd", GINT_TO_POINTER (-1));
     }
 
   g_object_set_data_full (G_OBJECT (request), "scheme", g_strdup (scheme), g_free);
@@ -870,18 +867,15 @@ handle_open_in_thread_func (GTask *task,
             {
               if (!result)
                 g_debug ("Open request for '%s' failed: %s", uri, error->message);
-              g_variant_builder_init (&opts_builder, G_VARIANT_TYPE_VARDICT);
               xdp_dbus_request_emit_response (XDP_DBUS_REQUEST (request),
                                               result ? XDG_DESKTOP_PORTAL_RESPONSE_SUCCESS : XDG_DESKTOP_PORTAL_RESPONSE_OTHER,
                                               g_variant_builder_end (&opts_builder));
-              request_unexport (request);
+              xdp_request_unexport (request);
             }
 
           return;
         }
     }
-
-  g_variant_builder_init (&opts_builder, G_VARIANT_TYPE_VARDICT);
 
   if (latest_id != NULL)
     g_variant_builder_add (&opts_builder, "{sv}", "last_choice", g_variant_new_string (latest_id));
@@ -905,7 +899,7 @@ handle_open_in_thread_func (GTask *task,
                                           request->id,
                                           NULL, NULL);
 
-  request_set_impl_request (request, impl_request);
+  xdp_request_set_impl_request (request, impl_request);
 
   g_signal_connect_object (monitor, "changed", G_CALLBACK (app_info_changed), request, 0);
 
@@ -923,13 +917,38 @@ handle_open_in_thread_func (GTask *task,
 }
 
 static gboolean
+handle_scheme_supported (XdpDbusOpenURI *object,
+                         GDBusMethodInvocation *invocation,
+                         const gchar *arg_scheme,
+                         GVariant *arg_options)
+{
+  g_autoptr(GAppInfo) app_info = NULL;
+
+  if (arg_scheme == NULL || *arg_scheme == '\0')
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             XDG_DESKTOP_PORTAL_ERROR,
+                                             XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
+                                             "Scheme not specified");
+      return G_DBUS_METHOD_INVOCATION_HANDLED;
+    }
+
+  app_info = g_app_info_get_default_for_uri_scheme (arg_scheme);
+
+  g_debug ("Handler for scheme: %s%s found.", arg_scheme, app_info ? "" : " not");
+  g_dbus_method_invocation_return_value (invocation, g_variant_new ("(b)", app_info != NULL));
+
+  return G_DBUS_METHOD_INVOCATION_HANDLED;
+}
+
+static gboolean
 handle_open_uri (XdpDbusOpenURI *object,
                  GDBusMethodInvocation *invocation,
                  const gchar *arg_parent_window,
                  const gchar *arg_uri,
                  GVariant *arg_options)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpRequest *request = xdp_request_from_invocation (invocation);
   g_autoptr(GTask) task = NULL;
   gboolean writable;
   gboolean ask;
@@ -962,7 +981,7 @@ handle_open_uri (XdpDbusOpenURI *object,
   if (activation_token)
     g_object_set_data_full (G_OBJECT (request), "activation-token", g_strdup (activation_token), g_free);
 
-  request_export (request, g_dbus_method_invocation_get_connection (invocation));
+  xdp_request_export (request, g_dbus_method_invocation_get_connection (invocation));
   xdp_dbus_open_uri_complete_open_uri (object, invocation, request->id);
 
   task = g_task_new (object, NULL, NULL, NULL);
@@ -980,7 +999,7 @@ handle_open_file (XdpDbusOpenURI *object,
                  GVariant *arg_fd,
                  GVariant *arg_options)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpRequest *request = xdp_request_from_invocation (invocation);
   g_autoptr(GTask) task = NULL;
   gboolean writable;
   gboolean ask;
@@ -1005,6 +1024,15 @@ handle_open_file (XdpDbusOpenURI *object,
     ask = FALSE;
 
   g_variant_get (arg_fd, "h", &fd_id);
+  if (fd_id >= g_unix_fd_list_get_length (fd_list))
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             XDG_DESKTOP_PORTAL_ERROR,
+                                             XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
+                                             "Bad file descriptor index");
+      return G_DBUS_METHOD_INVOCATION_HANDLED;
+    }
+
   fd = g_unix_fd_list_get (fd_list, fd_id, &error);
   if (fd == -1)
     {
@@ -1022,7 +1050,7 @@ handle_open_file (XdpDbusOpenURI *object,
   if (activation_token)
     g_object_set_data_full (G_OBJECT (request), "activation-token", g_strdup (activation_token), g_free);
 
-  request_export (request, g_dbus_method_invocation_get_connection (invocation));
+  xdp_request_export (request, g_dbus_method_invocation_get_connection (invocation));
   xdp_dbus_open_uri_complete_open_file (object, invocation, NULL, request->id);
 
   task = g_task_new (object, NULL, NULL, NULL);
@@ -1040,7 +1068,7 @@ handle_open_directory (XdpDbusOpenURI *object,
                        GVariant *arg_fd,
                        GVariant *arg_options)
 {
-  Request *request = request_from_invocation (invocation);
+  XdpRequest *request = xdp_request_from_invocation (invocation);
   g_autoptr(GTask) task = NULL;
   int fd_id, fd;
   const char *activation_token = NULL;
@@ -1057,6 +1085,15 @@ handle_open_directory (XdpDbusOpenURI *object,
     }
 
   g_variant_get (arg_fd, "h", &fd_id);
+  if (fd_id >= g_unix_fd_list_get_length (fd_list))
+    {
+      g_dbus_method_invocation_return_error (invocation,
+                                             XDG_DESKTOP_PORTAL_ERROR,
+                                             XDG_DESKTOP_PORTAL_ERROR_INVALID_ARGUMENT,
+                                             "Bad file descriptor index");
+      return G_DBUS_METHOD_INVOCATION_HANDLED;
+    }
+
   fd = g_unix_fd_list_get (fd_list, fd_id, &error);
   if (fd == -1)
     {
@@ -1075,7 +1112,7 @@ handle_open_directory (XdpDbusOpenURI *object,
   if (activation_token)
     g_object_set_data_full (G_OBJECT (request), "activation-token", g_strdup (activation_token), g_free);
 
-  request_export (request, g_dbus_method_invocation_get_connection (invocation));
+  xdp_request_export (request, g_dbus_method_invocation_get_connection (invocation));
   xdp_dbus_open_uri_complete_open_directory (object, invocation, NULL, request->id);
 
   task = g_task_new (object, NULL, NULL, NULL);
@@ -1091,12 +1128,13 @@ open_uri_iface_init (XdpDbusOpenURIIface *iface)
   iface->handle_open_uri = handle_open_uri;
   iface->handle_open_file = handle_open_file;
   iface->handle_open_directory = handle_open_directory;
+  iface->handle_scheme_supported = handle_scheme_supported;
 }
 
 static void
 open_uri_init (OpenURI *openuri)
 {
-  xdp_dbus_open_uri_set_version (XDP_DBUS_OPEN_URI (openuri), 3);
+  xdp_dbus_open_uri_set_version (XDP_DBUS_OPEN_URI (openuri), 5);
 }
 
 static void

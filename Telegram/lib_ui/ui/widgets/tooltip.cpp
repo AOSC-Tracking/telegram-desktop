@@ -83,6 +83,7 @@ void Tooltip::popup(const QPoint &m, const QString &text, const style::Tooltip *
 	_point = m;
 	_st = st;
 	_text = Text::String(_st->textStyle, text, kPlainTextOptions, _st->widthMax);
+	accessibilityNameChanged();
 
 	_useTransparency = Platform::TranslucentWindowsSupported();
 	setAttribute(Qt::WA_OpaquePaintEvent, !_useTransparency);
@@ -451,7 +452,8 @@ object_ptr<FlatLabel> MakeNiceTooltipLabel(
 		rpl::producer<TextWithEntities> &&text,
 		int maxWidth,
 		const style::FlatLabel &st,
-		const style::PopupMenu &stMenu) {
+		const style::PopupMenu &stMenu,
+		const Text::MarkedContext &context) {
 	Expects(st.minWidth > 0);
 	Expects(st.minWidth < maxWidth);
 
@@ -459,7 +461,8 @@ object_ptr<FlatLabel> MakeNiceTooltipLabel(
 		parent,
 		rpl::duplicate(text),
 		st,
-		stMenu);
+		stMenu,
+		context);
 	const auto raw = result.data();
 	std::move(text) | rpl::start_with_next([=, &st] {
 		raw->resizeToWidth(qMin(maxWidth, raw->textMaxWidth()));

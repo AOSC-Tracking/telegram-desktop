@@ -1,10 +1,12 @@
 /*
  * Copyright © 2016 Red Hat, Inc
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,7 +26,8 @@
 #include <gio/gio.h>
 
 #include "proxy-resolver.h"
-#include "request.h"
+#include "xdp-call.h"
+#include "xdp-app-info.h"
 #include "xdp-dbus.h"
 #include "xdp-utils.h"
 
@@ -59,9 +62,9 @@ proxy_resolver_handle_lookup (XdpDbusProxyResolver *object,
                               const char *arg_uri)
 {
   ProxyResolver *resolver = (ProxyResolver *)object;
-  Request *request = request_from_invocation (invocation);
+  XdpCall *call = xdp_call_from_invocation (invocation);
 
-  if (!xdp_app_info_has_network (request->app_info))
+  if (!xdp_app_info_has_network (call->app_info))
     {
       g_dbus_method_invocation_return_error (invocation,
                                              XDG_DESKTOP_PORTAL_ERROR,
@@ -71,11 +74,11 @@ proxy_resolver_handle_lookup (XdpDbusProxyResolver *object,
   else
     {
       g_auto (GStrv) proxies = NULL;
-      GError *error = NULL;
+      g_autoptr (GError) error = NULL;
 
       proxies = g_proxy_resolver_lookup (resolver->resolver, arg_uri, NULL, &error);
-      if (error)
-        g_dbus_method_invocation_take_error (invocation, error);
+      if (!proxies)
+        g_dbus_method_invocation_take_error (invocation, g_steal_pointer (&error));
       else
         g_dbus_method_invocation_return_value (invocation,
                                                g_variant_new ("(^as)", proxies));

@@ -2,10 +2,12 @@
  * Copyright © 2018 Red Hat, Inc
  * Copyright © 2023 GNOME Foundation Inc.
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -37,6 +39,7 @@
 #include <gio/gunixfdlist.h>
 
 #include "file-transfer.h"
+#include "src/xdp-app-info.h"
 #include "src/xdp-utils.h"
 #include "document-portal-dbus.h"
 #include "document-enums.h"
@@ -98,10 +101,10 @@ file_transfer_finalize (GObject *object)
   FileTransfer *transfer = (FileTransfer *)object;
 
   g_mutex_clear (&transfer->mutex);
-  xdp_app_info_unref (transfer->app_info);
-  g_ptr_array_unref (transfer->files);
-  g_free (transfer->key);
-  g_free (transfer->sender);
+  g_clear_object (&transfer->app_info);
+  g_clear_pointer (&transfer->files, g_ptr_array_unref);
+  g_clear_pointer (&transfer->key, g_free);
+  g_clear_pointer (&transfer->sender, g_free);
 
   G_OBJECT_CLASS (file_transfer_parent_class)->finalize (object);
 }
@@ -162,7 +165,7 @@ file_transfer_start (XdpAppInfo *app_info,
 
   transfer = g_object_new (file_transfer_get_type (), NULL);
 
-  transfer->app_info = xdp_app_info_ref (app_info);
+  transfer->app_info = g_object_ref (app_info);
   transfer->sender = g_strdup (sender);
   transfer->writable = writable;
   transfer->autostop = autostop;
@@ -174,7 +177,7 @@ file_transfer_start (XdpAppInfo *app_info,
     g_free (transfer->key);
     key = g_random_int ();
     key = (key << 32) | g_random_int ();
-    transfer->key = g_strdup_printf ("%lu", key);
+    transfer->key = g_strdup_printf ("%" G_GUINT64_FORMAT, key);
   }
   while (g_hash_table_contains (transfers, transfer->key));
   g_hash_table_insert (transfers, transfer->key, g_object_ref (transfer));
@@ -524,7 +527,7 @@ handle_method (GCallback              method_callback,
   g_autoptr(XdpAppInfo) app_info = NULL;
   PortalMethod portal_method = (PortalMethod)method_callback;
 
-  app_info = xdp_invocation_lookup_app_info_sync (invocation, NULL, &error);
+  app_info = xdp_invocation_ensure_app_info_sync (invocation, NULL, &error);
   if (app_info == NULL)
     g_dbus_method_invocation_return_gerror (invocation, error);
   else

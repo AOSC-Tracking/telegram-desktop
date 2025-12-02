@@ -1,10 +1,12 @@
 /*
  * Copyright © 2021 Igalia S.L.
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -24,8 +26,9 @@
 #include <gio/gio.h>
 
 #include "realtime.h"
-#include "request.h"
-#include "permissions.h"
+#include "xdp-call.h"
+#include "xdp-permissions.h"
+#include "xdp-app-info.h"
 #include "xdp-dbus.h"
 #include "xdp-utils.h"
 
@@ -58,16 +61,31 @@ G_DEFINE_TYPE_WITH_CODE (Realtime, realtime, XDP_DBUS_TYPE_REALTIME_SKELETON,
 static gboolean
 map_pid (XdpAppInfo *app_info, pid_t *pid, pid_t *tid, GError **error)
 {
-  if (!xdp_app_info_map_pids (app_info, pid, 1, error))
+  ino_t pidns_id;
+  /*
+   * the unmapped pid is more useful for debugging, and doesn't leak
+   * information into the sandbox - see discussion in
+   * https://github.com/flatpak/xdg-desktop-portal/pull/1655
+   */
+  const pid_t unmapped_pid = *pid;
+
+  if (!xdp_app_info_get_pidns (app_info, &pidns_id, error))
     {
-      g_prefix_error (error, "Could not map pid: ");
+      g_prefix_error (error, "Could not get pidns for pid %d: ", unmapped_pid);
       g_warning ("Realtime error: %s", (*error)->message);
       return FALSE;
     }
 
-  if (!xdp_app_info_map_tids (app_info, *pid, tid, 1, error))
+  if (pidns_id != 0 && !xdp_map_pids (pidns_id, pid, 1, error))
     {
-      g_prefix_error (error, "Could not map tid: ");
+      g_prefix_error (error, "Could not map pid %d: ", unmapped_pid);
+      g_warning ("Realtime error: %s", (*error)->message);
+      return FALSE;
+    }
+
+  if (pidns_id != 0 && !xdp_map_tids (pidns_id, *pid, tid, 1, error))
+    {
+      g_prefix_error (error, "Could not map tid %d of pid %d: ", *tid, unmapped_pid);
       g_warning ("Realtime error: %s", (*error)->message);
       return FALSE;
     }
@@ -102,11 +120,11 @@ handle_make_thread_realtime_with_pid (XdpDbusRealtime       *object,
                                       guint32                priority)
 {
   g_autoptr (GError) error = NULL;
-  Request *request = request_from_invocation (invocation);
+  XdpCall *call = xdp_call_from_invocation (invocation);
   pid_t pids[1] = { process };
   pid_t tids[1] = { thread };
-  const char *app_id = xdp_app_info_get_id (request->app_info);
-  Permission permission;
+  const char *app_id = xdp_app_info_get_id (call->app_info);
+  XdpPermission permission;
 
   if (!realtime->rtkit_proxy)
     {
@@ -117,8 +135,8 @@ handle_make_thread_realtime_with_pid (XdpDbusRealtime       *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  permission = get_permission_sync (app_id, PERMISSION_TABLE, PERMISSION_ID);
-  if (permission == PERMISSION_NO)
+  permission = xdp_get_permission_sync (app_id, PERMISSION_TABLE, PERMISSION_ID);
+  if (permission == XDP_PERMISSION_NO)
     {
       g_dbus_method_invocation_return_error (invocation,
                                              XDG_DESKTOP_PORTAL_ERROR,
@@ -127,7 +145,7 @@ handle_make_thread_realtime_with_pid (XdpDbusRealtime       *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  if (!map_pid (request->app_info, pids, tids, &error))
+  if (!map_pid (call->app_info, pids, tids, &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
       return G_DBUS_METHOD_INVOCATION_HANDLED;
@@ -153,11 +171,11 @@ handle_make_thread_high_priority_with_pid (XdpDbusRealtime       *object,
                                            gint32                 priority)
 {
   g_autoptr (GError) error = NULL;
-  Request *request = request_from_invocation (invocation);
+  XdpCall *call = xdp_call_from_invocation (invocation);
   pid_t pids[1] = { process };
   pid_t tids[1] = { thread };
-  const char *app_id = xdp_app_info_get_id (request->app_info);
-  Permission permission;
+  const char *app_id = xdp_app_info_get_id (call->app_info);
+  XdpPermission permission;
 
   if (!realtime->rtkit_proxy)
     {
@@ -168,8 +186,8 @@ handle_make_thread_high_priority_with_pid (XdpDbusRealtime       *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  permission = get_permission_sync (app_id, PERMISSION_TABLE, PERMISSION_ID);
-  if (permission == PERMISSION_NO)
+  permission = xdp_get_permission_sync (app_id, PERMISSION_TABLE, PERMISSION_ID);
+  if (permission == XDP_PERMISSION_NO)
     {
       g_dbus_method_invocation_return_error (invocation,
                                              XDG_DESKTOP_PORTAL_ERROR,
@@ -178,7 +196,7 @@ handle_make_thread_high_priority_with_pid (XdpDbusRealtime       *object,
       return G_DBUS_METHOD_INVOCATION_HANDLED;
     }
 
-  if (!map_pid (request->app_info, pids, tids, &error))
+  if (!map_pid (call->app_info, pids, tids, &error))
     {
       g_dbus_method_invocation_return_gerror (invocation, error);
       return G_DBUS_METHOD_INVOCATION_HANDLED;
@@ -235,9 +253,9 @@ load_all_properties (GDBusProxy *proxy)
 
   for (guint i = 0; i < G_N_ELEMENTS (properties); ++i)
     {
-      GVariant *result;
+      g_autoptr (GVariant) result = NULL;
       GVariant *parameters;
-      GError *error = NULL;
+      g_autoptr (GError) error = NULL;
 
       parameters = g_variant_new ("(ss)", "org.freedesktop.RealtimeKit1", properties[i]);
       result = g_dbus_proxy_call_sync (proxy,
@@ -248,14 +266,13 @@ load_all_properties (GDBusProxy *proxy)
                                         NULL,
                                         &error);
 
-      if (error)
+      if (!result)
         {
           g_warning ("Failed to load RealtimeKit property: %s", error->message);
-          g_error_free (error);
         }
       else
         {
-          GVariant *value;
+          g_autoptr (GVariant) value = NULL;
           g_variant_get (result, "(v)", &value);
 
           if (i == MAX_REALTIME_PRIORITY)
@@ -271,8 +288,6 @@ load_all_properties (GDBusProxy *proxy)
             g_assert_not_reached ();
 
           g_dbus_proxy_set_cached_property (proxy, properties[i], value);
-          g_variant_unref (value);
-          g_variant_unref (result);
         }
     }
 }

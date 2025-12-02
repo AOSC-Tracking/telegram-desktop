@@ -1,10 +1,12 @@
 /*
  * Copyright © 2019 Red Hat, Inc
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -20,9 +22,10 @@
 
 #include "config.h"
 
-#include "request.h"
-#include "permissions.h"
+#include "xdp-call.h"
+#include "xdp-permissions.h"
 
+#include "xdp-app-info.h"
 #include "xdp-dbus.h"
 #include "xdp-impl-dbus.h"
 #include "xdp-utils.h"
@@ -163,7 +166,7 @@ game_mode_is_allowed_for_app (const char *app_id, GError **error)
   const char **stored;
   gboolean ok;
 
-  ok = xdp_dbus_impl_permission_store_call_lookup_sync (get_permission_store (),
+  ok = xdp_dbus_impl_permission_store_call_lookup_sync (xdp_get_permission_store (),
                                                         PERMISSION_TABLE,
                                                         PERMISSION_ID,
                                                         &perms,
@@ -239,7 +242,7 @@ call_data_new (GDBusMethodInvocation *inv,
   call = g_slice_new0 (CallData);
 
   call->inv = g_object_ref (inv);
-  call->app_info = xdp_app_info_ref (app_info);
+  call->app_info = g_object_ref (app_info);
   call->method = g_strdup (method);
 
   return call;
@@ -252,10 +255,10 @@ call_data_free (gpointer data)
   if (call == NULL)
     return;
 
-  g_object_unref (call->inv);
-  xdp_app_info_unref (call->app_info);
-  g_free (call->method);
-  g_clear_object(&call->fdlist);
+  g_clear_object (&call->inv);
+  g_clear_object (&call->app_info);
+  g_clear_pointer (&call->method, g_free);
+  g_clear_object (&call->fdlist);
 
   g_slice_free (CallData, call);
 }
@@ -289,15 +292,22 @@ handle_call_thread (GTask        *task,
     {
       pid_t pids[2] = {0, };
       guint n_pids;
+      ino_t pidns_id;
 
       n_pids = call->n_ids;
 
       for (guint i = 0; i < n_pids; i++)
         pids[0] = (pid_t) call->ids[i];
 
-      ok = xdp_app_info_map_pids (call->app_info, pids, n_pids, &error);
+      if (!xdp_app_info_get_pidns (call->app_info, &pidns_id, &error))
+        {
+          g_prefix_error (&error, "Could not get pidns: ");
+          g_warning ("GameMode error: %s", error->message);
+          g_dbus_method_invocation_return_gerror (call->inv, error);
+          return;
+        }
 
-      if (!ok)
+      if (pidns_id != 0 && !xdp_map_pids (pidns_id, pids, n_pids, &error))
         {
           g_prefix_error (&error, "Could not map pids: ");
           g_warning ("GameMode error: %s", error->message);
@@ -322,7 +332,7 @@ handle_call_thread (GTask        *task,
       /* verify fds are actually pidfds */
       fds = g_unix_fd_list_peek_fds (fdlist, &n_pids);
 
-      ok = xdp_app_info_pidfds_to_pids (call->app_info, fds, pids, n_pids, &error);
+      ok = xdp_pidfds_to_pids (fds, pids, n_pids, &error);
 
       if (!ok || !check_pids (pids, n_pids, &error))
         {
@@ -365,8 +375,8 @@ handle_call_in_thread_fds (XdpDbusGameMode       *object,
 {
   g_autoptr(GTask) task = NULL;
   XdpAppInfo *app_info;
-  Request  *request;
-  CallData *call;
+  XdpCall *call;
+  CallData *call_data;
 
   if (fdlist == NULL || g_unix_fd_list_get_length (fdlist) != 2)
     {
@@ -375,15 +385,15 @@ handle_call_in_thread_fds (XdpDbusGameMode       *object,
       return;
     }
 
-  request = request_from_invocation (invocation);
-  app_info = request->app_info;
+  call = xdp_call_from_invocation (invocation);
+  app_info = call->app_info;
 
-  call = call_data_new (invocation, app_info, method);
-  call->fdlist = g_object_ref (fdlist);
+  call_data = call_data_new (invocation, app_info, method);
+  call_data->fdlist = g_object_ref (fdlist);
 
   task = g_task_new (object, NULL, NULL, NULL);
 
-  g_task_set_task_data (task, call, call_data_free);
+  g_task_set_task_data (task, call_data, call_data_free);
   g_task_run_in_thread (task, handle_call_thread);
 }
 
@@ -396,26 +406,26 @@ handle_call_in_thread (XdpDbusGameMode       *object,
 {
   g_autoptr(GTask) task = NULL;
   XdpAppInfo *app_info;
-  Request  *request;
-  CallData *call;
+  XdpCall *call;
+  CallData *call_data;
 
-  request = request_from_invocation (invocation);
-  app_info = request->app_info;
+  call = xdp_call_from_invocation (invocation);
+  app_info = call->app_info;
 
-  call = call_data_new (invocation, app_info, method);
+  call_data = call_data_new (invocation, app_info, method);
 
-  call->ids[0] = target;
-  call->n_ids = 1;
+  call_data->ids[0] = target;
+  call_data->n_ids = 1;
 
   if (requester != 0)
     {
-      call->ids[1] = requester;
-      call->n_ids += 1;
+      call_data->ids[1] = requester;
+      call_data->n_ids += 1;
     }
 
   task = g_task_new (object, NULL, NULL, NULL);
 
-  g_task_set_task_data (task, call, call_data_free);
+  g_task_set_task_data (task, call_data, call_data_free);
   g_task_run_in_thread (task, handle_call_thread);
 }
 

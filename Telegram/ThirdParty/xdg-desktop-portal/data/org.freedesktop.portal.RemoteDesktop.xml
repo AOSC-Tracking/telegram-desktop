@@ -2,10 +2,12 @@
 <!--
  Copyright (C) 2017-2018 Red Hat, Inc.
 
+ SPDX-License-Identifier: LGPL-2.1-or-later
+
  This library is free software; you can redistribute it and/or
  modify it under the terms of the GNU Lesser General Public
  License as published by the Free Software Foundation; either
- version 2 of the License, or (at your option) any later version.
+ version 2.1 of the License, or (at your option) any later version.
 
  This library is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -29,7 +31,7 @@
     <!--
         CreateSession:
         @options: Vardict with optional further information
-        @handle: Object path for the #org.freedesktop.portal.Request object representing this call
+        @handle: Object path for the :ref:`org.freedesktop.portal.Request` object representing this call
 
         Create a remote desktop session.
 
@@ -37,128 +39,113 @@
         session.
 
         A remote desktop session may only be started and stopped with this interface,
-        but you can use the #org.freedesktop.portal.Session object created with this
-        method together with certain methods on the #org.freedesktop.portal.ScreenCast and
-        #org.freedesktop.portal.Clipboard interfaces. Specifically, you can call
-        org.freedesktop.portal.ScreenCast.SelectSources() to also get screen content,
-        and org.freedesktop.portal.ScreenCast.OpenPipeWireRemote() to acquire a file
-        descriptor for a PipeWire remote. See #org.freedesktop.portal.ScreenCast for
+        but you can use the :ref:`org.freedesktop.portal.Session` object created with this
+        method together with certain methods on the :ref:`org.freedesktop.portal.ScreenCast` and
+        :ref:`org.freedesktop.portal.Clipboard` interfaces. Specifically, you can call
+        :ref:`org.freedesktop.portal.ScreenCast.SelectSources` to also get screen content,
+        and :ref:`org.freedesktop.portal.ScreenCast.OpenPipeWireRemote` to acquire a file
+        descriptor for a PipeWire remote. See :ref:`org.freedesktop.portal.ScreenCast` for
         more information on how to use those methods. To capture clipboard content,
-        you can call org.freedesktop.portal.Clipboard.RequestClipboard(). See 
-        #org.freedesktop.portal.Clipboard for more information on the clipboard
+        you can call :ref:`org.freedesktop.portal.Clipboard.RequestClipboard`. See
+        :ref:`org.freedesktop.portal.Clipboard` for more information on the clipboard
         integration.
 
         Supported keys in the @options vardict include:
-        <variablelist>
-          <varlistentry>
-            <term>handle_token s</term>
-            <listitem><para>
-              A string that will be used as the last element of the @handle. Must be a valid
-              object path element. See the #org.freedesktop.portal.Request documentation for
-              more information about the @handle.
-            </para></listitem>
-          </varlistentry>
-          <varlistentry>
-            <term>session_handle_token s</term>
-            <listitem><para>
-              A string that will be used as the last element of the session handle. Must be a valid
-              object path element. See the #org.freedesktop.portal.Session documentation for
-              more information about the session handle.
-            </para></listitem>
-          </varlistentry>
-        </variablelist>
 
-        The following results get returned via the #org.freedesktop.portal.Request::Response signal:
-        <variablelist>
-          <varlistentry>
-            <term>session_handle o</term>
-            <listitem><para>
-              The session handle. An object path for the
-              #org.freedesktop.portal.Session object representing the created
-              session.
-            </para></listitem>
-          </varlistentry>
-        </variablelist>
+        * ``handle_token`` (``s``)
+
+          A string that will be used as the last element of the @handle. Must be a valid
+          object path element. See the :ref:`org.freedesktop.portal.Request` documentation for
+          more information about the @handle.
+
+        * ``session_handle_token`` (``s``)
+
+          A string that will be used as the last element of the session handle. Must be a valid
+          object path element. See the :ref:`org.freedesktop.portal.Session` documentation for
+          more information about the session handle.
+
+
+        The following results get returned via the :ref:`org.freedesktop.portal.Request::Response` signal:
+
+        * ``session_handle`` (``s``)
+
+          The session handle. An object path for the
+          :ref:`org.freedesktop.portal.Session` object representing the created
+          session.
+
+          .. note::
+            The ``session_handle`` is an object path that was erroneously implemented
+            as ``s``. For backwards compatibility it will remain this type.
     -->
     <method name="CreateSession">
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="o" name="handle" direction="out"/>
     </method>
     <!--
         SelectDevices:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
         @options: Vardict with optional further information
-        @handle: Object path for the #org.freedesktop.portal.Request object representing this call
+        @handle: Object path for the :ref:`org.freedesktop.portal.Request` object representing this call
 
         Select input devices to remote control.
 
         Supported keys in the @options vardict include:
-        <variablelist>
-          <varlistentry>
-            <term>handle_token s</term>
-            <listitem><para>
-              A string that will be used as the last element of the @handle. Must be a valid
-              object path element. See the #org.freedesktop.portal.Request documentation for
-              more information about the @handle.
-            </para></listitem>
-          </varlistentry>
-          <varlistentry>
-            <term>types u</term>
-            <listitem><para>
-              Bitmask of what device types to request remote controlling of.
-              Default is all.
-            </para></listitem>
-          </varlistentry>
-          <varlistentry>
-            <term>restore_token s</term>
-            <listitem><para>
-              The token to restore a previous session.
 
-              If the stored session cannot be restored, this value is ignored
-              and the user will be prompted normally. This may happen when, for
-              example, the session contains a monitor or a window that is not
-              available anymore, or when the stored permissions are withdrawn.
+        * ``handle_token`` (``s``)
 
-              The restore token is invalidated after using it once. To restore
-              the same session again, use the new restore token sent in response
-              to starting this session.
+          A string that will be used as the last element of the @handle. Must be a valid
+          object path element. See the :ref:`org.freedesktop.portal.Request` documentation for
+          more information about the @handle.
 
-              This option was added in version 2 of this interface.
-            </para></listitem>
-          </varlistentry>
-          <varlistentry>
-            <term>persist_mode u</term>
-            <listitem><para>
-              How this session should persist. Default is 0. Accepted values are:
+        * ``types`` (``u``)
 
-              <simplelist>
-                <member>0: Do not persist (default)</member>
-                <member>1: Permissions persist as long as the application is running</member>
-                <member>2: Permissions persist until explicitly revoked</member>
-              </simplelist>
+          Bitmask of what device types to request remote controlling of.
+          Default is all.
 
-              If the permission for the session to persist is granted, a restore token will
-              be returned via the #org.freedesktop.portal.Request::Response signal of the
-              start method used to start the session.
+        * ``restore_token`` (``s``)
 
-              This option was added in version 2 of this interface.
-            </para></listitem>
-          </varlistentry>
-        </variablelist>
+          The token to restore a previous session.
+
+          If the stored session cannot be restored, this value is ignored
+          and the user will be prompted normally. This may happen when, for
+          example, the session contains a monitor or a window that is not
+          available anymore, or when the stored permissions are withdrawn.
+
+          The restore token is invalidated after using it once. To restore
+          the same session again, use the new restore token sent in response
+          to starting this session.
+
+          This option was added in version 2 of this interface.
+
+        * ``persist_mode`` (``u``)
+
+          How this session should persist. Default is 0. Accepted values are:
+
+          - ``0``: Do not persist (default)
+          - ``1``: Permissions persist as long as the application is running
+          - ``2``: Permissions persist until explicitly revoked
+
+          If the permission for the session to persist is granted, a restore token will
+          be returned via the :ref:`org.freedesktop.portal.Request::Response` signal of the
+          start method used to start the session.
+
+          This option was added in version 2 of this interface.
 
         For available device types, see the AvailableDeviceTypes property.
     -->
     <method name="SelectDevices">
       <arg type="o" name="session_handle" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="o" name="handle" direction="out"/>
     </method>
     <!--
         Start:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
-        @parent_window: Identifier for the application window, see <link linkend="parent_window">Common Conventions</link>
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
+        @parent_window: Identifier for the application window, see :doc:`window-identifiers`
         @options: Vardict with optional further information
-        @handle: Object path for the #org.freedesktop.portal.Request object representing this call
+        @handle: Object path for the :ref:`org.freedesktop.portal.Request` object representing this call
 
         Start the remote desktop session. This will typically result in the portal
         presenting a dialog letting the user select what to share, including
@@ -166,59 +153,48 @@
         selected.
 
         Supported keys in the @options vardict include:
-        <variablelist>
-          <varlistentry>
-            <term>handle_token s</term>
-            <listitem><para>
-              A string that will be used as the last element of the @handle. Must be a valid
-              object path element. See the #org.freedesktop.portal.Request documentation for
-              more information about the @handle.
-            </para></listitem>
-          </varlistentry>
-        </variablelist>
+
+        * ``handle_token`` (``s``)
+
+          A string that will be used as the last element of the @handle. Must be a valid
+          object path element. See the :ref:`org.freedesktop.portal.Request` documentation for
+          more information about the @handle.
 
         The following results get returned via the
-        #org.freedesktop.portal.Request::Response signal:
-        <variablelist>
-          <varlistentry>
-            <term>devices u</term>
-            <listitem><para>
-              A bitmask of the devices selected by the user.
-            </para></listitem>
-          </varlistentry>
-          <varlistentry>
-            <term>clipboard_enabled b</term>
-            <listitem><para>
-              A boolean for whether the clipboard was enabled ('true') or not ('false'). 
-              See the #org.freedesktop.portal.Clipboard documentation for more information.
-              Since version 2.
-            </para></listitem>
-          </varlistentry>
-          <varlistentry>
-            <term>restore_token s</term>
-            <listitem><para>
-              The restore token. This token is a single use token that can later
-              be used to restore a session. See
-              org.freedesktop.portal.RemoteDesktop.SelectDevices() for details.
+        :ref:`org.freedesktop.portal.Request::Response` signal:
 
-              This response option was added in version 2 of this interface.
-            </para></listitem>
-          </varlistentry>
-        </variablelist>
+        * ``devices`` (``u``)
+
+          A bitmask of the devices selected by the user.
+
+        * ``clipboard_enabled`` (``b``)
+
+          A boolean for whether the clipboard was enabled ('true') or not ('false').
+          See the :ref:`org.freedesktop.portal.Clipboard` documentation for more information.
+          Since version 2.
+
+        * ``restore_token`` (``s``)
+
+          The restore token. This token is a single use token that can later
+          be used to restore a session. See
+          org.freedesktop.portal.RemoteDesktop.SelectDevices() for details.
+
+          This response option was added in version 2 of this interface.
 
         If a screen cast source was selected, the results of the
-        #org.freedesktop.portal.ScreenCast.Start response signal may be
+        :ref:`org.freedesktop.portal.ScreenCast.Start` response signal may be
         included.
     -->
     <method name="Start">
       <arg type="o" name="session_handle" direction="in"/>
       <arg type="s" name="parent_window" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In2" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="o" name="handle" direction="out"/>
     </method>
     <!--
         NotifyPointerMotion:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
         @options: Vardict with optional further information
         @dx: Relative movement on the x axis
         @dy: Relative movement on the y axis
@@ -229,13 +205,14 @@
     -->
     <method name="NotifyPointerMotion">
       <arg type="o" name="session_handle" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="d" name="dx" direction="in"/>
       <arg type="d" name="dy" direction="in"/>
     </method>
     <!--
         NotifyPointerMotionAbsolute:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
         @options: Vardict with optional further information
         @stream: The PipeWire stream node the coordinate is relative to
         @x: Pointer motion x coordinate
@@ -244,10 +221,11 @@
         Notify about a new absolute pointer motion event. The (x, y) position
         represents the new pointer position in the streams logical coordinate
         space (see the logical_size stream property in
-        #org.freedesktop.portal.ScreenCast).
+        :ref:`org.freedesktop.portal.ScreenCast`).
     -->
     <method name="NotifyPointerMotionAbsolute">
       <arg type="o" name="session_handle" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="u" name="stream" direction="in"/>
       <arg type="d" name="x" direction="in"/>
@@ -255,7 +233,7 @@
     </method>
     <!--
         NotifyPointerButton:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
         @options: Vardict with optional further information
         @button: The pointer button was pressed or released
         @state: The new state of the button
@@ -266,20 +244,20 @@
         session.
 
         Available button states:
-        <simplelist>
-          <member>0: Released</member>
-          <member>1: Pressed</member>
-        </simplelist>
+
+        - ``0``: Released
+        - ``1``: Pressed
     -->
     <method name="NotifyPointerButton">
       <arg type="o" name="session_handle" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="i" name="button" direction="in"/>
       <arg type="u" name="state" direction="in"/>
     </method>
     <!--
         NotifyPointerAxis:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
         @options: Vardict with optional further information
         @dx: Relative axis movement on the x axis
         @dy: Relative axis movement on the y axis
@@ -292,26 +270,23 @@
         session.
 
         Supported keys in the @options vardict include:
-        <variablelist>
-          <varlistentry>
-            <term>finish b</term>
-            <listitem><para>
-              If set to true, this is the last axis event in a series, for
-              example as a result of the fingers being lifted from a touchpad
-              after a two-finger scroll.  Default is false.
-            </para></listitem>
-          </varlistentry>
-        </variablelist>
+
+        * ``finish`` (``b``)
+
+          If set to true, this is the last axis event in a series, for
+          example as a result of the fingers being lifted from a touchpad
+          after a two-finger scroll.  Default is false.
     -->
     <method name="NotifyPointerAxis">
       <arg type="o" name="session_handle" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="d" name="dx" direction="in"/>
       <arg type="d" name="dy" direction="in"/>
     </method>
     <!--
         NotifyPointerAxisDiscrete:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
         @options: Vardict with optional further information
         @axis: The axis that was scrolled
         @steps: The number of steps scrolled
@@ -320,20 +295,21 @@
         session.
 
         Available axes:
-        <simplelist>
-          <member>0: Vertical scroll</member>
-          <member>1: Horizontal scroll</member>
-        </simplelist>
+
+        - ``0``: Vertical scroll
+        - ``1``: Horizontal scroll
+
     -->
     <method name="NotifyPointerAxisDiscrete">
       <arg type="o" name="session_handle" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="u" name="axis" direction="in"/>
       <arg type="i" name="steps" direction="in"/>
     </method>
     <!--
         NotifyKeyboardKeycode:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
         @options: Vardict with optional further information
         @keycode: Keyboard code that was pressed or released
         @state: New state of keyboard keycode
@@ -342,20 +318,20 @@
         session.
 
         Available keyboard keycode states:
-        <simplelist>
-          <member>0: Released</member>
-          <member>1: Pressed</member>
-        </simplelist>
+
+        - ``0``: Released
+        - ``1``: Pressed
     -->
     <method name="NotifyKeyboardKeycode">
       <arg type="o" name="session_handle" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="i" name="keycode" direction="in"/>
       <arg type="u" name="state" direction="in"/>
     </method>
     <!--
         NotifyKeyboardKeysym:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
         @options: Vardict with optional further information
         @keysym: Keyboard symbol that was pressed or released
         @state: New state of keyboard keysym
@@ -364,20 +340,20 @@
         session.
 
         Available keyboard keysym states:
-        <simplelist>
-          <member>0: Released</member>
-          <member>1: Pressed</member>
-        </simplelist>
+
+        - ``0``: Released
+        - ``1``: Pressed
     -->
     <method name="NotifyKeyboardKeysym">
       <arg type="o" name="session_handle" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="i" name="keysym" direction="in"/>
       <arg type="u" name="state" direction="in"/>
     </method>
     <!--
         NotifyTouchDown:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
         @options: Vardict with optional further information
         @stream: The PipeWire stream node the coordinate is relative to
         @slot: Touch slot where touch point appeared
@@ -390,10 +366,11 @@
         Notify about a new touch down event. The (x, y) position
         represents the new touch point position in the streams logical
         coordinate space (see the logical_size stream property in
-        #org.freedesktop.portal.ScreenCast).
+        :ref:`org.freedesktop.portal.ScreenCast`).
     -->
     <method name="NotifyTouchDown">
       <arg type="o" name="session_handle" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="u" name="stream" direction="in"/>
       <arg type="u" name="slot" direction="in"/>
@@ -402,7 +379,7 @@
     </method>
     <!--
         NotifyTouchMotion:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
         @options: Vardict with optional further information
         @stream: The PipeWire stream node the coordinate is relative to
         @slot: Touch slot where touch point appeared
@@ -415,10 +392,11 @@
         Notify about a new touch motion event. The (x, y) position
         represents where the touch point position in the streams logical
         coordinate space moved (see the logical_size stream property in
-        #org.freedesktop.portal.ScreenCast).
+        :ref:`org.freedesktop.portal.ScreenCast`).
     -->
     <method name="NotifyTouchMotion">
       <arg type="o" name="session_handle" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="u" name="stream" direction="in"/>
       <arg type="u" name="slot" direction="in"/>
@@ -427,7 +405,7 @@
     </method>
     <!--
         NotifyTouchUp:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
         @options: Vardict with optional further information
         @slot: Touch slot where touch point appeared
 
@@ -438,13 +416,14 @@
     -->
     <method name="NotifyTouchUp">
       <arg type="o" name="session_handle" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="u" name="slot" direction="in"/>
     </method>
 
     <!--
         ConnectToEIS:
-        @session_handle: Object path for the #org.freedesktop.portal.Session object
+        @session_handle: Object path for the :ref:`org.freedesktop.portal.Session` object
         @options: Vardict with optional further information
         @fd: A file descriptor to an EIS implementation that can be passed to a libei sender context
 
@@ -456,15 +435,15 @@
         This method may only be called once per session, where the EIS
         implementation disconnects the session should be closed.
 
-        This method must be called after #org.freedesktop.portal.RemoteDesktop.Start()
+        This method must be called after org.freedesktop.portal.RemoteDesktop.Start()
 
         Once an EIS connection is established, input events must be sent exclusively via
         the EIS connection. Any events submitted via NotifyPointerMotion,
         NotifyKeyboardKeycode and other Notify* methods will return an error.
 
         To see how to pair a PipeWire stream with a libei device region, see the
-        documentation for the mapping_id stream property in
-        #org.freedesktop.portal.RemoteDesktop.Start().
+        documentation for the ``mapping_id`` stream property in
+        :ref:`org.freedesktop.portal.ScreenCast.Start`.
 
         This method was added in version 2 of this interface.
     -->
@@ -472,6 +451,7 @@
       <annotation name="org.gtk.GDBus.C.Name" value="connect_to_eis"/>
       <annotation name="org.gtk.GDBus.C.UnixFD" value="true"/>
       <arg type="o" name="session_handle" direction="in"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
       <arg type="a{sv}" name="options" direction="in"/>
       <arg type="h" name="fd" direction="out"/>
     </method>
@@ -481,11 +461,9 @@
 
         A bitmask of available source types. Currently defined types are:
 
-        <simplelist>
-          <member>1: KEYBOARD</member>
-          <member>2: POINTER</member>
-          <member>4: TOUCHSCREEN</member>
-        </simplelist>
+        - ``1``: KEYBOARD
+        - ``2``: POINTER
+        - ``4``: TOUCHSCREEN
     -->
     <property name="AvailableDeviceTypes" type="u" access="read"/>
     <property name="version" type="u" access="read"/>

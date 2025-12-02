@@ -1,10 +1,12 @@
 /*
  * Copyright © 2016 Red Hat, Inc
  *
+ * SPDX-License-Identifier: LGPL-2.1-or-later
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -25,18 +27,22 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <glib-unix.h>
 #include <glib/gi18n.h>
 
 #include "xdp-utils.h"
+#include "xdp-call.h"
 #include "xdp-dbus.h"
+#include "xdp-documents.h"
 #include "xdp-impl-dbus.h"
+#include "xdp-method-info.h"
+#include "xdp-portal-impl.h"
+#include "xdp-session-persistence.h"
+
 #include "account.h"
 #include "background.h"
-#include "call.h"
 #include "camera.h"
 #include "clipboard.h"
-#include "device.h"
-#include "documents.h"
 #include "dynamic-launcher.h"
 #include "email.h"
 #include "file-chooser.h"
@@ -49,22 +55,23 @@
 #include "network-monitor.h"
 #include "notification.h"
 #include "open-uri.h"
-#include "permissions.h"
-#include "portal-impl.h"
+#include "xdp-permissions.h"
 #include "power-profile-monitor.h"
 #include "print.h"
 #include "proxy-resolver.h"
 #include "realtime.h"
+#include "registry.h"
 #include "remote-desktop.h"
-#include "request.h"
-#include "restore-token.h"
+#include "xdp-request.h"
 #include "screen-cast.h"
 #include "screenshot.h"
 #include "secret.h"
 #include "settings.h"
 #include "trash.h"
+#include "usb.h"
 #include "wallpaper.h"
 
+static int global_exit_status = 0;
 static GMainLoop *loop = NULL;
 
 gboolean opt_verbose;
@@ -77,6 +84,8 @@ static GOptionEntry entries[] = {
   { "version", 0, 0, G_OPTION_ARG_NONE, &show_version, "Show program version.", NULL},
   { NULL }
 };
+
+XdpDbusImplLockdown *lockdown;
 
 static void
 message_handler (const gchar *log_domain,
@@ -110,63 +119,18 @@ method_needs_request (GDBusMethodInvocation *invocation)
 {
   const char *interface;
   const char *method;
+  const XdpMethodInfo *method_info;
 
   interface = g_dbus_method_invocation_get_interface_name (invocation);
   method = g_dbus_method_invocation_get_method_name (invocation);
 
-  if (strcmp (interface, "org.freedesktop.portal.ScreenCast") == 0)
-    {
-      if (strcmp (method, "OpenPipeWireRemote") == 0)
-        return FALSE;
-      else
-        return TRUE;
-    }
-  else if (strcmp (interface, "org.freedesktop.portal.RemoteDesktop") == 0)
-    {
-      if (strstr (method, "Notify") == method || strcmp (method, "ConnectToEIS") == 0)
-        return FALSE;
-      else
-        return TRUE;
-    }
-  else if (strcmp (interface, "org.freedesktop.portal.Clipboard") == 0)
-    {
-      return FALSE;
-    }
-  else if (strcmp (interface, "org.freedesktop.portal.Camera") == 0)
-    {
-      if (strcmp (method, "OpenPipeWireRemote") == 0)
-        return FALSE;
-      else
-        return TRUE;
-    }
-  else if (strcmp (interface, "org.freedesktop.portal.DynamicLauncher") == 0)
-    {
-      if (strcmp (method, "PrepareInstall") == 0)
-        return TRUE;
-      else
-        return FALSE;
-    }
-  else if (strcmp (interface, "org.freedesktop.portal.Background") == 0)
-    {
-      if (strcmp (method, "SetStatus") == 0)
-        return FALSE;
-      else
-        return TRUE;
-    }
-  else if (strcmp (interface, "org.freedesktop.portal.InputCapture") == 0)
-    {
-      if (strcmp (method, "ConnectToEIS") == 0 ||
-          strcmp (method, "Enable") == 0 ||
-          strcmp (method, "Disable") == 0 ||
-          strcmp (method, "Release") == 0)
-        return FALSE;
-      else
-        return TRUE;
-    }
-  else
-    {
-      return TRUE;
-    }
+  method_info = xdp_method_info_find (interface, method);
+
+  if (!method_info)
+    g_warning ("Support for %s::%s missing in %s",
+               interface, method, G_STRLOC);
+
+  return method_info ?  method_info->uses_request : TRUE;
 }
 
 static gboolean
@@ -175,10 +139,9 @@ authorize_callback (GDBusInterfaceSkeleton *interface,
                     gpointer                user_data)
 {
   g_autoptr(XdpAppInfo) app_info = NULL;
-
   g_autoptr(GError) error = NULL;
 
-  app_info = xdp_invocation_lookup_app_info_sync (invocation, NULL, &error);
+  app_info = xdp_invocation_ensure_app_info_sync (invocation, NULL, &error);
   if (app_info == NULL)
     {
       g_dbus_method_invocation_return_error (invocation,
@@ -189,9 +152,9 @@ authorize_callback (GDBusInterfaceSkeleton *interface,
     }
 
   if (method_needs_request (invocation))
-    request_init_invocation (invocation, app_info);
+    xdp_request_init_invocation (invocation, app_info);
   else
-    call_init_invocation (invocation, app_info);
+    xdp_call_init_invocation (invocation, app_info);
 
   return TRUE;
 }
@@ -226,6 +189,41 @@ export_portal_implementation (GDBusConnection *connection,
 }
 
 static void
+export_host_portal_implementation (GDBusConnection        *connection,
+                                   GDBusInterfaceSkeleton *skeleton)
+{
+  /* Host portal dbus method invocations run in the main thread without yielding
+   * to the main loop. This means that any later method call of any portal will
+   * see the effects of the host portal method call.
+   *
+   * This is important because the Registry modifies the XdpAppInfo and later
+   * method calls must see the modified value.
+   */
+
+  g_autoptr(GError) error = NULL;
+
+  if (skeleton == NULL)
+    {
+      g_warning ("No skeleton to export");
+      return;
+    }
+
+  g_dbus_interface_skeleton_set_flags (skeleton,
+                                       G_DBUS_INTERFACE_SKELETON_FLAGS_NONE);
+
+  if (!g_dbus_interface_skeleton_export (skeleton,
+                                         connection,
+                                         DESKTOP_PORTAL_OBJECT_PATH,
+                                         &error))
+    {
+      g_warning ("Error: %s", error->message);
+      return;
+    }
+
+  g_debug ("providing portal %s", g_dbus_interface_skeleton_get_info (skeleton)->name);
+}
+
+static void
 peer_died_cb (const char *name)
 {
   close_requests_for_sender (name);
@@ -234,24 +232,42 @@ peer_died_cb (const char *name)
 }
 
 static void
+exit_with_status (int status)
+{
+  global_exit_status = status;
+  g_main_loop_quit (loop);
+}
+
+static void
 on_bus_acquired (GDBusConnection *connection,
                  const gchar     *name,
                  gpointer         user_data)
 {
-  PortalImplementation *implementation;
-  PortalImplementation *lockdown_impl;
-  PortalImplementation *access_impl;
-  g_autoptr(GError) error = NULL;
-  XdpDbusImplLockdown *lockdown;
+  XdpPortalImplementation *implementation;
+  XdpPortalImplementation *lockdown_impl;
+  XdpPortalImplementation *access_impl;
   GQuark portal_errors G_GNUC_UNUSED;
   GPtrArray *impls;
+  g_autoptr(GError) error = NULL;
 
   /* make sure errors are registered */
   portal_errors = XDG_DESKTOP_PORTAL_ERROR;
 
   xdp_connection_track_name_owners (connection, peer_died_cb);
-  init_document_proxy (connection);
-  init_permission_store (connection);
+
+  if (!xdp_init_permission_store (connection, &error))
+    {
+      g_critical ("No permission store: %s", error->message);
+      exit_with_status (1);
+      return;
+    }
+
+  if (!xdp_init_document_proxy (connection, &error))
+    {
+      g_critical ("No document portal: %s", error->message);
+      exit_with_status (1);
+      return;
+    }
 
   lockdown_impl = find_portal_implementation ("org.freedesktop.impl.portal.Lockdown");
   if (lockdown_impl != NULL)
@@ -259,8 +275,9 @@ on_bus_acquired (GDBusConnection *connection,
                                                       G_DBUS_PROXY_FLAGS_NONE,
                                                       lockdown_impl->dbus_name,
                                                       DESKTOP_PORTAL_OBJECT_PATH,
-                                                      NULL, &error);
-  else
+                                                      NULL, NULL);
+
+  if (lockdown == NULL)
     lockdown = xdp_dbus_impl_lockdown_skeleton_new ();
 
   export_portal_implementation (connection, memory_monitor_create (connection));
@@ -272,7 +289,8 @@ on_bus_acquired (GDBusConnection *connection,
   export_portal_implementation (connection, realtime_create (connection));
 
   impls = find_all_portal_implementations ("org.freedesktop.impl.portal.Settings");
-  export_portal_implementation (connection, settings_create (connection, impls));
+  if (impls->len > 0)
+    export_portal_implementation (connection, settings_create (connection, impls));
   g_ptr_array_free (impls, TRUE);
 
   implementation = find_portal_implementation ("org.freedesktop.impl.portal.FileChooser");
@@ -303,12 +321,8 @@ on_bus_acquired (GDBusConnection *connection,
   access_impl = find_portal_implementation ("org.freedesktop.impl.portal.Access");
   if (access_impl != NULL)
     {
-      PortalImplementation *tmp;
+      XdpPortalImplementation *tmp;
 
-      export_portal_implementation (connection,
-                                    device_create (connection,
-                                                   access_impl->dbus_name,
-                                                   lockdown));
 #ifdef HAVE_GEOCLUE
       export_portal_implementation (connection,
                                     location_create (connection,
@@ -317,7 +331,9 @@ on_bus_acquired (GDBusConnection *connection,
 #endif
 
       export_portal_implementation (connection,
-                                    camera_create (connection, lockdown));
+                                    camera_create (connection,
+                                                   access_impl->dbus_name,
+                                                   lockdown));
 
       tmp = find_portal_implementation ("org.freedesktop.impl.portal.Screenshot");
       if (tmp != NULL)
@@ -385,6 +401,15 @@ on_bus_acquired (GDBusConnection *connection,
   if (implementation != NULL)
     export_portal_implementation (connection,
                                   input_capture_create (connection, implementation->dbus_name));
+
+#ifdef HAVE_GUDEV
+  implementation = find_portal_implementation ("org.freedesktop.impl.portal.Usb");
+  if (implementation != NULL)
+    export_portal_implementation (connection,
+                                  xdp_usb_create (connection, implementation->dbus_name));
+#endif
+
+  export_host_portal_implementation (connection, registry_create (connection));
 }
 
 static void
@@ -403,13 +428,37 @@ on_name_lost (GDBusConnection *connection,
   g_main_loop_quit (loop);
 }
 
+static gboolean
+signal_handler_cb (gpointer user_data)
+{
+  g_main_loop_quit (loop);
+  g_debug ("Terminated with signal.");
+  return G_SOURCE_REMOVE;
+}
+
 int
 main (int argc, char *argv[])
 {
   guint owner_id;
   g_autoptr(GError) error = NULL;
   g_autoptr(GDBusConnection) session_bus = NULL;
-  g_autoptr(GOptionContext) context;
+  g_autoptr(GSource) signal_handler_source = NULL;
+  g_autoptr(GOptionContext) context = NULL;
+
+  if (g_getenv ("XDG_DESKTOP_PORTAL_WAIT_FOR_DEBUGGER") != NULL)
+    {
+      g_printerr ("\ndesktop portal (PID %d) is waiting for a debugger. "
+                  "Use `gdb -p %d` to connect. \n",
+                  getpid (), getpid ());
+
+      if (raise (SIGSTOP) == -1)
+        {
+          g_printerr ("Failed waiting for debugger\n");
+          exit (1);
+        }
+
+      raise (SIGCONT);
+    }
 
   setlocale (LC_ALL, "");
   bindtextdomain (GETTEXT_PACKAGE, LOCALEDIR);
@@ -434,7 +483,7 @@ main (int argc, char *argv[])
       "path /org/freedesktop/portal/desktop.\n"
       "\n"
       "Documentation for the available D-Bus interfaces can be found at\n"
-      "https://flatpak.github.io/xdg-desktop-portal/portal-docs.html\n"
+      "https://flatpak.github.io/xdg-desktop-portal/docs/\n"
       "\n"
       "Please report issues at https://github.com/flatpak/xdg-desktop-portal/issues");
   g_option_context_add_main_entries (context, entries, NULL);
@@ -466,6 +515,13 @@ main (int argc, char *argv[])
 
   loop = g_main_loop_new (NULL, FALSE);
 
+  /* Setup a signal handler so that we can quit cleanly.
+   * This is useful for triggering asan.
+   */
+  signal_handler_source = g_unix_signal_source_new (SIGHUP);
+  g_source_set_callback (signal_handler_source, G_SOURCE_FUNC (signal_handler_cb), NULL, NULL);
+  g_source_attach (signal_handler_source, g_main_loop_get_context (loop));
+
   session_bus = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, &error);
   if (session_bus == NULL)
     {
@@ -487,5 +543,5 @@ main (int argc, char *argv[])
   g_bus_unown_name (owner_id);
   g_main_loop_unref (loop);
 
-  return 0;
+  return global_exit_status;
 }
