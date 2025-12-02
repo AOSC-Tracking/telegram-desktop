@@ -39,6 +39,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QSize>
 #include <QtCore/QMimeData>
 #include <QtGui/QWindow>
+#include <QtGui/QScreen>
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QTextEdit>
