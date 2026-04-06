@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "info/info_memento.h"
 #include "info/global_media/info_global_media_widget.h"
 #include "info/media/info_media_widget.h"
+#include "info/polls/info_polls_list_widget.h"
 #include "core/application.h"
 #include "data/data_changes.h"
 #include "data/data_peer.h"
@@ -350,7 +351,7 @@ void Controller::setupMigrationViewer() {
 		Data::PeerUpdate::Flag::Migration
 	) | rpl::filter([=] {
 		return peer->migrateTo() || (peer->migrateFrom() != _migrated);
-	}) | rpl::start_with_next([=] {
+	}) | rpl::on_next([=] {
 		replaceWith(std::make_shared<Memento>(peer, _section));
 	}, lifetime());
 }
@@ -371,7 +372,7 @@ void Controller::replaceWith(std::shared_ptr<Memento> memento) {
 
 void Controller::setupTopicViewer() {
 	session().data().itemIdChanged(
-	) | rpl::start_with_next([=](const Data::Session::IdChange &change) {
+	) | rpl::on_next([=](const Data::Session::IdChange &change) {
 		if (const auto topic = _key.topic()) {
 			if (topic->rootId() == change.oldId
 				|| (topic->peer()->id == change.newId.peer
@@ -437,9 +438,14 @@ void Controller::updateSearchControllers(
 	if (type == Type::Media) {
 		_searchController
 			= std::make_unique<Api::DelayedSearchController>(&session());
-		auto mediaMemento = dynamic_cast<Media::Memento*>(memento.get());
-		Assert(mediaMemento != nullptr);
-		_searchController->restoreState(mediaMemento->searchState());
+		if (auto mediaMemento = dynamic_cast<Media::Memento*>(
+				memento.get())) {
+			_searchController->restoreState(mediaMemento->searchState());
+		} else if (dynamic_cast<Polls::ListMemento*>(memento.get())) {
+			auto state = Api::SearchController::SavedState();
+			state.query = produceSearchQuery(searchQuery);
+			_searchController->restoreState(std::move(state));
+		}
 	} else {
 		_searchController = nullptr;
 	}
@@ -453,7 +459,7 @@ void Controller::updateSearchControllers(
 				searchQuery);
 		if (_searchController) {
 			_searchFieldController->queryValue(
-			) | rpl::start_with_next([=](QString &&query) {
+			) | rpl::on_next([=](QString &&query) {
 				_searchController->setQuery(
 					produceSearchQuery(std::move(query)));
 			}, _searchFieldController->lifetime());
@@ -473,10 +479,10 @@ void Controller::saveSearchState(not_null<ContentMemento*> memento) {
 			_seachEnabledByContent.current());
 	}
 	if (_searchController) {
-		auto mediaMemento = dynamic_cast<Media::Memento*>(
-			memento.get());
-		Assert(mediaMemento != nullptr);
-		mediaMemento->setSearchState(_searchController->saveState());
+		if (auto mediaMemento = dynamic_cast<Media::Memento*>(
+				memento.get())) {
+			mediaMemento->setSearchState(_searchController->saveState());
+		}
 	}
 }
 

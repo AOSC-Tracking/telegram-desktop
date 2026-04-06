@@ -147,7 +147,10 @@ public:
 	void setDoubleClickSelectsParagraph(bool doubleClickSelectsParagraph);
 	void setContextCopyText(const QString &copyText);
 	void setBreakEverywhere(bool breakEverywhere);
+	void setElisionMiddle(bool elisionMiddle);
 	void setTryMakeSimilarLines(bool tryMakeSimilarLines);
+	void setSkipBlock(int width, int height);
+	void setColors(std::span<Text::SpecialColor> colors);
 	enum class WhichAnimationsPaused {
 		None,
 		CustomEmoji,
@@ -168,6 +171,9 @@ public:
 	void setClickHandlerFilter(ClickHandlerFilter &&filter);
 	void overrideLinkClickHandler(Fn<void()> handler);
 	void overrideLinkClickHandler(Fn<void(QString url)> handler);
+
+	void setPreCache(Fn<not_null<Text::QuotePaintCache*>()> make);
+	void setBlockquoteCache(Fn<not_null<Text::QuotePaintCache*>()> make);
 
 	struct ContextMenuRequest {
 		not_null<PopupMenu*> menu;
@@ -194,6 +200,8 @@ public:
 		QPoint fromPosition = QPoint(),
 		QPoint toPosition = QPoint());
 
+	[[nodiscard]] std::vector<int> countLineWidths() const;
+
 protected:
 	void paintEvent(QPaintEvent *e) override;
 	void mouseMoveEvent(QMouseEvent *e) override;
@@ -207,7 +215,8 @@ protected:
 	void keyPressEvent(QKeyEvent *e) override;
 	void contextMenuEvent(QContextMenuEvent *e) override;
 	bool eventHook(QEvent *e) override; // calls touchEvent when necessary
-	void touchEvent(QTouchEvent *e);
+	bool handleTouchEvent(QTouchEvent *e);
+	bool eventFilter(QObject *receiver, QEvent *e) override;
 
 	int resizeGetHeight(int newWidth) override;
 
@@ -222,6 +231,10 @@ private:
 	void init();
 	void textUpdated();
 
+	[[nodiscard]] QTouchEvent *checkTouchEvent(QEvent *e);
+	void startTouchInProgress();
+	void cancelTouchInProgress();
+
 	Text::StateResult dragActionUpdate();
 	Text::StateResult dragActionStart(const QPoint &p, Qt::MouseButton button);
 	Text::StateResult dragActionFinish(const QPoint &p, Qt::MouseButton button);
@@ -232,6 +245,7 @@ private:
 	int countTextWidth(int newWidth) const;
 	int countTextHeight(int textWidth);
 	void refreshSize();
+	bool allowTextSelectionByHandler(const ClickHandlerPtr &handler) const;
 
 	enum class ContextMenuReason {
 		FromEvent,
@@ -248,7 +262,11 @@ private:
 	int _textWidth = 0;
 	int _fullTextHeight = 0;
 	bool _breakEverywhere = false;
+	bool _elisionMiddle = false;
 	bool _tryMakeSimilarLines = false;
+	int _skipBlockWidth = 0;
+	int _skipBlockHeight = 0;
+	std::span<Text::SpecialColor> _colors;
 
 	style::cursor _cursor = style::cur_default;
 	bool _selectable = false;
@@ -278,6 +296,9 @@ private:
 
 	ClickHandlerFilter _clickHandlerFilter;
 	Fn<WhichAnimationsPaused()> _animationsPausedCallback;
+
+	Fn<not_null<Text::QuotePaintCache*>()> _preCacheCallback;
+	Fn<not_null<Text::QuotePaintCache*>()> _blockquoteCacheCallback;
 
 	// text selection and context menu by touch support (at least Windows Surface tablets)
 	bool _touchSelect = false;

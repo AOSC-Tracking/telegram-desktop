@@ -63,13 +63,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "menu/menu_mute.h"
 #include "settings/settings_credits_graphics.h"
-#include "settings/settings_information.h"
-#include "settings/settings_premium.h"
+#include "settings/sections/settings_information.h"
+#include "settings/sections/settings_premium.h"
 #include "ui/boxes/show_or_premium_box.h"
 #include "ui/color_contrast.h"
 #include "ui/controls/stars_rating.h"
 #include "ui/controls/userpic_button.h"
 #include "ui/effects/animations.h"
+#include "ui/effects/upload_progress_overlay.h"
 #include "ui/effects/outline_segments.h"
 #include "ui/effects/round_checkbox.h"
 #include "ui/empty_userpic.h"
@@ -85,6 +86,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/labels.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "ui/widgets/popup_menu.h"
+#include "ui/widgets/shadow.h"
 #include "ui/widgets/tooltip.h"
 #include "ui/wrap/fade_wrap.h"
 #include "window/themes/window_theme.h"
@@ -116,6 +118,7 @@ public:
 	: Ui::AbstractButton(parent)
 	, _hasStories(std::move(hasStories)) {
 		installEventFilter(this);
+		setAccessibleName(tr::lng_mediaview_profile_photo(tr::now));
 	}
 
 	QString tooltipText() const override {
@@ -388,7 +391,7 @@ TopBar::TopBar(
 	_peer->session().changes().peerFlagsValue(
 		_peer,
 		Data::PeerUpdate::Flag::OnlineStatus | Data::PeerUpdate::Flag::Members
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		_statusLabel->refresh();
 	}, lifetime());
 
@@ -415,14 +418,14 @@ TopBar::TopBar(
 			std::move(badgeUpdates),
 			_botVerify->updated());
 	}
-	_title->naturalWidthValue() | rpl::start_with_next([=](int w) {
+	_title->naturalWidthValue() | rpl::on_next([=](int w) {
 		_title->resizeToWidth(w);
 	}, _title->lifetime());
 	badgeUpdates = rpl::merge(
 		std::move(badgeUpdates),
 		nameValue() | rpl::to_empty,
 		_backToggles.value() | rpl::to_empty);
-	std::move(badgeUpdates) | rpl::start_with_next([=] {
+	std::move(badgeUpdates) | rpl::on_next([=] {
 		updateLabelsPosition();
 	}, _title->lifetime());
 
@@ -434,7 +437,7 @@ TopBar::TopBar(
 			_peer,
 			Data::PeerUpdate::Flag::FullInfo
 				| Data::PeerUpdate::Flag::ChannelAmIn
-		) | rpl::start_with_next([=] {
+		) | rpl::on_next([=] {
 			setupActions(controller);
 		}, lifetime());
 	}
@@ -473,7 +476,7 @@ TopBar::TopBar(
 			_peer,
 			Data::PeerUpdate::Flag::EmojiStatus
 				| Data::PeerUpdate::Flag::ColorProfile) | rpl::to_empty
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		if (_pinnedToTopGiftsFirstTimeShowed) {
 			_peer->session().recentSharedGifts().clearLastRequestTime(_peer);
 			setupPinnedToTopGifts(controller);
@@ -484,7 +487,7 @@ TopBar::TopBar(
 
 	std::move(
 		descriptor.showFinished
-	) | rpl::take(1) | rpl::start_with_next([=] {
+	) | rpl::take(1) | rpl::on_next([=] {
 		setupPinnedToTopGifts(controller);
 	}, lifetime());
 
@@ -501,7 +504,8 @@ void TopBar::adjustColors(const std::optional<QColor> &edgeColor) {
 	};
 	const auto collectible = effectiveCollectible();
 	const auto shouldOverrideTitle = shouldOverride(_title->st().textFg);
-	const auto shouldOverrideStatus = shouldOverrideTitle; // shouldOverride(_status->st().textFg);
+	const auto shouldOverrideStatus = shouldOverrideTitle
+		|| shouldOverride(_status->st().textFg);
 	_title->setTextColorOverride(collectible
 		? collectible->textColor
 		: shouldOverrideTitle
@@ -539,7 +543,7 @@ void TopBar::adjustColors(const std::optional<QColor> &edgeColor) {
 		if (!_peer->isMegagroup() && !_topic) {
 			setupStatusWithRating();
 		}
-		_status->widthValue() | rpl::start_with_next([=] {
+		_status->widthValue() | rpl::on_next([=] {
 			updateStatusPosition(_progress.current());
 		}, _status->lifetime());
 		_statusLabel = std::make_unique<StatusLabel>(_status.data(), _peer);
@@ -620,15 +624,26 @@ void TopBar::updateCollectibleStatus() {
 		_animatedPoints.clear();
 		_pinnedToTopGifts.clear();
 	}
-	if (colorProfile && !colorProfile->palette.empty()) {
+	const auto verifiedFg = [&]() -> std::optional<QColor> {
+		if (collectible) {
+			return Ui::BlendColors(
+				collectible->edgeColor,
+				collectible->centerColor,
+				0.2);
+		}
+		if (colorProfile && !colorProfile->palette.empty()) {
+			return Ui::BlendColors(
+				colorProfile->palette.back(),
+				colorProfile->palette.size() == 1 ? Qt::white : Qt::black,
+				0.2);
+		}
+		return std::nullopt;
+	}();
+	if (verifiedFg) {
 		const auto copyStVerified = [&](const style::InfoPeerBadge &st) {
 			auto result = std::make_unique<style::InfoPeerBadge>(
 				base::duplicate(st));
-			auto fg = std::make_shared<style::owned_color>(
-				Ui::BlendColors(
-					colorProfile->palette.back(),
-					colorProfile->palette.size() == 1 ? Qt::white : Qt::black,
-					0.2));
+			auto fg = std::make_shared<style::owned_color>(*verifiedFg);
 			result->premiumFg = fg->color();
 			return std::shared_ptr<style::InfoPeerBadge>(
 				result.release(),
@@ -689,6 +704,7 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
 			moreButton->setClickedCallback([=] {
 				showTopBarMenu(controller, false);
 			});
+			moreButton->setAccessibleName(tr::lng_profile_action_short_more(tr::now));
 			_actionMore = moreButton;
 			_actions->add(moreButton);
 			buttons.push_back(moreButton);
@@ -697,20 +713,20 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
 	const auto guard = gsl::finally([&] {
 		addMore();
 		style::PaletteChanged(
-		) | rpl::start_with_next([=] {
+		) | rpl::on_next([=] {
 			const auto current = _edgeColor.current();
 			_edgeColor.force_assign(current);
 		}, _actions->lifetime());
 		_edgeColor.value() | rpl::map([=](std::optional<QColor> c) {
 			return mapActionStyle(c);
-		}) | rpl::start_with_next([=](
+		}) | rpl::on_next([=](
 				TopBarActionButtonStyle st) {
 			for (const auto &button : buttons) {
 				button->setStyle(st);
 			}
 		}, _actions->lifetime());
 		const auto padding = st::infoProfileTopBarActionButtonsPadding;
-		sizeValue() | rpl::start_with_next([=](const QSize &size) {
+		sizeValue() | rpl::on_next([=](const QSize &size) {
 			const auto ratio = float64(size.height())
 				/ (st::infoProfileTopBarActionButtonsHeight
 					+ st::infoLayerTopBarHeight);
@@ -739,17 +755,20 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
 				peer->id,
 				Window::SectionShow::Way::Forward);
 		});
+		message->setAccessibleName(tr::lng_profile_action_short_message(tr::now));
 		buttons.push_back(message);
 		_actions->add(message);
 	}
-	if (!topic && channel && !channel->amIn()) {
+	const auto canJoin = (!sublist && !topic && channel && !channel->amIn());
+	if (canJoin) {
 		const auto join = Ui::CreateChild<TopBarActionButton>(
 			this,
 			tr::lng_profile_action_short_join(tr::now),
 			st::infoProfileTopBarActionJoin);
 		join->setClickedCallback([=] {
-			channel->owner().session().api().joinChannel(channel);
+			channel->session().api().joinChannel(channel);
 		});
+		join->setAccessibleName(tr::lng_profile_action_short_join(tr::now));
 		buttons.push_back(join);
 		_actions->add(join);
 	} else if (const auto channel = peer->monoforumBroadcast()) {
@@ -762,14 +781,16 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
 				channel,
 				Window::SectionShow::Way::Forward);
 		});
+		message->setAccessibleName(tr::lng_profile_action_short_channel(tr::now));
 		buttons.push_back(message);
 		_actions->add(message);
 	}
-	{
+	if (!peer->isSelf()) {
 		const auto notifications = Ui::CreateChild<TopBarActionButton>(
 			this,
 			tr::lng_profile_action_short_mute(tr::now),
 			st::infoProfileTopBarActionMessage);
+		notifications->setAccessibleName(tr::lng_profile_action_short_mute(tr::now));
 		notifications->convertToToggle(
 			st::infoProfileTopBarActionUnmute,
 			st::infoProfileTopBarActionMute,
@@ -785,11 +806,13 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
 		(topic
 			? NotificationsEnabledValue(topic)
 			: NotificationsEnabledValue(peer)
-		) | rpl::start_with_next([=](bool enabled) {
+		) | rpl::on_next([=](bool enabled) {
 			notifications->toggle(enabled);
-			notifications->setText(enabled
+			const auto text = enabled
 				? tr::lng_profile_action_short_mute(tr::now)
-				: tr::lng_profile_action_short_unmute(tr::now));
+				: tr::lng_profile_action_short_unmute(tr::now);
+			notifications->setText(text);
+			notifications->setAccessibleName(text);
 		}, notifications->lifetime());
 		notifications->finishAnimating();
 
@@ -828,7 +851,7 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
 				});
 		buttons.push_back(notifications);
 		_actions->add(notifications);
-		_edgeColor.value() | rpl::start_with_next([=](
+		_edgeColor.value() | rpl::on_next([=](
 				std::optional<QColor> c) {
 			notifications->setLottieColor(c
 				? (const style::color*)(nullptr)
@@ -848,8 +871,9 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
 			tr::lng_profile_action_short_call(tr::now),
 			st::infoProfileTopBarActionCall);
 		call->setClickedCallback([=] {
-			Core::App().calls().startOutgoingCall(user, false);
+			Core::App().calls().startOutgoingCall(user, {});
 		});
+		call->setAccessibleName(tr::lng_profile_action_short_call(tr::now));
 		buttons.push_back(call);
 		_actions->add(call);
 	}
@@ -872,13 +896,14 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
 				chat,
 				Window::SectionShow::Way::Forward);
 		});
+		discuss->setAccessibleName(tr::lng_profile_action_short_discuss(tr::now));
 		_actions->add(discuss);
 		buttons.push_back(discuss);
 	}
 	if (chechMax()) {
 		return;
 	}
-	if ((topic && topic->canEdit()) || EditPeerInfoBox::Available(peer)) {
+	if (topic ? topic->canEdit() : EditPeerInfoBox::Available(peer)) {
 		const auto manage = Ui::CreateChild<TopBarActionButton>(
 			this,
 			tr::lng_profile_action_short_manage(tr::now),
@@ -894,6 +919,7 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
 				window->showEditPeerBox(peer);
 			}
 		});
+		manage->setAccessibleName(tr::lng_profile_action_short_manage(tr::now));
 		buttons.push_back(manage);
 		_actions->add(manage);
 	}
@@ -922,6 +948,7 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
 			giftButton->setClickedCallback([=] {
 				Ui::ShowStarGiftBox(controller, peer);
 			});
+			giftButton->setAccessibleName(tr::lng_profile_action_short_gift(tr::now));
 			_actions->add(giftButton);
 			buttons.push_back(giftButton);
 		}
@@ -930,8 +957,11 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
 		return;
 	}
 	if (!topic
-		&& ((chat && !chat->amCreator())
-			|| (channel && !channel->amCreator()))) {
+		&& canJoin
+		&& ((chat && !chat->amCreator() && !chat->hasAdminRights())
+			|| (channel
+				&& !channel->amCreator()
+				&& !channel->hasAdminRights()))) {
 		const auto show = controller->uiShow();
 		const auto reportButton = Ui::CreateChild<TopBarActionButton>(
 			this,
@@ -940,22 +970,21 @@ void TopBar::setupActions(not_null<Window::SessionController*> controller) {
 		reportButton->setClickedCallback([=] {
 			ShowReportMessageBox(show, peer, {}, {});
 		});
+		reportButton->setAccessibleName(tr::lng_profile_action_short_report(tr::now));
 		_actions->add(reportButton);
 		buttons.push_back(reportButton);
 	}
 	if (chechMax()) {
 		return;
 	}
-	if (!topic && !sublist && channel && channel->amIn()) {
+	if (!canJoin && !topic && !sublist && (chat || channel)) {
 		const auto leaveButton = Ui::CreateChild<TopBarActionButton>(
 			this,
 			tr::lng_profile_action_short_leave(tr::now),
 			st::infoProfileTopBarActionLeave);
-		leaveButton->setClickedCallback([=] {
-			if (!controller->showFrozenError()) {
-				controller->show(Box(DeleteChatBox, peer));
-			}
-		});
+		leaveButton->setClickedCallback(
+			Window::DeleteAndLeaveHandler(controller, peer));
+		leaveButton->setAccessibleName(tr::lng_profile_action_short_leave(tr::now));
 		_actions->add(leaveButton);
 		buttons.push_back(leaveButton);
 	}
@@ -1052,7 +1081,7 @@ void TopBar::setupUserpicButton(
 		_peer->session().downloaderTaskFinished(
 		) | rpl::filter([=] {
 			return !Ui::PeerUserpicLoading(_userpicView);
-		}) | rpl::start_with_next([=] {
+		}) | rpl::on_next([=] {
 			update();
 			_userpicLoadingLifetime.destroy();
 		}, _userpicLoadingLifetime);
@@ -1068,14 +1097,14 @@ void TopBar::setupUserpicButton(
 			_peer,
 			Data::PeerUpdate::Flag::Photo
 				| Data::PeerUpdate::Flag::FullInfo) | rpl::to_empty
-	) | rpl::start_with_next(invalidate, lifetime());
+	) | rpl::on_next(invalidate, lifetime());
 
 	if (const auto broadcast = _peer->monoforumBroadcast()) {
 		_peer->session().changes().peerFlagsValue(
 			broadcast,
 			Data::PeerUpdate::Flag::Photo
 				| Data::PeerUpdate::Flag::FullInfo
-		) | rpl::to_empty | rpl::start_with_next(invalidate, lifetime());
+		) | rpl::to_empty | rpl::on_next(invalidate, lifetime());
 	}
 
 	using ChosenType = Ui::UserpicButton::ChosenType;
@@ -1092,6 +1121,7 @@ void TopBar::setupUserpicButton(
 				_peer->session().api().peerPhoto().upload(
 					_peer,
 					std::move(result));
+				startUploadOverlay();
 				break;
 			case ChosenType::Suggest:
 				_peer->session().api().peerPhoto().suggest(
@@ -1109,13 +1139,17 @@ void TopBar::setupUserpicButton(
 			: _peer->name();
 		const auto phrase = (type == ChosenType::Suggest)
 			? &tr::lng_profile_suggest_sure
-			: &tr::lng_profile_set_personal_sure;
+			: (user && !user->isSelf() && !_peer->isBot())
+			? &tr::lng_profile_set_personal_sure
+			: nullptr;
 		return Editor::EditorData{
-			.about = (*phrase)(
-				tr::now,
-				lt_user,
-				Ui::Text::Bold(name),
-				Ui::Text::WithEntities),
+			.about = (phrase
+				? (*phrase)(
+					tr::now,
+					lt_user,
+					tr::bold(name),
+					tr::marked)
+				: TextWithEntities()),
 			.confirm = ((type == ChosenType::Suggest)
 				? tr::lng_profile_suggest_button(tr::now)
 				: tr::lng_profile_set_photo_button(tr::now)),
@@ -1158,19 +1192,17 @@ void TopBar::setupUserpicButton(
 		}
 	};
 
-	_userpicButton->clicks() | rpl::start_with_next([=](
+	_userpicButton->clicks() | rpl::on_next([=](
 			Qt::MouseButton button) {
 		if (button == Qt::RightButton && hasMenu()) {
 			*menu = base::make_unique_q<Ui::PopupMenu>(
 				this,
 				st::popupMenuWithIcons);
 
-			if (_hasStories) {
-				(*menu)->addAction(
-					tr::lng_profile_open_photo(tr::now),
-					openPhoto,
-					&st::menuIconPhoto);
-			}
+			(*menu)->addAction(
+				tr::lng_profile_open_photo(tr::now),
+				openPhoto,
+				&st::menuIconPhoto);
 
 			if (canReport()) {
 				(*menu)->addAction(
@@ -1250,7 +1282,9 @@ void TopBar::setupUserpicButton(
 				(*menu)->popup(QCursor::pos());
 			}
 		} else if (button == Qt::LeftButton) {
-			if (_topicIconView && _topic && _topic->iconId()) {
+			if (_uploadOverlay && _uploadOverlay->uploading()) {
+				_peer->session().api().peerPhoto().cancelUpload(_peer);
+			} else if (_topicIconView && _topic && _topic->iconId()) {
 				const auto document = _peer->owner().document(
 					_topic->iconId());
 				if (const auto sticker = document->sticker()) {
@@ -1261,8 +1295,8 @@ void TopBar::setupUserpicButton(
 						const auto text = tr::lng_profile_topic_toast(
 							tr::now,
 							lt_name,
-							Ui::Text::Link(packName, u"internal:"_q),
-							Ui::Text::WithEntities);
+							tr::link(packName, u"internal:"_q),
+							tr::marked);
 						const auto weak = base::make_weak(controller);
 						controller->showToast(Ui::Toast::Config{
 							.text = text,
@@ -1291,13 +1325,53 @@ void TopBar::setupUserpicButton(
 	}, _userpicButton->lifetime());
 }
 
+void TopBar::startUploadOverlay() {
+	if (_uploadOverlay && _uploadOverlay->uploading()) {
+		return;
+	}
+	_waitingUserpicCloudLoad = true;
+	_uploadOverlay = std::make_unique<Ui::UploadProgressOverlay>(
+		this,
+		[=] { update(); });
+	_uploadOverlay->start();
+
+	_userpicButton->events(
+	) | rpl::filter([](not_null<QEvent*> e) {
+		return e->type() == QEvent::Enter
+			|| e->type() == QEvent::Leave;
+	}) | rpl::on_next([=](not_null<QEvent*> e) {
+		if (_uploadOverlay) {
+			_uploadOverlay->setOver(e->type() == QEvent::Enter);
+		}
+	}, _uploadLifetime);
+
+	const auto cleanup = [=] {
+		_uploadLifetime.destroy();
+		_uploadOverlay = nullptr;
+	};
+	_peer->session().api().peerPhoto().subscribeToUpload(
+		_peer,
+		_uploadLifetime,
+		{
+			.progress = [=](float64 value) {
+				_uploadOverlay->setProgress(value);
+			},
+			.done = [=] {
+				_uploadOverlay->stop(cleanup);
+			},
+			.failed = [=] {
+				_uploadOverlay->fail(cleanup);
+			},
+		});
+}
+
 void TopBar::setupUniqueBadgeTooltip() {
 	if (!_badge || _source == Source::Preview) {
 		return;
 	}
 	base::timer_once(kWaitBeforeGiftBadge) | rpl::then(
 		_badge->updated()
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		const auto widget = _badge->widget();
 		const auto &content = _badgeContent.current();
 		const auto &collectible = content.emojiStatusId.collectible;
@@ -1312,9 +1386,8 @@ void TopBar::setupUniqueBadgeTooltip() {
 		if (!collectible || _localCollectible) {
 			return;
 		}
-		const auto parent = window();
 		_badgeTooltip = std::make_unique<BadgeTooltip>(
-			parent,
+			this,
 			collectible,
 			widget);
 		const auto raw = _badgeTooltip.get();
@@ -1339,7 +1412,7 @@ void TopBar::hideBadgeTooltip() {
 		raw->shownValue(
 		) | rpl::filter(
 			!rpl::mappers::_1
-		) | rpl::start_with_next([=] {
+		) | rpl::on_next([=] {
 			const auto i = ranges::find(
 				_badgeOldTooltips,
 				raw,
@@ -1361,7 +1434,7 @@ rpl::producer<> TopBar::backRequest() const {
 }
 
 void TopBar::setOnlineCount(rpl::producer<int> &&count) {
-	std::move(count) | rpl::start_with_next([=](int v) {
+	std::move(count) | rpl::on_next([=](int v) {
 		if (_statusLabel) {
 			_statusLabel->setOnlineCount(v);
 		}
@@ -1389,11 +1462,7 @@ void TopBar::setPatternEmojiId(std::optional<DocumentId> patternEmojiId) {
 
 void TopBar::setLocalEmojiStatusId(EmojiStatusId emojiStatusId) {
 	_localCollectible = emojiStatusId.collectible;
-	if (!emojiStatusId.collectible) {
-		_badgeContent = Badge::Content{ BadgeType::Premium, emojiStatusId };
-	} else {
-		_badgeContent = BadgeContentForPeer(_peer);
-	}
+	_badgeContent = Badge::Content{ BadgeType::Premium, emojiStatusId };
 	updateCollectibleStatus();
 }
 
@@ -1713,7 +1782,11 @@ void TopBar::paintUserpic(QPainter &p, const QRect &geometry) {
 		}
 	}
 	const auto key = _peer->userpicUniqueKey(_userpicView);
-	if (_userpicUniqueKey != key) {
+	const auto overlayActive = _uploadOverlay && _uploadOverlay->shown();
+	const auto awaitingCloud = _waitingUserpicCloudLoad
+		&& !_peer->userpicCloudImage(_userpicView);
+	if (!overlayActive && !awaitingCloud && _userpicUniqueKey != key) {
+		_waitingUserpicCloudLoad = false;
 		_userpicUniqueKey = key;
 		const auto fullSize = st::infoProfileTopBarPhotoSize;
 		const auto scaled = fullSize * style::DevicePixelRatio();
@@ -1748,6 +1821,15 @@ void TopBar::paintUserpic(QPainter &p, const QRect &geometry) {
 		_cachedUserpic.setDevicePixelRatio(style::DevicePixelRatio());
 	}
 	p.drawImage(geometry, _cachedUserpic);
+	if (_uploadOverlay && _uploadOverlay->shown()) {
+		_uploadOverlay->paint(p, geometry, {
+			.lineWidth = st::defaultUserpicButton.uploadProgressLine,
+			.margin = st::defaultUserpicButton.uploadProgressMargin,
+			.progressFg = st::historyFileThumbRadialFg,
+			.overlayFg = st::songCoverOverlayFg,
+			.cancelIcon = &st::userpicUploadCancel,
+		});
+	}
 }
 
 void TopBar::paintEvent(QPaintEvent *e) {
@@ -1829,7 +1911,7 @@ void TopBar::setupButtons(
 	rpl::combine(
 		_wrap.value(),
 		_edgeColor.value()
-	) | rpl::start_with_next([=](
+	) | rpl::on_next([=](
 			Wrap wrap,
 			std::optional<QColor> edgeColor) mutable {
 		const auto isLayer = (wrap == Wrap::Layer);
@@ -1855,8 +1937,9 @@ void TopBar::setupButtons(
 			st::infoTopBarScale);
 		_back->QWidget::show();
 		_back->setDuration(0);
+		_back->entity()->setAccessibleName(tr::lng_go_back(tr::now));
 		_back->toggleOn(isLayer || isSide
-			? (_backToggles.value() | rpl::type_erased())
+			? (_backToggles.value() | rpl::type_erased)
 			: rpl::single(wrap == Wrap::Narrow));
 		_back->entity()->clicks() | rpl::to_empty | rpl::start_to_stream(
 			_backClicks,
@@ -1870,6 +1953,7 @@ void TopBar::setupButtons(
 				shouldUseColored
 					? st::infoTopBarColoredClose
 					: st::infoTopBarBlackClose);
+			_close->setAccessibleName(tr::lng_sr_close_panel(tr::now));
 			_close->show();
 			_close->addClickHandler(isSide
 				? Fn<void()> ([=] { controller->closeThirdSection(); })
@@ -1877,7 +1961,7 @@ void TopBar::setupButtons(
 					controller->hideLayer();
 					controller->hideSpecialLayer();
 				}));
-			widthValue() | rpl::start_with_next([=] {
+			widthValue() | rpl::on_next([=] {
 				_close->moveToRight(0, 0);
 			}, _close->lifetime());
 		}
@@ -1905,10 +1989,11 @@ void TopBar::addTopBarEditButton(
 				: st::infoTopBarBlackEdit)));
 	_topBarButton->show();
 	_topBarButton->addClickHandler([=] {
-		controller->showSettings(::Settings::Information::Id());
+		controller->showSettings(::Settings::InformationId());
 	});
+	_topBarButton->setAccessibleName(tr::lng_settings_information(tr::now));
 
-	widthValue() | rpl::start_with_next([=] {
+	widthValue() | rpl::on_next([=] {
 		if (_close) {
 			_topBarButton->moveToRight(_close->width(), 0);
 		} else {
@@ -1946,10 +2031,13 @@ void TopBar::showTopBarMenu(
 	}
 	_peerMenu->setForcedOrigin(Ui::PanelAnimation::Origin::TopRight);
 	_peerMenu->popup(_actionMore
-		? _actionMore->mapToGlobal(
-			QPoint(
-				_actionMore->width(),
-				_actionMore->height() + st::infoProfileTopBarActionMenuSkip))
+		? Ui::PopupMenu::ConstrainToParentScreen(
+			_peerMenu,
+			_actionMore->mapToGlobal(QPoint(
+				_actionMore->width()
+					+ Ui::BoxShadow::ExtendFor(
+						_peerMenu->st().shadow).right(),
+				_actionMore->height() + st::infoProfileTopBarActionMenuSkip)))
 		: QCursor::pos());
 }
 
@@ -2021,7 +2109,7 @@ void TopBar::setupShowLastSeen(
 			user,
 			Data::PeerUpdate::Flag::OnlineStatus),
 		Data::AmPremiumValue(&user->session())
-	) | rpl::start_with_next([=](auto, bool premium) {
+	) | rpl::on_next([=](auto, bool premium) {
 		const auto wasShown = !_showLastSeen->isHidden();
 		const auto hiddenByMe = user->lastseen().isHiddenByMe();
 		const auto shown = hiddenByMe
@@ -2038,7 +2126,7 @@ void TopBar::setupShowLastSeen(
 		Api::UserPrivacy::Key::LastSeen
 	) | rpl::filter([=](Api::UserPrivacy::Rule rule) {
 		return (rule.option == Api::UserPrivacy::Option::Everyone);
-	}) | rpl::start_with_next([=] {
+	}) | rpl::on_next([=] {
 		if (user->lastseen().isHiddenByMe()) {
 			user->updateFullForced();
 		}
@@ -2264,7 +2352,7 @@ void TopBar::setupNewGifts(
 	} else if (!_lottiePlayer) {
 		_lottiePlayer = std::make_unique<Lottie::MultiPlayer>(
 			Lottie::Quality::Default);
-		_lottiePlayer->updates() | rpl::start_with_next([=] {
+		_lottiePlayer->updates() | rpl::on_next([=] {
 			update();
 		}, lifetime());
 	}
@@ -2300,6 +2388,18 @@ void TopBar::setupNewGifts(
 		}
 		entry.position = positions[i];
 		entry.button = base::make_unique_q<Ui::AbstractButton>(this);
+		entry.button->setAccessibleName([&] {
+			const auto base = tr::lng_profile_action_short_gift(tr::now);
+
+			if (const auto &unique = gift.info.unique) {
+				const auto name = Data::UniqueGiftName(*unique);
+				if (!name.isEmpty()) {
+					return base + ": " + name;
+				}
+			}
+
+			return base;
+		}());
 		entry.button->show();
 
 		entry.button->setClickedCallback([=, giftData = gift, peer = _peer] {
@@ -2316,7 +2416,7 @@ void TopBar::setupNewGifts(
 		rpl::empty_value()
 	) | rpl::then(
 		_peer->session().downloaderTaskFinished()
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		auto allLoaded = true;
 		for (auto &entry : _pinnedToTopGifts) {
 			if (!entry.animation && !entry.lastFrame.isNull()) {
@@ -2527,7 +2627,7 @@ void TopBar::setupStoryOutline(const QRect &geometry) {
 			) | rpl::filter([=](const Data::PeerUpdate &update) {
 				return update.peer == _peer;
 			}) | rpl::to_empty)
-	) | rpl::start_with_next([=](
+	) | rpl::on_next([=](
 			std::optional<QColor> edgeColor,
 			rpl::empty_value) {
 		const auto geometry = QRectF(userpicGeometry());
@@ -2549,9 +2649,6 @@ void TopBar::setupStoryOutline(const QRect &geometry) {
 }
 
 void TopBar::updateStoryOutline(std::optional<QColor> edgeColor) {
-	if (width() <= 0) {
-		return;
-	}
 	const auto user = _peer->asUser();
 	const auto channel = _peer->asChannel();
 	if (!user && !channel) {
@@ -2680,7 +2777,7 @@ void TopBar::setupStatusWithRating() {
 	_status->setAttribute(Qt::WA_TransparentForMouseEvents);
 	if (const auto rating = _starsRating.get()) {
 		_statusShift = rating->widthValue();
-		_statusShift.changes() | rpl::start_with_next([=] {
+		_statusShift.changes() | rpl::on_next([=] {
 			updateLabelsPosition();
 		}, _status->lifetime());
 		rating->raise();

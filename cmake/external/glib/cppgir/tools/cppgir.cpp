@@ -24,7 +24,13 @@ static const char *GI_DATA_IGNORE = "";
 static std::string GI_DEFAULT_IGNORE{GI_STRINGIFY(DEFAULT_IGNORE_FILE)};
 #endif
 
+#if defined(_WIN32) && !defined(__CYGWIN__)
+static const char PATH_SEP = '\\';
+static const char *PATH_ARR_SEP = ";";
+#else
 static const char PATH_SEP = '/';
+static const char *PATH_ARR_SEP = ":";
+#endif
 static const std::string GIR_SUBDIR{"gir-1.0"};
 
 Log _loglevel = Log::WARNING;
@@ -56,13 +62,13 @@ public:
         dirs.emplace_back(entry);
       } else if (f == entry) {
         // exact match
-        result = f.native();
+        result = f.string();
       } else {
         // non-version match
-        auto ename = entry.path().filename().native();
+        auto ename = entry.path().filename().string();
         auto s = ns.size();
         if (ename.substr(0, s) == ns && ename.size() > s && ename[s] == '-')
-          result = entry.path().native();
+          result = entry.path().string();
       }
     }
     // check dirs
@@ -152,7 +158,7 @@ make_subdir(const std::string &dir, const std::string &subdir)
 
 static void
 addsplit(std::vector<std::string> &target, const std::string &src,
-    const std::string &suffix = "", const std::string &seps = ":")
+    const std::string &suffix = "", const std::string &seps = PATH_ARR_SEP)
 {
   std::vector<std::string> tmp;
   boost::split(tmp, src, boost::is_any_of(seps));
@@ -231,6 +237,7 @@ main(int argc, char *argv[])
   bool const_method{};
   bool output_top{};
   int call_args{-1};
+  bool only_changed{};
   bool basic_collection{};
   bool dump_ignore{};
   std::string gir_path;
@@ -268,6 +275,8 @@ main(int argc, char *argv[])
       {"output-top", "GI_OUTPUT_TOP",
           "generate convenience wrappers in output dir",
           make_parser(&output_top)},
+      {"only-changed", "GI_ONLY_CHANGED",
+          "only generate output if new or changed", make_parser(&only_changed)},
       {"call-args", "GI_CALL_ARGS",
           "(if >= 0) min #optional arguments to enable a CallArgs variant",
           make_parser(&call_args)},
@@ -480,6 +489,7 @@ Supported options and environment variables
   options.expected = use_expected;
   options.const_method = const_method;
   options.output_top = output_top;
+  options.only_changed = only_changed;
   options.call_args = call_args;
   options.basic_collection = basic_collection;
 

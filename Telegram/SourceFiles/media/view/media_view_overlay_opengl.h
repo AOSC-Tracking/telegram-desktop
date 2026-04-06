@@ -50,7 +50,8 @@ private:
 	void paintTransformedContent(
 		not_null<QOpenGLShaderProgram*> program,
 		ContentGeometry geometry,
-		bool fillTransparentBackground);
+		bool fillTransparentBackground,
+		QRectF textureRect = QRectF(0., 0., 1., 1.));
 	void paintRadialLoading(
 		QRect inner,
 		bool radial,
@@ -75,6 +76,11 @@ private:
 		const QImage &image,
 		QRect rect,
 		float64 opacity = 1.) override;
+
+	void paintRecognitionOverlay(
+		const QImage &image,
+		ContentGeometry geometry,
+		float64 opacity);
 
 	//void invalidate();
 
@@ -146,7 +152,7 @@ private:
 	static constexpr auto kStoriesSiblingPartsCount = 4;
 	Ui::GL::Image _storiesSiblingParts[kStoriesSiblingPartsCount];
 
-	static constexpr auto kControlsCount = 6;
+	static constexpr auto kControlsCount = 8;
 	[[nodiscard]] Control controlMeta(Over control) const;
 
 	// Last one is for the over circle image.

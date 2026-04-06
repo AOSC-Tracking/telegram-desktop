@@ -137,27 +137,28 @@ public:
 		return object_ptr<Widget>::fromRaw(
 			static_cast<Widget*>(doTakeWidget().release()));
 	}
+	[[nodiscard]] QWidget *widget() const;
 
 	void updateBars();
 
 	auto scrollTopValue() const {
 		return _vertical
 			? _scrollValueUpdated.events_starting_with(scrollTop())
-			: (rpl::single(0) | rpl::type_erased());
+			: (rpl::single(0) | rpl::type_erased);
 	}
 	auto scrollTopChanges() const {
 		return _vertical
 			? _scrollValueUpdated.events()
-			: (rpl::never<int>() | rpl::type_erased());
+			: (rpl::never<int>() | rpl::type_erased);
 	}
 	auto scrollLeftValue() const {
 		return _vertical
-			? (rpl::single(0) | rpl::type_erased())
+			? (rpl::single(0) | rpl::type_erased)
 			: _scrollValueUpdated.events_starting_with(scrollLeft());
 	}
 	auto scrollLeftChanges() const {
 		return _vertical
-			? (rpl::never<int>() | rpl::type_erased())
+			? (rpl::never<int>() | rpl::type_erased)
 			: _scrollValueUpdated.events();
 	}
 

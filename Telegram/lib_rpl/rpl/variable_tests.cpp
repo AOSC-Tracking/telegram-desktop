@@ -17,7 +17,7 @@ TEST_CASE("basic variable tests", "[rpl::variable]") {
 		{
 			auto var = variable<int>(1);
 			auto lifeftime = var.value()
-				| start_with_next([=](int value) {
+				| on_next([=](int value) {
 					*sum += value;
 				});
 			var = 1;

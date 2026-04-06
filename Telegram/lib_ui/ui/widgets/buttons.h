@@ -162,14 +162,21 @@ public:
 	}
 	void setWidthChangedCallback(Fn<void()> callback);
 	void setBrushOverride(std::optional<QBrush> brush);
+	void setRippleOverride(std::optional<QColor> color);
 	void setPenOverride(std::optional<QPen> pen);
 	void setTextFgOverride(std::optional<QColor> textFg);
+	void setIconOverride(const style::icon *icon);
 	void finishNumbersAnimation();
 
 	[[nodiscard]] int contentWidth() const;
 
 	void setFullWidth(int newFullWidth);
 	void setFullRadius(bool enabled);
+	void setCornerRadii(
+		int topLeft,
+		int topRight,
+		int bottomLeft,
+		int bottomRight);
 
 	enum class TextTransform {
 		NoTransform,
@@ -200,14 +207,17 @@ private:
 
 	const style::RoundButton &_st;
 	std::optional<QBrush> _brushOverride;
+	std::optional<QColor> _rippleOverride;
 	std::optional<QPen> _penOverride;
 	std::optional<QColor> _textFgOverride;
+	const style::icon *_iconOverride = nullptr;
 	RoundRect _roundRect;
 	RoundRect _roundRectOver;
 	Text::MarkedContext _context;
 
 	TextTransform _transform = TextTransform::ToUpper;
 	bool _fullRadius = false;
+	std::optional<std::array<int, 4>> _cornerRadii;
 
 };
 
@@ -219,6 +229,7 @@ public:
 
 	// Pass nullptr to restore the default icon.
 	void setIconOverride(const style::icon *iconOverride, const style::icon *iconOverOverride = nullptr);
+	void setIconColorOverride(std::optional<QColor> colorOverride);
 	void setRippleColorOverride(const style::color *colorOverride);
 
 protected:
@@ -236,6 +247,7 @@ private:
 	const style::icon *_iconOverride = nullptr;
 	const style::icon *_iconOverrideOver = nullptr;
 	const style::color *_rippleColorOverride = nullptr;
+	std::optional<QColor> _iconColorOverride;
 
 	Ui::Animations::Simple _a_over;
 
@@ -305,6 +317,12 @@ public:
 	QString accessibilityName() override {
 		return _text.toString();
 	}
+	AccessibilityState accessibilityState() const override;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 11, 0)
+	QAccessible::Role accessibilityRole() override {
+		return _toggle ? QAccessible::Role::Switch : QAccessible::Role::Button;
+	}
+#endif
 
 	SettingsButton *toggleOn(
 		rpl::producer<bool> &&toggled,

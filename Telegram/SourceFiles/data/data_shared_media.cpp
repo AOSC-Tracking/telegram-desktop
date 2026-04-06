@@ -66,7 +66,7 @@ bool IsItemGoodForType(const not_null<HistoryItem*> item, Type type) {
 		|| ((videoType || photoVideoType) && videoDoc)
 		|| (fileType && (document->isTheme()
 			|| document->isImage()
-			|| !document->canBeStreamed(item)));
+			|| !document->canBeStreamed()));
 }
 
 } // namespace
@@ -79,7 +79,8 @@ std::optional<Storage::SharedMediaType> SharedMediaOverviewType(
 	case Type::MusicFile:
 	case Type::File:
 	case Type::RoundVoiceFile:
-	case Type::Link: return type;
+	case Type::Link:
+	case Type::Poll: return type;
 	}
 	return std::nullopt;
 }
@@ -88,7 +89,8 @@ bool SharedMediaAllowSearch(Storage::SharedMediaType type) {
 	switch (type) {
 	case Type::MusicFile:
 	case Type::File:
-	case Type::Link: return true;
+	case Type::Link:
+	case Type::Poll: return true;
 	default: return false;
 	}
 }
@@ -122,7 +124,7 @@ rpl::producer<SparseIdsSlice> SharedMediaViewer(
 				data.direction);
 		};
 		builder->insufficientAround(
-		) | rpl::start_with_next(requestMediaAround, lifetime);
+		) | rpl::on_next(requestMediaAround, lifetime);
 
 		auto pushNextSnapshot = [=] {
 			consumer.put_next(builder->snapshot());
@@ -137,7 +139,7 @@ rpl::producer<SparseIdsSlice> SharedMediaViewer(
 				&& (update.type == key.type);
 		}) | rpl::filter([=](const SliceUpdate &update) {
 			return builder->applyUpdate(update.data);
-		}) | rpl::start_with_next(pushNextSnapshot, lifetime);
+		}) | rpl::on_next(pushNextSnapshot, lifetime);
 
 		using OneRemoved = Storage::SharedMediaRemoveOne;
 		session->storage().sharedMediaOneRemoved(
@@ -146,7 +148,7 @@ rpl::producer<SparseIdsSlice> SharedMediaViewer(
 				&& update.types.test(key.type);
 		}) | rpl::filter([=](const OneRemoved &update) {
 			return builder->removeOne(update.messageId);
-		}) | rpl::start_with_next(pushNextSnapshot, lifetime);
+		}) | rpl::on_next(pushNextSnapshot, lifetime);
 
 		using AllRemoved = Storage::SharedMediaRemoveAll;
 		session->storage().sharedMediaAllRemoved(
@@ -159,7 +161,7 @@ rpl::producer<SparseIdsSlice> SharedMediaViewer(
 				&& update.types.test(key.type);
 		}) | rpl::filter([=] {
 			return builder->removeAll();
-		}) | rpl::start_with_next(pushNextSnapshot, lifetime);
+		}) | rpl::on_next(pushNextSnapshot, lifetime);
 
 		using InvalidateBottom = Storage::SharedMediaInvalidateBottom;
 		session->storage().sharedMediaBottomInvalidated(
@@ -167,7 +169,7 @@ rpl::producer<SparseIdsSlice> SharedMediaViewer(
 			return (update.peerId == key.peerId);
 		}) | rpl::filter([=] {
 			return builder->invalidateBottom();
-		}) | rpl::start_with_next(pushNextSnapshot, lifetime);
+		}) | rpl::on_next(pushNextSnapshot, lifetime);
 
 		using Result = Storage::SharedMediaResult;
 		session->storage().query(Storage::SharedMediaQuery(
@@ -176,7 +178,7 @@ rpl::producer<SparseIdsSlice> SharedMediaViewer(
 			limitAfter
 		)) | rpl::filter([=](const Result &result) {
 			return builder->applyInitial(result);
-		}) | rpl::start_with_next_done(
+		}) | rpl::on_next_done(
 			pushNextSnapshot,
 			[=] { builder->checkInsufficient(); },
 			lifetime);
@@ -501,7 +503,7 @@ rpl::producer<SharedMediaWithLastSlice> SharedMediaWithLastViewer(
 				std::move(viewerKey),
 				limitBefore,
 				limitAfter
-			) | rpl::start_with_next([=](SparseIdsMergedSlice &&update) {
+			) | rpl::on_next([=](SparseIdsMergedSlice &&update) {
 				consumer.put_next(SharedMediaWithLastSlice(
 					session,
 					key,
@@ -516,7 +518,7 @@ rpl::producer<SharedMediaWithLastSlice> SharedMediaWithLastViewer(
 				std::move(viewerKey),
 				limitBefore,
 				limitAfter
-			) | rpl::start_with_next([=](SparseIdsMergedSlice &&update) {
+			) | rpl::on_next([=](SparseIdsMergedSlice &&update) {
 				consumer.put_next(SharedMediaWithLastSlice(
 					session,
 					key,
@@ -529,7 +531,7 @@ rpl::producer<SharedMediaWithLastSlice> SharedMediaWithLastViewer(
 				std::move(viewerKey),
 				limitBefore,
 				limitAfter
-			) | rpl::start_with_next([=](SparseIdsMergedSlice &&update) {
+			) | rpl::on_next([=](SparseIdsMergedSlice &&update) {
 				consumer.put_next(SharedMediaWithLastSlice(
 					session,
 					key,
@@ -550,7 +552,7 @@ rpl::producer<SharedMediaWithLastSlice> SharedMediaWithLastViewer(
 					key.type),
 				1,
 				1)
-		) | rpl::start_with_next([=](
+		) | rpl::on_next([=](
 				SparseIdsMergedSlice &&viewer,
 				SparseIdsMergedSlice &&ending) {
 			consumer.put_next(SharedMediaWithLastSlice(

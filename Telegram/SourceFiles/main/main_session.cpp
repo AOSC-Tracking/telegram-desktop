@@ -33,12 +33,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/components/factchecks.h"
 #include "data/components/gift_auctions.h"
 #include "data/components/location_pickers.h"
+#include "data/components/passkeys.h"
 #include "data/components/promo_suggestions.h"
 #include "data/components/recent_peers.h"
 #include "data/components/recent_shared_media_gifts.h"
 #include "data/components/scheduled_messages.h"
 #include "data/components/sponsored_messages.h"
 #include "data/components/top_peers.h"
+#include "settings/settings_faq_suggestions.h"
 #include "data/data_session.h"
 #include "data/data_changes.h"
 #include "data/data_user.h"
@@ -136,7 +138,7 @@ Session::Session(
 			_promoSuggestions->setupEmailStateValue(
 			) | rpl::filter([](Data::SetupEmailState s) {
 				return s == Data::SetupEmailState::None;
-			}) | rpl::take(1) | rpl::start_with_next(crl::guard(this, [=] {
+			}) | rpl::take(1) | rpl::on_next(crl::guard(this, [=] {
 				Core::App().unlockSetupEmail();
 				_settings->setSetupEmailState(State::None);
 				saveSettingsDelayed(200);
@@ -155,6 +157,8 @@ Session::Session(
 		}
 	}
 }))
+, _passkeys(std::make_unique<Data::Passkeys>(this))
+, _faqSuggestions(std::make_unique<Settings::FaqSuggestions>(this))
 , _cachedReactionIconFactory(std::make_unique<ReactionIconFactory>())
 , _supportHelper(Support::Helper::Create(this))
 , _fastButtonsBots(std::make_unique<Support::FastButtonsBots>(this))
@@ -171,13 +175,13 @@ Session::Session(
 	changes().peerFlagsValue(
 		_user,
 		Data::PeerUpdate::Flag::Photo
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		auto view = Ui::PeerUserpicView{ .cloud = _selfUserpicView };
 		[[maybe_unused]] const auto image = _user->userpicCloudImage(view);
 		_selfUserpicView = view.cloud;
 	}, lifetime());
 
-	crl::on_main(this, [=] {
+	crl::on_main_queue(this, { [=] {
 		using Flag = Data::PeerUpdate::Flag;
 		changes().peerUpdates(
 			_user,
@@ -186,7 +190,7 @@ Session::Session(
 			| Flag::Photo
 			| Flag::About
 			| Flag::PhoneNumber
-		) | rpl::start_with_next([=](const Data::PeerUpdate &update) {
+		) | rpl::on_next([=](const Data::PeerUpdate &update) {
 			local().writeSelf();
 
 			if (update.flags & Flag::PhoneNumber) {
@@ -206,24 +210,36 @@ Session::Session(
 				});
 			saveSettingsDelayed();
 		}
-
+	}, [=] {
 		// Storage::Account uses Main::Account::session() in those methods.
 		// So they can't be called during Main::Session construction.
+		//
+		// They are deferred via crl::on_main which fires after the
+		// constructor returns and _session is set.
+		//
+		// Steps are chained via crl::on_main so that paint events
+		// can be processed between heavy file reads.
 		local().readInstalledStickers();
+	}, [=] {
 		local().readInstalledMasks();
+	}, [=] {
 		local().readInstalledCustomEmoji();
+	}, [=] {
 		local().readFeaturedStickers();
+	}, [=] {
 		local().readFeaturedCustomEmoji();
+	}, [=] {
 		local().readRecentStickers();
 		local().readRecentMasks();
 		local().readFavedStickers();
 		local().readSavedGifs();
+	}, [=] {
 		data().stickers().notifyUpdated(Data::StickersType::Stickers);
 		data().stickers().notifyUpdated(Data::StickersType::Masks);
 		data().stickers().notifyUpdated(Data::StickersType::Emoji);
 		data().stickers().notifySavedGifsUpdated();
 		DEBUG_LOG(("Init: Account stored data load finished."));
-	});
+	} }).dispatch();
 
 #ifndef TDESKTOP_DISABLE_SPELLCHECK
 	Spellchecker::Start(this);
@@ -236,7 +252,7 @@ Session::Session(
 	Core::App().downloadManager().trackSession(this);
 
 	appConfig().value(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		appConfigRefreshed();
 	}, _lifetime);
 }

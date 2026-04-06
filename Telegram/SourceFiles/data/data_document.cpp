@@ -548,7 +548,7 @@ void DocumentData::setVideoQualities(
 			&& !document->dimensions.isEmpty()
 			&& !document->inappPlaybackFailed()
 			&& document->useStreamingLoader()
-			&& document->canBeStreamed(nullptr);
+			&& document->canBeStreamed();
 	};
 	ranges::sort(
 		qualities,
@@ -1217,7 +1217,7 @@ void DocumentData::save(
 
 void DocumentData::handleLoaderUpdates() {
 	_loader->updates(
-	) | rpl::start_with_next_error_done([=] {
+	) | rpl::on_next_error_done([=] {
 		_owner->documentLoadProgress(this);
 	}, [=](FileLoader::Error error) {
 		using FailureReason = FileLoader::FailureReason;
@@ -1545,17 +1545,8 @@ bool DocumentData::useStreamingLoader() const {
 		|| isVoiceMessage();
 }
 
-bool DocumentData::canBeStreamed(HistoryItem *item) const {
-	// Streaming couldn't be used with external player
-	// Maybe someone brave will implement this once upon a time...
-	static const auto &ExternalVideoPlayer = base::options::lookup<bool>(
-		Data::kOptionExternalVideoPlayer);
-	return hasRemoteLocation()
-		&& supportsStreaming()
-		&& (!isVideoFile()
-			|| storyMedia()
-			|| !ExternalVideoPlayer.value()
-			|| (item && !item->allowsForward()));
+bool DocumentData::canBeStreamed() const {
+	return hasRemoteLocation() && supportsStreaming();
 }
 
 void DocumentData::setInappPlaybackFailed() {

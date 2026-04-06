@@ -11,21 +11,16 @@
 namespace rpl {
 namespace details {
 
-class type_erased_helper {
-public:
+struct type_erased_t {
 	template <typename Value, typename Error, typename Generator>
 	producer<Value, Error> operator()(
 			producer<Value, Error, Generator> &&initial) const {
 		return std::move(initial);
 	}
-
 };
 
 } // namespace details
 
-inline auto type_erased()
--> details::type_erased_helper {
-	return details::type_erased_helper();
-}
+inline constexpr details::type_erased_t type_erased{};
 
 } // namespace rpl

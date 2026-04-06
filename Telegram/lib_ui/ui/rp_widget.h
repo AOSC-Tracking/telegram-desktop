@@ -19,6 +19,10 @@
 #include <QtGui/QtEvents>
 #include <QAccessible>
 
+namespace Ui::Accessible {
+struct Items;
+} // namespace Ui::Accessible
+
 namespace Ui {
 
 class RpWidget;
@@ -98,7 +102,7 @@ public:
 	void showOn(rpl::producer<bool, Error, Generator> &&shown) {
 		std::move(
 			shown
-		) | rpl::start_with_next([this](bool visible) {
+		) | rpl::on_next([this](bool visible) {
 			callSetVisible(visible);
 		}, lifetime());
 	}
@@ -130,6 +134,9 @@ private:
 	};
 	struct Initer {
 		Initer(QWidget *parent, bool setZeroGeometry);
+		~Initer();
+
+		mutable std::unique_ptr<Accessible::Items> accessibleItems;
 	};
 
 	virtual void callSetVisible(bool visible) = 0;
@@ -333,6 +340,13 @@ protected:
 		return Widget::leaveEvent(e);
 	}
 
+	[[nodiscard]] Accessible::Items &accessibleItems() const {
+		if (!_initer.accessibleItems) {
+			_initer.accessibleItems = std::make_unique<Accessible::Items>();
+		}
+		return *_initer.accessibleItems;
+	}
+
 private:
 	void callSetVisible(bool visible) final {
 		Self::setVisible(visible); // Save one virtual method invocation.
@@ -351,12 +365,14 @@ private:
 };
 
 // Add required fields from QAccessible::State when necessary.
-// Don't forget to amend the AccessibilityStatE::writeTo implementation.
+// Don't forget to amend the AccessibilityState::writeTo implementation.
 // This one allows universal initialization, like { .checkable = true }.
 struct AccessibilityState {
 	bool checkable : 1 = false;
 	bool checked : 1 = false;
 	bool pressed : 1 = false;
+	bool readOnly : 1 = false;
+	bool selected : 1 = false;
 
 	void writeTo(QAccessible::State &state);
 };
@@ -384,6 +400,7 @@ public:
 
 	[[nodiscard]] virtual QAccessibleInterface *accessibilityCreate();
 	[[nodiscard]] virtual QAccessible::Role accessibilityRole();
+	[[nodiscard]] virtual Qt::FocusPolicy accessibilityFocusPolicy();
 	[[nodiscard]] virtual QString accessibilityName();
 	void accessibilityNameChanged();
 	[[nodiscard]] virtual QString accessibilityDescription();
@@ -392,6 +409,26 @@ public:
 	void accessibilityStateChanged(AccessibilityState changes);
 	[[nodiscard]] virtual QString accessibilityValue() const;
 	void accessibilityValueChanged();
+	[[nodiscard]] virtual QStringList accessibilityActionNames();
+	virtual void accessibilityDoAction(const QString &name);
+	[[nodiscard]] virtual int accessibilityChildCount() const;
+	[[nodiscard]] virtual RpWidget *accessibilityParent() const;
+	[[nodiscard]] virtual QAccessibleInterface* accessibilityChildInterface(int index) const;
+	[[nodiscard]] virtual QString accessibilityChildName(int index) const;
+	void accessibilityChildNameChanged(int index);
+	[[nodiscard]] virtual QString accessibilityChildDescription(int index) const;
+	void accessibilityChildDescriptionChanged(int index);
+	[[nodiscard]] virtual QString accessibilityChildValue(int index) const;
+	void accessibilityChildValueChanged(int index);
+	[[nodiscard]] virtual QAccessible::State accessibilityChildState(int index) const;
+	void accessibilityChildStateChanged(int index, AccessibilityState changes);
+	[[nodiscard]] virtual QAccessible::Role accessibilityChildRole() const;
+	[[nodiscard]] virtual QRect accessibilityChildRect(int index) const;
+	[[nodiscard]] virtual int accessibilityChildColumnCount(int row) const;
+	[[nodiscard]] virtual QAccessible::Role accessibilityChildSubItemRole() const;
+	[[nodiscard]] virtual QString accessibilityChildSubItemName(int row, int column) const;
+	[[nodiscard]] virtual QString accessibilityChildSubItemValue(int row, int column) const;
+	void accessibilityChildFocused(int index);
 
 protected:
 	// e - from enterEvent() of child RpWidget

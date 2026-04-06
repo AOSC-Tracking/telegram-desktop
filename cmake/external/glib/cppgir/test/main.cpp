@@ -2046,9 +2046,10 @@ test_property()
   assert(w.get_property<CppEnum>(NAME_ENUM) == CppEnum::VALUE_1);
 
   // multiple props
-  w.set_properties(NAME_NUMBER, 10, NAME_FNUMBER, 5.2, NAME_PRESENT, FALSE);
+  double fnum = 5.2;
+  w.set_properties(NAME_NUMBER, 10, NAME_FNUMBER, fnum, NAME_PRESENT, FALSE);
   assert(w.get_property<int>(NAME_NUMBER) == 10);
-  assert(w.get_property<double>(NAME_FNUMBER) == 5.2);
+  assert(w.get_property<double>(NAME_FNUMBER) == fnum);
   assert(w.get_property<bool>(NAME_PRESENT) == false);
 
   // generic value
@@ -2057,9 +2058,10 @@ test_property()
 #endif
 
   // via proxy
+  fnum = 6.2;
   Derived w3 = wrap(gi_cpp_example_new(), transfer_full);
   w.property_number().set(7);
-  w.property_fnumber().set(6.2);
+  w.property_fnumber().set(fnum);
   w.property_data().set(str);
   w.property_object().set(w3);
   w.property_present().set(true);
@@ -2073,7 +2075,7 @@ test_property()
 
   const Derived cw = w;
   assert(cw.property_number().get() == 7);
-  assert(cw.property_fnumber().get() == 6.2);
+  assert(cw.property_fnumber().get() == fnum);
   assert(cw.property_data().get() == str);
   assert(cw.property_object().get() == w3);
   assert(cw.property_data().get() == str);

@@ -133,8 +133,10 @@ public:
     // prepare a new promise
     p_ = decltype(p_)();
     f_ = p_.get_future();
-    cancel_ = nullptr;
     return [&](GObject_::Object, Gio::AsyncResult result) {
+      // clear state for subsequent re-use if needed
+      if (cancel_ && cancel_.is_cancelled())
+        cancel_ = nullptr;
       p_.set_value(result);
     };
   }

@@ -78,10 +78,12 @@ struct CreditsHistoryEntry final {
 	uint64 giftChannelSavedId = 0;
 	uint64 stargiftId = 0;
 	QString giftPrepayUpgradeHash;
+	QString giftTitle;
 	std::shared_ptr<UniqueGift> uniqueGift;
 	Fn<std::vector<CreditsHistoryEntry>()> pinnedSavedGifts;
 	uint64 nextToUpgradeStickerId = 0;
 	Fn<void()> nextToUpgradeShow;
+	Fn<void()> craftAnotherCallback;
 	CreditsAmount starrefAmount;
 	int starrefCommission = 0;
 	uint64 starrefRecipientId = 0;
@@ -105,6 +107,7 @@ struct CreditsHistoryEntry final {
 	int starsForDetailsRemove = 0;
 	int premiumMonthsForStars = 0;
 	int floodSkip = 0;
+	int giftNumber = 0;
 	bool converted : 1 = false;
 	bool anonymous : 1 = false;
 	bool stargift : 1 = false;
@@ -118,6 +121,7 @@ struct CreditsHistoryEntry final {
 	bool giftResale : 1 = false;
 	bool giftResaleForceTon : 1 = false;
 	bool giftPinned : 1 = false;
+	bool giftCrafted : 1 = false;
 	bool savedToProfile : 1 = false;
 	bool fromGiftsList : 1 = false;
 	bool fromGiftSlug : 1 = false;

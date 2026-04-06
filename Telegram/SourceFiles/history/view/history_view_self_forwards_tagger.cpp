@@ -21,7 +21,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_item.h"
 #include "history/view/reactions/history_view_reactions_selector.h"
 #include "lang/lang_keys.h"
-#include "lottie/lottie_icon.h"
 #include "main/main_session.h"
 #include "ui/rect.h"
 #include "ui/effects/show_animation.h"
@@ -62,7 +61,7 @@ SelfForwardsTagger::~SelfForwardsTagger() = default;
 
 void SelfForwardsTagger::setup() {
 	_controller->session().data().recentSelfForwards(
-	) | rpl::start_with_next([=](const Data::RecentSelfForwards &data) {
+	) | rpl::on_next([=](const Data::RecentSelfForwards &data) {
 		const auto history = _history ? _history() : nullptr;
 		if (!history || history->peer->id != data.fromPeerId) {
 			return;
@@ -70,7 +69,7 @@ void SelfForwardsTagger::setup() {
 		showSelectorForMessages(data.ids);
 	}, _lifetime);
 	_controller->session().data().recentJoinChat(
-	) | rpl::start_with_next([=](const Data::RecentJoinChat &data) {
+	) | rpl::on_next([=](const Data::RecentJoinChat &data) {
 		if (!_controller->session().data().chatsFilters().has()) {
 			return;
 		}
@@ -148,7 +147,7 @@ void SelfForwardsTagger::showSelectorForMessages(
 		}
 		Ui::Animations::HideWidgets({ toastWidget->widget(), selector });
 		selector->shownValue(
-		) | rpl::start_with_next([toastWidgetWeak](bool shown) {
+		) | rpl::on_next([toastWidgetWeak](bool shown) {
 			if (!shown) {
 				if (const auto toast = toastWidgetWeak.get()) {
 					delete toast->widget();
@@ -158,7 +157,7 @@ void SelfForwardsTagger::showSelectorForMessages(
 	};
 
 	selector->chosen(
-	) | rpl::start_with_next([=](ChosenReaction reaction) {
+	) | rpl::on_next([=](ChosenReaction reaction) {
 		selector->setAttribute(Qt::WA_TransparentForMouseEvents);
 		for (const auto &id : ids) {
 			if (const auto item = _controller->session().data().message(id)) {
@@ -190,7 +189,7 @@ void SelfForwardsTagger::showSelectorForMessages(
 
 	const auto state = selector->lifetime().make_state<ToastTimerState>();
 
-	selector->willExpand() | rpl::start_with_next([=] {
+	selector->willExpand() | rpl::on_next([=] {
 		state->expanded = true;
 	}, selector->lifetime());
 
@@ -207,7 +206,7 @@ void SelfForwardsTagger::showSelectorForMessages(
 	selector->initGeometry(_parent->height() / 2);
 
 	_toast->widget()->geometryValue(
-	) | rpl::start_with_next([=](const QRect &rect) {
+	) | rpl::on_next([=](const QRect &rect) {
 		if (rect.isEmpty()) {
 			return;
 		}
@@ -227,54 +226,28 @@ void SelfForwardsTagger::showToast(
 		.textContext = Core::TextContext({
 			.session = &_controller->session(),
 		}),
+		.iconLottie = u"toast/saved_messages"_q,
+		.iconPadding = st::selfForwardsTaggerIconPadding,
 		.st = &st::selfForwardsTaggerToast,
 		.attach = RectPart::Top,
 		.infinite = true,
 	});
 	if (const auto strong = _toast.get()) {
-		const auto widget = strong->widget();
-		createLottieIcon(widget, u"toast/saved_messages"_q);
 		if (callback) {
-			QObject::connect(widget, &QObject::destroyed, callback);
+			QObject::connect(strong->widget(), &QObject::destroyed, callback);
 		}
 	} else if (callback) {
 		callback();
 	}
 }
 
-void SelfForwardsTagger::createLottieIcon(
-		not_null<QWidget*> widget,
-		const QString &name) {
-	const auto lottieWidget = Ui::CreateChild<Ui::RpWidget>(widget);
-	struct State {
-		std::unique_ptr<Lottie::Icon> lottieIcon;
-	};
-	const auto state = lottieWidget->lifetime().make_state<State>();
-	state->lottieIcon = Lottie::MakeIcon({
-		.name = name,
-		.sizeOverride = st::selfForwardsTaggerIcon,
-	});
-	const auto icon = state->lottieIcon.get();
-	lottieWidget->resize(st::selfForwardsTaggerIcon);
-	lottieWidget->move(st::selfForwardsTaggerToast.iconPosition);
-	lottieWidget->show();
-	lottieWidget->raise();
-	icon->animate(
-		[=] { lottieWidget->update(); },
-		0,
-		icon->framesCount() - 1);
-	lottieWidget->paintRequest() | rpl::start_with_next([=] {
-		auto p = QPainter(lottieWidget);
-		icon->paint(p, 0, 0);
-	}, lottieWidget->lifetime());
-}
 
 void SelfForwardsTagger::showTaggedToast(DocumentId reaction) {
 	auto text = tr::lng_message_tagged_with(
 		tr::now,
 		lt_emoji,
 		Data::SingleCustomEmoji(reaction),
-		Ui::Text::WithEntities);
+		tr::marked);
 	hideToast();
 
 	const auto &st = st::selfForwardsTaggerToast;
@@ -288,6 +261,8 @@ void SelfForwardsTagger::showTaggedToast(DocumentId reaction) {
 		.textContext = Core::TextContext({
 			.session = &_controller->session(),
 		}),
+		.iconLottie = u"toast/tagged"_q,
+		.iconPadding = st::selfForwardsTaggerIconPadding,
 		.padding = rpl::single(QMargins(0, 0, rightSkip, 0)),
 		.st = &st,
 		.attach = RectPart::Top,
@@ -296,7 +271,6 @@ void SelfForwardsTagger::showTaggedToast(DocumentId reaction) {
 	});
 	if (const auto strong = _toast.get()) {
 		const auto widget = strong->widget();
-		createLottieIcon(widget, u"toast/tagged"_q);
 
 		const auto button = Ui::CreateChild<Ui::AbstractButton>(widget.get());
 		button->setClickedCallback([=] {
@@ -304,7 +278,7 @@ void SelfForwardsTagger::showTaggedToast(DocumentId reaction) {
 			hideToast();
 		});
 
-		button->paintRequest() | rpl::start_with_next([=] {
+		button->paintRequest() | rpl::on_next([=] {
 			auto p = QPainter(button);
 			const auto font = st::historyPremiumViewSet.style.font;
 			const auto top = (button->height() - font->height) / 2;
@@ -320,7 +294,7 @@ void SelfForwardsTagger::showTaggedToast(DocumentId reaction) {
 		rpl::combine(
 			widget->sizeValue(),
 			button->sizeValue()
-		) | rpl::start_with_next([=](const QSize &outer, const QSize &inner) {
+		) | rpl::on_next([=](const QSize &outer, const QSize &inner) {
 			button->moveToRight(
 				st.padding.right(),
 				(outer.height() - inner.height()) / 2,
@@ -338,6 +312,8 @@ void SelfForwardsTagger::showChannelFilterToast(not_null<PeerData*> peer) {
 		: tr::lng_add_group_to_filter_selector(tr::now);
 	_toast = Ui::Toast::Show(_scroll, Ui::Toast::Config{
 		.text = { .text = toastText },
+		.iconLottie = u"toast/chats_filter_in"_q,
+		.iconPadding = st::selfForwardsTaggerIconPadding,
 		.st = &st::joinChatAddToFilterToast,
 		.attach = RectPart::Top,
 		.acceptinput = true,
@@ -345,7 +321,6 @@ void SelfForwardsTagger::showChannelFilterToast(not_null<PeerData*> peer) {
 	});
 	if (const auto strong = _toast.get()) {
 		const auto widget = strong->widget();
-		createLottieIcon(widget, u"toast/chats_filter_in"_q);
 		const auto rightButton = createRightButton(widget);
 		const auto history = peer->owner().history(peer);
 
@@ -382,7 +357,7 @@ not_null<Ui::AbstractButton*> SelfForwardsTagger::createRightButton(
 	const auto button = Ui::CreateChild<Ui::IconButton>(
 		widget.get(),
 		st::joinChatAddToFilterToastButton);
-	widget->sizeValue() | rpl::start_with_next([=](const QSize &size) {
+	widget->sizeValue() | rpl::on_next([=](const QSize &size) {
 		button->moveToRight(
 			st::lineWidth * 4,
 			(size.height() - button->height()) / 2);
@@ -398,7 +373,7 @@ void SelfForwardsTagger::setupToastTimer(
 		Fn<void()> hideCallback) {
 	const auto restartTimer = [=](crl::time ms) {
 		state->timerLifetime.destroy();
-		base::timer_once(ms) | rpl::start_with_next([=] {
+		base::timer_once(ms) | rpl::on_next([=] {
 			hideCallback();
 		}, state->timerLifetime);
 	};

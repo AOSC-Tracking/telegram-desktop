@@ -30,6 +30,9 @@
 #include <QtQuickWidgets/QQuickWidget>
 #endif // DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
 
+#if __has_include(<giounix/giounix.hpp>)
+#include <giounix/giounix.hpp>
+#endif // __has_include(<giounix/giounix.hpp>)
 #include <webview/webview.hpp>
 #include <crl/crl.h>
 #include <rpl/rpl.h>
@@ -49,6 +52,15 @@ constexpr auto kMasterObjectPath
 constexpr auto kHelperObjectPath
 	= "/org/desktop_app/GtkIntegration/Webview/Helper";
 constexpr auto kDataHost = "127.0.0.1";
+
+#ifdef DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
+void (* const SetGraphicsApi)(QSGRendererInterface::GraphicsApi) =
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+	QQuickWindow::setGraphicsApi;
+#else // Qt >= 6.0.0
+	QQuickWindow::setSceneGraphBackend;
+#endif // Qt < 6.0.0
+#endif // DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
 
 std::string SocketPath;
 
@@ -82,6 +94,7 @@ public:
 	void eval(std::string js) override;
 
 	void focus() override;
+	void setInteractionHandler(Fn<void()> handler) override;
 
 	QWidget *widget() override;
 
@@ -138,6 +151,7 @@ private:
 	Gio::Subprocess _serviceProcess;
 
 	Platform _platform = Platform::Any;
+	Ui::GL::Backend _glBackend;
 	::base::unique_qptr<QWidget> _widget;
 	QPointer<Compositor> _compositor;
 	std::optional<HttpServer> _dataServer;
@@ -153,6 +167,7 @@ private:
 	std::function<DialogResult(DialogArgs)> _dialogHandler;
 	rpl::variable<NavigationHistoryState> _navigationHistoryState;
 	std::function<DataResult(DataRequest)> _dataRequestHandler;
+	Fn<void()> _interactionHandler;
 	std::uint16_t _dataPort = 0;
 	std::string _dataPassword;
 	bool _loadFailed = false;
@@ -169,6 +184,7 @@ Instance::Instance(bool remoting)
 #else // DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
 			: Platform::Any;
 #endif // !DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
+		_glBackend = Ui::GL::ChooseBackendDefault(Ui::GL::CheckCapabilities());
 		startProcess();
 	}
 }
@@ -208,13 +224,17 @@ bool Instance::create(Config config) {
 		if (_compositor) {
 			auto widget = qobject_cast<QQuickWidget*>(_widget);
 			if (!widget) {
-				if (Ui::GL::ChooseBackendDefault(Ui::GL::CheckCapabilities())
-						!= Ui::GL::Backend::OpenGL) {
-					_platform = Platform::Any;
-					stopProcess();
-					startProcess();
-					return create(std::move(config));
-				}
+				[[maybe_unused]] static const auto Inited = [&] {
+					switch (_glBackend) {
+					case Ui::GL::Backend::Raster:
+						SetGraphicsApi(QSGRendererInterface::Software);
+						break;
+					case Ui::GL::Backend::OpenGL:
+						SetGraphicsApi(QSGRendererInterface::OpenGL);
+						break;
+					}
+					return true;
+				}();
 				_widget = ::base::make_unique_q<QQuickWidget>(config.parent);
 				widget = static_cast<QQuickWidget*>(_widget.get());
 				_compositor->setWidget(widget);
@@ -278,7 +298,9 @@ bool Instance::create(Config config) {
 			::base::install_event_filter(_widget, [=](
 					not_null<QEvent*> e) {
 				if (e->type() == QEvent::Resize) {
-					const auto size = static_cast<QResizeEvent*>(e.get())->size();
+					const auto size = static_cast<QResizeEvent*>(
+						e.get()
+					)->size();
 					resize(size.width(), size.height());
 				}
 				return ::base::EventFilterResult::Continue;
@@ -476,6 +498,68 @@ bool Instance::create(Config config) {
 			return instance->authenticate(request);
 		}),
 		this);
+	if (gtk_widget_add_controller) {
+		const auto click = gtk_gesture_click_new();
+		g_signal_connect_swapped(
+			click,
+			"pressed",
+			G_CALLBACK(+[](
+				Instance *instance,
+				int,
+				double,
+				double) {
+				if (instance->_master) {
+					instance->_master.call_user_interaction(nullptr);
+				}
+			}),
+			this);
+		gtk_widget_add_controller(
+			GTK_WIDGET(_webview),
+			(GtkEventController*)click);
+		const auto key = gtk_event_controller_key_new();
+		g_signal_connect_swapped(
+			key,
+			"key-pressed",
+			G_CALLBACK(+[](
+				Instance *instance,
+				guint,
+				guint,
+				GdkModifierType) -> gboolean {
+				if (instance->_master) {
+					instance->_master.call_user_interaction(nullptr);
+				}
+				return FALSE;
+			}),
+			this);
+		gtk_widget_add_controller(
+			GTK_WIDGET(_webview),
+			key);
+	} else {
+		g_signal_connect_swapped(
+			_webview,
+			"button-press-event",
+			G_CALLBACK(+[](
+				Instance *instance,
+				GdkEventButton*) -> gboolean {
+				if (instance->_master) {
+					instance->_master.call_user_interaction(nullptr);
+				}
+				return FALSE;
+			}),
+			this);
+		g_signal_connect_swapped(
+			_webview,
+			"key-press-event",
+			G_CALLBACK(+[](
+				Instance *instance,
+				GdkEventKey*) -> gboolean {
+				if (instance->_master) {
+					instance->_master.call_user_interaction(nullptr);
+				}
+				return FALSE;
+			}),
+			this);
+	}
 	webkit_user_content_manager_register_script_message_handler(
 		manager,
 		"external",
@@ -501,11 +585,13 @@ bool Instance::create(Config config) {
 		gtk_widget_show_all(_window);
 	}
 	init(R"(
-window.external = {
-	invoke: function(s) {
-		window.webkit.messageHandlers.external.postMessage(s);
-	}
-};)");
+if (window === window.top) {
+	window.external = {
+		invoke: function(s) {
+			window.webkit.messageHandlers.external.postMessage(s);
+		}
+	};
+})");
 
 	return webkit_web_view_get_is_web_process_responsive(_webview);
 }
@@ -746,7 +832,7 @@ void Instance::dataRequest(
 	if (requestedLimit <= 0) {
 		requestedLimit = (total - requestedOffset);
 	}
-	
+
 	if (!headersWritten) {
 		socket->write("HTTP/1.1 ");
 		socket->write(partial ? "206 Partial Content\r\n" : "200 OK\r\n");
@@ -924,6 +1010,10 @@ void Instance::focus() {
 	}
 }
 
+void Instance::setInteractionHandler(Fn<void()> handler) {
+	_interactionHandler = std::move(handler);
+}
+
 QWidget *Instance::widget() {
 	return _widget.get();
 }
@@ -1029,11 +1119,38 @@ void Instance::resize(int w, int h) {
 void Instance::startProcess() {
 	auto loop = GLib::MainLoop::new_();
 
-	auto serviceProcess = Gio::Subprocess::new_({
+	auto serviceLauncher = Gio::SubprocessLauncher::new_(
+		Gio::SubprocessFlags::NONE_);
+
+	if (_platform == Platform::Wayland
+			&& _glBackend == Ui::GL::Backend::Raster) {
+		serviceLauncher.setenv("LIBGL_ALWAYS_SOFTWARE", "1", true);
+		serviceLauncher.setenv("GSK_RENDERER", "cairo", true);
+		serviceLauncher.setenv("GDK_DISABLE", "gl", true);
+		serviceLauncher.setenv("GDK_DEBUG", "gl-disable", true);
+		serviceLauncher.setenv("GDK_GL", "disable", true);
+		serviceLauncher.setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", true);
+	}
+
+	int pipefd[2] = { -1, -1 };
+	GError *error = nullptr;
+	if (!g_unix_open_pipe(pipefd, O_CLOEXEC, &error)
+			&& (error || !g_unix_open_pipe(pipefd, FD_CLOEXEC, &error))) {
+		LOG(("WebView Error: %1").arg(error->message));
+		g_clear_error(&error);
+		return;
+	}
+
+	serviceLauncher.take_fd(pipefd[0], 3);
+	auto pipeGuard = std::make_optional(gsl::finally([&] {
+		GLib::close(pipefd[1]);
+	}));
+
+	auto serviceProcess = serviceLauncher.spawnv({
 		::base::Integration::Instance().executablePath().toStdString(),
 		std::string("-webviewhelper"),
 		SocketPath,
-	}, Gio::SubprocessFlags::NONE_);
+	});
 
 	if (!serviceProcess) {
 		LOG(("WebView Error: %1").arg(
@@ -1140,6 +1257,7 @@ void Instance::startProcess() {
 		loop.quit();
 	});
 
+	pipeGuard.reset();
 	loop.run();
 	if (timeoutHappened) {
 		LOG(("WebView Error: Timed out waiting for WebView helper process."));
@@ -1300,6 +1418,16 @@ void Instance::registerMasterMethodHandlers() {
 		_master.complete_navigation_state_update(invocation);
 		return true;
 	});
+
+	_master.signal_handle_user_interaction().connect([=](
+			Master,
+			Gio::DBusMethodInvocation invocation) {
+		if (_interactionHandler) {
+			_interactionHandler();
+		}
+		_master.complete_user_interaction(invocation);
+		return true;
+	});
 }
 
 int Instance::exec() {
@@ -1316,42 +1444,20 @@ int Instance::exec() {
 
 	auto loop = GLib::MainLoop::new_();
 
-	const auto socketPath = std::vformat(
-		std::string_view(SocketPath),
-		std::make_format_args(
-			static_cast<const std::string>(std::to_string(getpid()))));
-
-	if (socketPath.empty()) {
-		g_critical("IPC socket path is not set.");
-		return 1;
-	}
-
-	{
-		auto socketFile = Gio::File::new_for_path(socketPath);
-
-		auto socketMonitor = socketFile.monitor(Gio::FileMonitorFlags::NONE_);
-		if (!socketMonitor) {
-			g_critical("%s", socketMonitor.error().message_().c_str());
-			return 1;
-		}
-
-		socketMonitor->signal_changed().connect([&](
-				Gio::FileMonitor,
-				Gio::File file,
-				Gio::File otherFile,
-				Gio::FileMonitorEvent eventType) {
-			if (eventType == Gio::FileMonitorEvent::CREATED_) {
-				loop.quit();
-			}
-		});
-
-		if (!socketFile.query_exists()) {
-			loop.run();
-		}
-	}
+	std::uint8_t dummy{};
+#if __has_include(<giounix/giounix.hpp>)
+	GioUnix::InputStream::new_(3, true).read_all(&dummy, 1);
+#else // __has_include(<giounix/giounix.hpp>)
+	Gio::UnixInputStream::new_(3, true).read_all(&dummy, 1);
+#endif // !__has_include(<giounix/giounix.hpp>)
 
 	auto connection = Gio::DBusConnection::new_for_address_sync(
-		SocketPathToDBusAddress(socketPath),
+		SocketPathToDBusAddress(
+			std::vformat(
+				std::string_view(SocketPath),
+				std::make_format_args(
+					static_cast<const std::string>(
+						std::to_string(getpid()))))),
 		Gio::DBusConnectionFlags::AUTHENTICATION_CLIENT_);
 
 	if (!connection) {

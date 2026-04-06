@@ -18,7 +18,7 @@
 
 namespace
 {
-class File : public std::ofstream
+class File : public std::ostringstream
 {
   std::string ns;
   std::string fname;
@@ -28,10 +28,13 @@ class File : public std::ofstream
   NamespaceGuard nsg;
 
   static std::string root;
+  static bool changed;
 
 public:
   // ok, single threaded processing
   static void set_root(const std::string &dir) { root = dir; }
+
+  static void set_changed(bool c) { changed = c; }
 
   static std::string prepdirs(
       const std::string &_ns, const std::string &_fname, bool nsdir)
@@ -41,23 +44,24 @@ public:
       p /= tolower(_ns);
     fs::create_directories(p);
     p /= tolower(_fname);
-    return p.native();
+    return p.string();
   }
 
   File(const std::string &_ns, const std::string _fname, bool _need_ns = true,
       bool _need_guard = true, bool _nsdir = true)
-      : std::ofstream(prepdirs(_ns, _fname, _nsdir)), ns(_ns), fname(_fname),
-        preamble(_need_ns), guard(_need_guard), nsdir(_nsdir), nsg(*this)
+      : ns(_ns), fname(_fname), preamble(_need_ns), guard(_need_guard),
+        nsdir(_nsdir), nsg(*this)
   {
     write_pre();
   }
 
   std::string get_rel_path() const
   {
-    return nsdir ? (fs::path(tolower(ns)) / tolower(fname)).native()
+    return nsdir ? (fs::path(tolower(ns)) / tolower(fname)).string()
                  : tolower(fname);
   }
 
+private:
   void write_pre()
   {
     *this << "// AUTO-GENERATED\n\n";
@@ -80,12 +84,37 @@ public:
       nsg.pop();
     if (guard)
       *this << "#endif" << std::endl;
+    finish();
   }
 
+  static std::string read(const std::string &fname)
+  {
+    std::ifstream f(fname);
+    std::ostringstream oss;
+    oss << f.rdbuf();
+    return oss.str();
+  }
+
+  void finish()
+  {
+    auto fullname = prepdirs(ns, fname, nsdir);
+    auto content = str();
+
+    // this is a bit racy if multiple parties try to write
+    // worst case multiple will/should write the same content
+    auto write = changed ? read(fullname) != content : true;
+    if (write) {
+      std::ofstream output(fullname);
+      output << content;
+    }
+  }
+
+public:
   ~File() { write_post(); }
 };
 
 std::string File::root;
+bool File::changed{};
 
 class NamespaceGeneratorImpl : private GeneratorBase, public NamespaceGenerator
 {
@@ -1173,7 +1202,7 @@ public:
       for (auto &&suffix : {"_extra_def", "_extra"}) {
         auto header =
             (fs::path(tolower(ns)) / get_record_filename(name + suffix, impl))
-                .native();
+                .string();
         out << make_conditional_include(header, false) << std::endl;
       }
     };
@@ -1318,6 +1347,7 @@ public:
     // set state for ns processing
     ctx.repo.set_ns(ns);
     File::set_root(ctx.options.rootdir);
+    File::set_changed(ctx.options.only_changed);
 
     // check if deprecated should pass for this ns
     allow_deprecated_ = ctx.match_ignore.matches("deprecated", ns, {version_});
@@ -1455,7 +1485,7 @@ public:
     }
 
     auto add_stub_include = [this](const std::string &suffix) {
-      auto fpath = (fs::path(tolower(ns)) / (tolower(ns) + suffix)).native();
+      auto fpath = (fs::path(tolower(ns)) / (tolower(ns) + suffix)).string();
       return make_conditional_include(fpath, false);
     };
 
@@ -1675,7 +1705,7 @@ GI_MODULE_END
         std::ostringstream moddeps;
         bool got_gobject = false;
         for (auto &&d : dep_headers) {
-          std::string path = fs::path(d).filename();
+          std::string path = fs::path(d).filename().string();
           boost::algorithm::erase_all(path, ".hpp");
           // sigh, glib/gobject collapsed along with core
           // replace references in non-duplicate way

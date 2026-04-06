@@ -24,14 +24,14 @@ DeviceResolver::DeviceResolver(
 : _environment(environment)
 , _current{ .type = type }
 , _data(_current) {
-	_data.changes() | rpl::start_with_next([=](DeviceResolvedId id) {
+	_data.changes() | rpl::on_next([=](DeviceResolvedId id) {
 		QMutexLocker lock(&_mutex);
 		_current = id;
 	}, _lifetime);
 
 	std::move(
 		savedId
-	) | rpl::start_with_next([=](QString id) {
+	) | rpl::on_next([=](QString id) {
 		QMutexLocker lock(&_mutex);
 		_savedId = id;
 		lock.unlock();

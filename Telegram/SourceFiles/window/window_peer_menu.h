@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/menu/menu_add_action_callback.h"
 
 class History;
+class HistoryItem;
 
 namespace Api {
 struct SendOptions;
@@ -80,8 +81,14 @@ bool FillVideoChatMenu(
 void FillSenderUserpicMenu(
 	not_null<SessionController*> controller,
 	not_null<PeerData*> peer,
+	PeerData *groupPeer,
 	Ui::InputField *fieldForMention,
 	Dialogs::Key searchInEntry,
+	const PeerMenuCallback &addAction);
+
+void AddSenderUserpicModerateAction(
+	not_null<SessionController*> controller,
+	HistoryItem *moderateItem,
 	const PeerMenuCallback &addAction);
 
 void MenuAddMarkAsReadAllChatsAction(
@@ -115,8 +122,8 @@ void PeerMenuCreatePoll(
 	not_null<Window::SessionController*> controller,
 	not_null<PeerData*> peer,
 	FullReplyTo replyTo = FullReplyTo(),
-	SuggestPostOptions suggest = SuggestPostOptions(),
-	PollData::Flags chosen = PollData::Flags(),
+	SuggestOptions suggest = SuggestOptions(),
+	PollData::Flags chosen = kDefaultPollCreateFlags,
 	PollData::Flags disabled = PollData::Flags(),
 	Api::SendType sendType = Api::SendType::Normal,
 	SendMenu::Details sendMenuDetails = SendMenu::Details());
@@ -130,7 +137,7 @@ void PeerMenuCreateTodoList(
 	not_null<Window::SessionController*> controller,
 	not_null<PeerData*> peer,
 	FullReplyTo replyTo = FullReplyTo(),
-	SuggestPostOptions suggest = SuggestPostOptions(),
+	SuggestOptions suggest = SuggestOptions(),
 	Api::SendType sendType = Api::SendType::Normal,
 	SendMenu::Details sendMenuDetails = SendMenu::Details());
 void PeerMenuEditTodoList(

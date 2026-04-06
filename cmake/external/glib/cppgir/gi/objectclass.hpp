@@ -572,7 +572,7 @@ private:
     g_return_if_fail(!instance || !ObjectClass::instance((GObject *)instance));
     g_return_if_fail(gtype);
 
-    // no longer needed`
+    // no longer needed
     itfs.clear();
     // create and link object instance
     // if needed, that is, otherwise use provided instance and tie onto that one

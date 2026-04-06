@@ -19,6 +19,24 @@ void SetButtonTwoLabels(
 		const style::FlatLabel &st,
 		const style::FlatLabel &subst,
 		const style::color *textFg) {
+	SetButtonTwoLabels(
+		button,
+		button->st().textTop,
+		std::move(title),
+		std::move(subtitle),
+		st,
+		subst,
+		textFg);
+}
+
+void SetButtonTwoLabels(
+		not_null<Ui::RpWidget*> button,
+		int singleLineTextTop,
+		rpl::producer<TextWithEntities> title,
+		rpl::producer<TextWithEntities> subtitle,
+		const style::FlatLabel &st,
+		const style::FlatLabel &subst,
+		const style::color *textFg) {
 	const auto buttonTitle = Ui::CreateChild<Ui::FlatLabel>(
 		button,
 		std::move(title),
@@ -36,7 +54,7 @@ void SetButtonTwoLabels(
 	if (textFg) {
 		buttonTitle->setTextColorOverride((*textFg)->c);
 		buttonSubtitle->setTextColorOverride((*textFg)->c);
-		style::PaletteChanged() | rpl::start_with_next([=] {
+		style::PaletteChanged() | rpl::on_next([=] {
 			buttonTitle->setTextColorOverride((*textFg)->c);
 			buttonSubtitle->setTextColorOverride((*textFg)->c);
 		}, buttonTitle->lifetime());
@@ -46,7 +64,7 @@ void SetButtonTwoLabels(
 		buttonTitle->sizeValue(),
 		buttonSubtitle->sizeValue(),
 		std::move(subtitle)
-	) | rpl::start_with_next([=](
+	) | rpl::on_next([=](
 			QSize outer,
 			QSize title,
 			QSize subtitle,
@@ -57,7 +75,7 @@ void SetButtonTwoLabels(
 		const auto two = title.height() + subtitle.height();
 		const auto titleTop = withSubtitle
 			? (outer.height() - two) / 2
-			: button->st().textTop;
+			: singleLineTextTop;
 		const auto subtitleTop = titleTop + title.height();
 		buttonTitle->moveToLeft(
 			(outer.width() - title.width()) / 2,

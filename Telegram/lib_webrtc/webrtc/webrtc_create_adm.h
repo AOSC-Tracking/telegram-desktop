@@ -35,6 +35,7 @@ auto AudioDeviceModuleCreator(
 
 AudioDeviceModulePtr CreateLoopbackAudioDeviceModule(
 	webrtc::TaskQueueFactory* factory);
+[[nodiscard]] bool LoopbackAudioCaptureSupported();
 
 auto LoopbackAudioDeviceModuleCreator()
 -> std::function<AudioDeviceModulePtr(webrtc::TaskQueueFactory*)>;

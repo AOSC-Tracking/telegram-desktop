@@ -179,7 +179,7 @@ AudioInputTester::AudioInputTester(rpl::producer<DeviceResolvedId> deviceId)
 , _impl(std::as_const(_maxSample)) {
 	std::move(
 		deviceId
-	) | rpl::start_with_next([=](const DeviceResolvedId &id) {
+	) | rpl::on_next([=](const DeviceResolvedId &id) {
 		_impl.with([=](Impl &impl) {
 			impl.setDeviceId(id);
 		});

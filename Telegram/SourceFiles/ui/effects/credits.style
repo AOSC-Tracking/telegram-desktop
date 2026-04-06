@@ -92,6 +92,9 @@ starIconEmojiLarge: IconEmoji {
 starIconEmojiInline: IconEmoji(starIconEmojiSmall) {
 	padding: margins(0px, 3px, 0px, 0px);
 }
+buttonStarIconEmoji: IconEmoji(starIconEmoji) {
+	padding: margins(4px, 2px, 4px, 0px);
+}
 
 tonIconEmoji: IconEmoji {
 	icon: icon{{ "chat/mini_ton_bold", currencyFg }};
@@ -103,6 +106,9 @@ tonIconEmojiLarge: IconEmoji {
 }
 tonIconEmojiInSmall: IconEmoji(tonIconEmoji) {
 	padding: margins(0px, 2px, 0px, 0px);
+}
+buttonTonIconEmoji: IconEmoji(tonIconEmoji) {
+	padding: margins(1px, 3px, 1px, 0px);
 }
 
 creditsHistoryEntryTypeAds: icon {{ "folders/folders_channels", premiumButtonFg }};
@@ -133,6 +139,10 @@ giftBox: Box(defaultBox) {
 giftLimitedBox: Box(giftBox) {
 	buttonPadding: margins(22px, 48px, 22px, 12px);
 }
+giftCraftBox: Box(giftBox) {
+	buttonPadding: margins(0px, 0px, 0px, 0px);
+	buttonHeight: 0px;
+}
 giftLimitedPadding: margins(8px, 4px, 8px, 4px);
 giftBoxSubtitle: FlatLabel(defaultFlatLabel) {
 	style: TextStyle(defaultTextStyle) {
@@ -155,6 +165,12 @@ giftBoxTabStyle: semiboldTextStyle;
 giftBoxTabFg: windowSubTextFg;
 giftBoxTabFgActive: windowBoldFg;
 giftBoxTabBgActive: windowBgRipple;
+giftBoxPillTabs: PillTabs(defaultPillTabs) {
+	borderWidth: 6px;
+	fg: windowSubTextFg;
+	fgActive: windowBoldFg;
+	bgActive: windowBgRipple;
+}
 giftBoxResaleTabsMargin: margins(11px, 10px, 11px, 8px);
 giftBoxResaleTabSkip: 8px;
 giftBoxResaleTabsDropdown: IconEmoji {
@@ -186,6 +202,7 @@ giftBoxPadding: margins(11px, 4px, 11px, 24px);
 giftBoxGiftSkip: point(10px, 8px);
 giftBoxGiftHeight: 164px;
 giftBoxGiftSmall: 108px;
+giftBoxGiftTiny: 72px;
 giftBoxGiftRadius: 12px;
 giftBoxGiftBadgeFont: font(10px semibold);
 giftBoxByStarsStyle: TextStyle(defaultTextStyle) {
@@ -208,9 +225,11 @@ giftBoxPreviewTextPadding: margins(12px, 4px, 12px, 4px);
 giftBoxButtonMargin: margins(12px, 8px, 12px, 12px);
 giftBoxStickerTop: 0px;
 giftBoxStickerStarTop: 24px;
+giftBoxStickerUniqueTop: 32px;
 giftBoxSmallStickerTop: 16px;
 giftBoxStickerTopByStars: -4px;
 giftBoxStickerSize: size(80px, 80px);
+giftBoxStickerTiny: size(48px, 48px);
 giftBoxSelectSkip: 5px;
 giftBoxUserpicSize: 24px;
 giftBoxUserpicSkip: 2px;
@@ -237,11 +256,15 @@ giftBoxTextPadding: margins(20px, 15px, 20px, 11px);
 giftBoxHiddenMark: icon{{ "chat/mini_gift_hidden", premiumButtonFg, margins(4px, 4px, 4px, 4px) }};
 giftListAbout: FlatLabel(defaultFlatLabel) {
 	minWidth: 240px;
-	textFg: membersAboutLimitFg;
+	textFg: windowSubTextFg;
 	align: align(top);
 	style: boxLabelStyle;
 }
 giftListAboutMargin: margins(12px, 24px, 12px, 24px);
+giftListAboutToggle: FlatLabel(giftListAbout) {
+	style: semiboldTextStyle;
+}
+giftListAboutToggleSkip: 4px;
 giftBoxEmojiToggleTop: 7px;
 giftBoxLimitTop: 28px;
 giftBoxLock: IconEmoji {
@@ -271,8 +294,17 @@ creditsHistoryEntriesList: PeerList(defaultPeerList) {
 subscriptionCreditsBadgePadding: margins(10px, 1px, 8px, 3px);
 
 uniqueGiftModelTop: 20px;
+uniqueGiftPretitle: FlatLabel(defaultFlatLabel) {
+	style: semiboldTextStyle;
+	margin: margins(12px, 4px, 12px, 4px);
+}
 uniqueGiftTitle: FlatLabel(boxTitle) {
 	align: align(top);
+}
+uniqueGiftNumber: FlatLabel(uniqueGiftTitle) {
+	style: TextStyle(defaultTextStyle) {
+		font: semiboldFont;
+	}
 }
 uniqueGiftResalePrice: FlatLabel(defaultFlatLabel) {
 	style: semiboldTextStyle;
@@ -287,6 +319,11 @@ uniqueGiftSubtitle: FlatLabel(defaultFlatLabel) {
 uniqueGiftReleasedBy: FlatLabel(uniqueGiftSubtitle) {
 	style: TextStyle(defaultTextStyle) {
 		font: font(10px);
+	}
+}
+uniqueGiftOnSale: FlatLabel(uniqueGiftSubtitle) {
+	style: TextStyle(defaultTextStyle) {
+		font: font(10px semibold);
 	}
 }
 uniqueGiftSubtitleTop: 170px;
@@ -306,10 +343,67 @@ uniqueMenuButton: IconButton(uniqueCloseButton) {
 
 	icon: icon {{ "title_menu_dots", videoPlayIconFg }};
 	iconOver: icon {{ "title_menu_dots", videoPlayIconFg }};
-	ripple: RippleAnimation(defaultRippleAnimation) {
-		color: shadowFg;
-	}
 }
+uniqueCraftButton: IconButton(uniqueMenuButton) {
+	icon: icon{{ "chat/filled_forge-24x24", videoPlayIconFg }};
+	iconOver: icon{{ "chat/filled_forge-24x24", videoPlayIconFg }};
+}
+uniqueGiftSenderBadge: FlatLabel(defaultFlatLabel) {
+	style: semiboldTextStyle;
+	palette: TextPalette(defaultTextPalette) {
+		linkFg: radialFg;
+		monoFg: radialFg;
+	}
+	margin: margins(12px, 3px, 12px, 4px);
+	minWidth: 128px;
+	align: align(top);
+	textFg: radialFg;
+}
+
+uniqueAttributeTop: 10px;
+uniqueAttributeSkip: 8px;
+uniqueAttributePadding: margins(6px, 8px, 6px, 8px);
+uniqueAttributeName: TextStyle(semiboldTextStyle) {
+	font: font(12px semibold);
+}
+uniqueAttributeType: TextStyle(defaultTextStyle) {
+	font: font(12px);
+}
+uniqueAttributePercent: uniqueAttributeType;
+uniqueAttributePercentPadding: margins(4px, 0px, 4px, 0px);
+uniqueAttributeModel: RoundButton(defaultLightButton) {
+	textFg: windowBoldFg;
+	textFgOver: windowBoldFg;
+	textBg: windowBgOver;
+	textBgOver: windowBgOver;
+	ripple: defaultRippleAnimation;
+	radius: 8px;
+
+	width: 107px;
+	height: 34px;
+	textTop: 7px;
+	style: defaultBoxButtonTextStyle;
+	icon: icon {{ "menu/unique", windowBoldFg }};
+	iconOver: icon {{ "menu/unique", windowBoldFg }};
+	iconPosition: point(-1px, 4px);
+}
+uniqueAttributeModelActive: icon{{ "menu/unique", activeButtonFg }};
+uniqueAttributeBackdrop: RoundButton(uniqueAttributeModel) {
+	icon: icon {{ "menu/palette", windowBoldFg }};
+	iconOver: icon {{ "menu/palette", windowBoldFg }};
+}
+uniqueAttributeBackdropActive: icon{{ "menu/palette", activeButtonFg }};
+uniqueAttributeSymbol: RoundButton(uniqueAttributeModel) {
+	icon: icon {{ "menu/all_media", windowBoldFg }};
+	iconOver: icon {{ "menu/all_media", windowBoldFg }};
+}
+uniqueAttributeSymbolActive: icon{{ "menu/all_media", activeButtonFg }};
+uniqueAttributesBox: Box(giftBox) {
+	buttonWide: false;
+	buttonHeight: 34px;
+	buttonPadding: margins(10px, 10px, 11px, 10px);
+}
+uniqueAttributeStickerSize: size(64px, 64px);
 upgradeGiftBox: Box(giftBox) {
 	buttonPadding: margins(22px, 3px, 22px, 22px);
 }
@@ -331,6 +425,7 @@ darkUpgradeGiftBox: Box(upgradeGiftBox) {
 	titleAdditionalFg: groupCallMemberNotJoinedStatus;
 }
 darkUpgradeGiftRadiant: icon{{ "menu/unique", groupCallMembersFg }};
+darkUpgradeGiftProfile: icon{{ "settings/premium/features/feature_profile_cover", groupCallMembersFg }};
 darkUpgradeGiftProof: icon{{ "menu/factcheck", groupCallMembersFg }};
 darkUpgradeGiftInfoTitle: FlatLabel(defaultFlatLabel) {
 	textFg: groupCallMembersFg;
@@ -385,6 +480,19 @@ resaleConfirmTonOnly: FlatLabel(boxLabel) {
 	textFg: windowSubTextFg;
 }
 resaleConfirmTonOnlyMargin: margins(0px, 12px, 0px, 12px);
+
+offerValuePadding: margins(0px, 8px, 0px, 0px);
+offerValueGood: FlatLabel(boxLabel) {
+	minWidth: 120px;
+	textFg: windowSubTextFg;
+	align: align(top);
+	style: TextStyle(defaultTextStyle) {
+		font: font(12px);
+	}
+}
+offerValueBad: FlatLabel(offerValueGood) {
+	textFg: attentionButtonFg;
+}
 
 uniqueGiftValuePrice: FlatLabel(defaultFlatLabel) {
 	style: TextStyle(defaultTextStyle) {
@@ -444,15 +552,18 @@ videoStreamStarsCover: PremiumCover(creditsLowBalancePremiumCover) {
 auctionInfoPreviewMargin: margins(0px, 24px, 0px, 8px);
 auctionInfoSubtitleSkip: 8px;
 auctionInfoTableMargin: margins(0px, 12px, 0px, 12px);
+auctionInfoValueMultiline: FlatLabel(defaultTableValue) {
+	minWidth: 96px;
+	maxHeight: 96px;
+}
 auctionBidEmoji: IconEmoji {
 	icon: icon {{ "settings/button_auction", windowFg }};
 	padding: margins(-4px, -2px, -4px, 0px);
 }
 auctionBidToast: Toast(defaultToast) {
-	padding: margins(54px, 13px, 19px, 12px);
-	icon: icon {{ "settings/toast_auction", toastFg }};
-	iconPosition: point(18px, 18px);
+	padding: margins(19px, 13px, 19px, 12px);
 }
+auctionBidToastIcon: icon {{ "toast/auction", toastFg }};
 auctionAboutLogo: icon {{ "settings/large_auctions", windowFgActive }};
 auctionAboutLogoPadding: margins(8px, 8px, 8px, 8px);
 auctionAboutTextPadding: margins(0px, 6px, 0px, 8px);
@@ -496,3 +607,70 @@ auctionListRaise: RoundButton(defaultActiveButton) {
 	width: 0px;
 }
 auctionListRaisePadding: margins(0px, 8px, 0px, 0px);
+
+CraftRadialPercent {
+	stroke: pixels;
+	font: font;
+}
+
+craftTitleMargin: margins(64px, 16px, 64px, 4px);
+craftAbout: FlatLabel(defaultFlatLabel) {
+	align: align(top);
+	minWidth: 128px;
+}
+craftAboutMargin: margins(24px, 12px, 24px, 4px);
+craftChance: FlatLabel(defaultFlatLabel) {
+	style: semiboldTextStyle;
+	textFg: attentionButtonFg;
+	margin: margins(8px, 4px, 8px, 4px);
+}
+craftPattern: IconEmoji {
+	icon: icon{{ "chat/filled_forge-36x36", windowFg }};
+	padding: margins(0px, 0px, 0px, 0px);
+}
+craftAddIcon: icon {{ "settings/plus", windowFgActive }};
+craftReplaceIcon: icon {{ "mini_replace-12x12", windowFgActive }};
+craftPreviewPadding: margins(24px, 8px, 40px, 8px);
+craftBoxButtonPadding: margins(22px, 12px, 22px, 22px);
+craftAttributesMargin: margins(22px, 12px, 22px, 16px);
+craftPreviewAllPadding: margins(6px, 4px, 6px, 4px);
+craftPreviewAllMargin: margins(22px, 0px, 22px, 8px);
+craftProgressTitleMargin: margins(0px, 12px, 0px, 16px);
+craftProgressAboutMargin: margins(0px, 4px, 0px, 16px);
+craftProgressWarningMargin: margins(0px, 4px, 0px, 16px);
+craftProgressChanceMargin: margins(0px, 40px, 0px, 16px);
+craftProgressIconSize: size(24px, 24px);
+craftProgressIconSkip: 4px;
+craftFailureThumbsTop: 36px;
+craftFailureTitleMargin: margins(0px, 88px, 0px, 12px);
+craftFailureAboutMargin: margins(0px, 0px, 0px, 16px);
+
+craftForge: icon{{ "chat/filled_forge-48x48", windowFg }};
+craftFailLottieSize: size(36px, 36px);
+craftForgePadding: 12px;
+craftForgePercent: CraftRadialPercent {
+	stroke: 4px;
+	font: font(14px semibold);
+}
+craftForgeLoading: InfiniteRadialAnimation(defaultInfiniteRadialAnimation) {
+	color: windowFgActive;
+	thickness: 4px;
+}
+craftPercentLabel: FlatLabel(defaultFlatLabel) {
+	style: TextStyle(defaultTextStyle) {
+		font: font(11px semibold);
+	}
+	margin: margins(5px, 2px, 5px, 2px);
+}
+craftAttributeSkip: 12px;
+craftAttributePadding: 7px;
+craftAttributeSize: 48px;
+craftAttributePercent: CraftRadialPercent {
+	stroke: 3px;
+	font: font(10px semibold);
+}
+craftAttributeRowSkip: 8px;
+craftYourListEmpty: FlatLabel(defaultFlatLabel) {
+	minWidth: 128px;
+	align: align(top);
+}

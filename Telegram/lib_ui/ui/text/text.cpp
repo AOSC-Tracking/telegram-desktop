@@ -24,6 +24,7 @@
 namespace Ui {
 
 const QString kQEllipsis = u"..."_q;
+const QString kQBullet = QString::fromUtf8("\xE2\x80\xA2");
 
 } // namespace Ui
 
@@ -131,7 +132,7 @@ void SpoilerMessCache::reset() {
 not_null<SpoilerMessCache*> DefaultSpoilerCache() {
 	struct Data {
 		Data() : cache(kDefaultSpoilerCacheCapacity) {
-			style::PaletteChanged() | rpl::start_with_next([=] {
+			style::PaletteChanged() | rpl::on_next([=] {
 				cache.reset();
 			}, lifetime);
 		}
@@ -647,7 +648,7 @@ void String::recountNaturalSize(
 	if (width > 0) {
 		const auto useSkipHeight = (_blocks.back()->type() == TextBlockType::Skip)
 			&& (_words.back().f_width() == width);
-		_minHeight += qpadding.top() + qpadding.bottom();
+		_minHeight += qpadding.bottom();
 		if (qlinesleft != 0) {
 			_minHeight += useSkipHeight
 				? _blocks.back().unsafe<SkipBlock>().height()
@@ -737,6 +738,37 @@ void String::setLink(uint16 index, const ClickHandlerPtr &link) {
 	}
 }
 
+TextSelection String::linkRangeFor(const ClickHandlerPtr &link) const {
+	if (!_extended || !link) {
+		return {};
+	}
+	const auto index = [&] {
+		const auto &links = _extended->links;
+		for (auto i = 0, count = int(links.size()); i != count; ++i) {
+			if (links[i] == link) {
+				return uint16(i + 1);
+			}
+		}
+		return uint16(0);
+	}();
+	if (!index) {
+		return {};
+	}
+	auto from = uint16(_text.size());
+	auto to = uint16(0);
+	for (auto i = 0, count = int(_blocks.size()); i != count; ++i) {
+		if (_blocks[i]->linkIndex() == index) {
+			const auto position = _blocks[i]->position();
+			const auto end = (i + 1 < count)
+				? _blocks[i + 1]->position()
+				: uint16(_text.size());
+			from = std::min(from, position);
+			to = std::max(to, end);
+		}
+	}
+	return (from < to) ? TextSelection{ from, to } : TextSelection{};
+}
+
 void String::setSpoilerRevealed(bool revealed, anim::type animated) {
 	const auto data = _extended ? _extended->spoiler.get() : nullptr;
 	if (!data) {
@@ -768,6 +800,24 @@ void String::setSpoilerLinkFilter(Fn<bool(const ClickContext&)> filter) {
 	_extended->spoiler->link = std::make_shared<SpoilerClickHandler>(
 		this,
 		std::move(filter));
+}
+
+bool String::hasCustomEmoji() const {
+	return _hasCustomEmoji;
+}
+
+void String::setCustomEmojiClickHandler(
+		Fn<bool(QStringView)> predicate,
+		Fn<void(QStringView, ClickContext)> callback) {
+	if (!_hasCustomEmoji) {
+		return;
+	}
+	const auto extended = ensureExtended();
+	extended->customEmoji = std::make_unique<CustomEmojiData>();
+	const auto data = extended->customEmoji.get();
+	data->predicate = std::move(predicate);
+	data->callback = std::move(callback);
+	data->link = std::make_shared<CustomEmojiClickHandler>(data);
 }
 
 void String::setBlockquoteExpandCallback(
@@ -908,7 +958,7 @@ void String::insertModifications(int position, int delta) {
 		modifications.insert(i, {
 			.position = position,
 			.skipped = uint16(delta < 0 ? (-delta) : 0),
-			.added = (delta > 0),
+			.added = uint16(delta > 0 ? 1 : 0),
 		});
 	}
 }
@@ -923,13 +973,31 @@ void String::removeModificationsAfter(int size) {
 		if (i->position > size) {
 			i = modifications.erase(i);
 		} else if (i->position == size) {
-			i->added = false;
+			i->added = 0;
 			if (!i->skipped) {
 				i = modifications.erase(i);
 			}
 		} else {
 			break;
 		}
+	}
+}
+
+void String::insertReplacement(int position, int skipped, int added) {
+	auto &modifications = ensureExtended()->modifications;
+	auto i = end(modifications);
+	while (i != begin(modifications) && (i - 1)->position > position) {
+		--i;
+	}
+	if (i != end(modifications) && i->position == position) {
+		i->skipped += uint16(skipped);
+		i->added += uint16(added);
+	} else {
+		modifications.insert(i, {
+			.position = position,
+			.skipped = uint16(skipped),
+			.added = uint16(added),
+		});
 	}
 }
 
@@ -1618,6 +1686,10 @@ bool String::hasNotEmojiAndSpaces() const {
 const std::vector<Modification> &String::modifications() const {
 	static const auto kEmpty = std::vector<Modification>();
 	return _extended ? _extended->modifications : kEmpty;
+}
+
+int32 String::nextFormattedDateUpdate() const {
+	return _extended ? _extended->nextFormattedDateUpdate : 0;
 }
 
 QString String::toString(TextSelection selection) const {

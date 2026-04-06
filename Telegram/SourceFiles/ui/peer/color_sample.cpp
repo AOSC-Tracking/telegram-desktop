@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/chat/chat_style.h"
 #include "ui/color_contrast.h"
 #include "ui/painter.h"
+#include "ui/rect.h"
 #include "ui/text/text_utilities.h"
 #include "ui/widgets/buttons.h"
 #include "styles/style_settings.h"
@@ -33,15 +34,17 @@ ColorSample::ColorSample(
 	std::shared_ptr<Ui::ChatStyle> style,
 	rpl::producer<uint8> colorIndex,
 	rpl::producer<std::shared_ptr<Ui::ColorCollectible>> collectible,
-	const QString &name)
+	rpl::producer<QString> name)
 : AbstractButton(parent)
 , _style(style) {
 	rpl::combine(
 		std::move(colorIndex),
-		std::move(collectible)
-	) | rpl::start_with_next([=](
+		std::move(collectible),
+		std::move(name)
+	) | rpl::on_next([=](
 			uint8 index,
-			std::shared_ptr<Ui::ColorCollectible> collectible) {
+			std::shared_ptr<Ui::ColorCollectible> collectible,
+			const QString &nameValue) {
 		_index = index;
 		_collectible = std::move(collectible);
 		if (const auto raw = _collectible.get()) {
@@ -53,7 +56,7 @@ ColorSample::ColorSample(
 				kMarkupTextOptions,
 				std::move(context));
 		} else {
-			_name.setText(st::semiboldTextStyle, name);
+			_name.setText(st::semiboldTextStyle, nameValue);
 		}
 		setNaturalWidth([&] {
 			if (_name.isEmpty() || _style->colorPatternIndex(_index)) {
@@ -135,12 +138,23 @@ void ColorSample::paintEvent(QPaintEvent *e) {
 		if (selected > 0) {
 			const auto line = st::settingsColorRadioStroke * 1.;
 			const auto thickness = selected * line;
-			auto pen = st::boxBg->p;
-			pen.setWidthF(thickness);
-			p.setBrush(Qt::NoBrush);
-			p.setPen(pen);
 			const auto skip = 1.5 * line;
-			p.drawEllipse(full.marginsRemoved({ skip, skip, skip, skip }));
+			const auto rect = full - Margins(skip);
+			if (_selectionCutout) {
+				p.save();
+				p.setCompositionMode(QPainter::CompositionMode_Clear);
+				auto pen = QPen(Qt::transparent, thickness);
+				p.setBrush(Qt::NoBrush);
+				p.setPen(pen);
+				p.drawEllipse(rect);
+				p.restore();
+			} else {
+				auto pen = st::boxBg->p;
+				pen.setWidthF(thickness);
+				p.setBrush(Qt::NoBrush);
+				p.setPen(pen);
+				p.drawEllipse(rect);
+			}
 		}
 		return;
 	}
@@ -252,12 +266,23 @@ void ColorSample::paintEvent(QPaintEvent *e) {
 		if (selected > 0) {
 			const auto line = st::settingsColorRadioStroke * 1.;
 			const auto thickness = selected * line;
-			auto pen = st::boxBg->p;
-			pen.setWidthF(thickness);
-			p.setBrush(Qt::NoBrush);
-			p.setPen(pen);
 			const auto skip = 1.5 * line;
-			p.drawEllipse(full.marginsRemoved({ skip, skip, skip, skip }));
+			const auto rect = full - Margins(skip);
+			if (_selectionCutout) {
+				p.save();
+				p.setCompositionMode(QPainter::CompositionMode_Clear);
+				auto pen = QPen(Qt::transparent, thickness);
+				p.setBrush(Qt::NoBrush);
+				p.setPen(pen);
+				p.drawEllipse(rect);
+				p.restore();
+			} else {
+				auto pen = st::boxBg->p;
+				pen.setWidthF(thickness);
+				p.setBrush(Qt::NoBrush);
+				p.setPen(pen);
+				p.drawEllipse(rect);
+			}
 		}
 	}
 }
@@ -282,6 +307,15 @@ void ColorSample::setForceCircle(bool force) {
 	update();
 }
 
+void ColorSample::setSelectionCutout(bool cutout) {
+	if (_selectionCutout == cutout) {
+		return;
+	}
+	_selectionCutout = cutout;
+	setAttribute(Qt::WA_TranslucentBackground, cutout);
+	update();
+}
+
 ColorSelector::ColorSelector(
 	not_null<QWidget*> parent,
 	std::shared_ptr<ChatStyle> style,
@@ -295,7 +329,7 @@ ColorSelector::ColorSelector(
 , _isProfileMode(false) {
 	std::move(
 		indices
-	) | rpl::start_with_next([=](std::vector<uint8> indices) {
+	) | rpl::on_next([=](std::vector<uint8> indices) {
 		fillFrom(std::move(indices));
 	}, lifetime());
 	setupSelectionTracking();
@@ -385,7 +419,7 @@ void ColorSelector::setupSelectionTracking() {
 	}
 	_index.value(
 	) | rpl::combine_previous(
-	) | rpl::start_with_next([=](uint8 was, uint8 now) {
+	) | rpl::on_next([=](uint8 was, uint8 now) {
 		const auto i = ranges::find(_samples, was, &ColorSample::index);
 		if (i != end(_samples)) {
 			i->get()->setSelected(false);

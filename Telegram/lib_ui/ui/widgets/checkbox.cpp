@@ -6,8 +6,8 @@
 //
 #include "ui/widgets/checkbox.h"
 
-#include "base/screen_reader_state.h"
 #include "ui/effects/ripple_animation.h"
+#include "ui/screen_reader_mode.h"
 #include "ui/basic_click_handlers.h"
 #include "ui/ui_utility.h"
 #include "ui/painter.h"
@@ -287,7 +287,7 @@ Fn<void()> CheckView::PrepareNonToggledError(
 	view->checkedChanges(
 	) | rpl::filter([=](bool checked) {
 		return checked;
-	}) | rpl::start_with_next([=] {
+	}) | rpl::on_next([=] {
 		state->error = false;
 		view->setUntoggledOverride(std::nullopt);
 	}, lifetime);
@@ -314,6 +314,68 @@ Fn<void()> CheckView::PrepareNonToggledError(
 			1.,
 			st::defaultCheck.duration);
 	};
+}
+
+RoundCheckView::RoundCheckView(
+	const style::Check &st,
+	bool checked,
+	Fn<void()> updateCallback)
+: AbstractCheckView(st.duration, checked, std::move(updateCallback))
+, _st(&st) {
+}
+
+QSize RoundCheckView::getSize() const {
+	return QSize(_st->diameter, _st->diameter);
+}
+
+void RoundCheckView::setStyle(const style::Check &st) {
+	_st = &st;
+}
+
+void RoundCheckView::paint(QPainter &p, int left, int top, int outerWidth) {
+	auto toggled = currentAnimationValue();
+	auto pen = _untoggledOverride
+		? anim::pen(*_untoggledOverride, _st->toggledFg, toggled)
+		: anim::pen(_st->untoggledFg, _st->toggledFg, toggled);
+	pen.setWidth(_st->thickness);
+	p.setPen(pen);
+	p.setBrush(anim::brush(
+		_st->bg,
+		(_untoggledOverride
+			? anim::color(*_untoggledOverride, _st->toggledFg, toggled)
+			: anim::color(_st->untoggledFg, _st->toggledFg, toggled)),
+		toggled));
+
+	{
+		PainterHighQualityEnabler hq(p);
+		const auto remove = _st->thickness / 2.;
+		p.drawEllipse(style::rtlrect(
+			QRectF(left, top, _st->diameter, _st->diameter).marginsRemoved(
+				QMarginsF(remove, remove, remove, remove)), outerWidth));
+	}
+
+	if (toggled > 0) {
+		_st->icon.paint(p, QPoint(left, top), outerWidth);
+	}
+}
+
+QSize RoundCheckView::rippleSize() const {
+	return getSize()
+		+ 2 * QSize(_st->rippleAreaPadding, _st->rippleAreaPadding);
+}
+
+QImage RoundCheckView::prepareRippleMask() const {
+	return RippleAnimation::EllipseMask(rippleSize());
+}
+
+bool RoundCheckView::checkRippleStartPosition(QPoint position) const {
+	return QRect(QPoint(0, 0), rippleSize()).contains(position);
+}
+
+void RoundCheckView::setUntoggledOverride(
+		std::optional<QColor> untoggledOverride) {
+	_untoggledOverride = untoggledOverride;
+	update();
 }
 
 RadioView::RadioView(
@@ -505,7 +567,7 @@ Checkbox::Checkbox(
 	setCursor(style::cur_pointer);
 	std::move(
 		text
-	) | rpl::start_with_next([=](const TextWithEntities &value) {
+	) | rpl::on_next([=](const TextWithEntities &value) {
 		setMarkedText(value);
 	}, lifetime());
 }
@@ -882,7 +944,7 @@ void RadiobuttonGroup::setValue(int value) {
 	}
 	_hasValue = true;
 	_value = value;
-	for (const auto button : _buttons) {
+	for (const auto &button : _buttons) {
 		button->handleNewGroupValue(_value);
 	}
 	const auto guard = weak_from_this();
@@ -943,7 +1005,7 @@ Radiobutton::Radiobutton(
 	checkbox()->checkedChanges(
 	) | rpl::filter(
 		_1
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		_group->setValue(_value);
 	}, lifetime());
 
@@ -951,10 +1013,7 @@ Radiobutton::Radiobutton(
 }
 
 void Radiobutton::trackScreenReaderState() {
-	const auto reader = base::ScreenReaderState::Instance();
-	if (checkbox()->checked() && reader->active()) {
-		// We had a group without checked item before,
-		// so they all wrongfully have StrongFocus policy.
+	if (checkbox()->checked() && Ui::ScreenReaderModeActive()) {
 		for (const auto &button : _group->_buttons) {
 			if (button != this) {
 				button->setFocusPolicy(Qt::NoFocus);
@@ -966,9 +1025,9 @@ void Radiobutton::trackScreenReaderState() {
 		return std::make_optional(v);
 	});
 	rpl::combine(
-		reader->activeValue(),
+		Ui::ScreenReaderModeActiveValue(),
 		(_group->hasValue()
-			? std::move(maybeValue) | rpl::type_erased()
+			? (std::move(maybeValue) | rpl::type_erased)
 			: rpl::single(
 				std::optional<int>()
 			) | rpl::then(std::move(maybeValue)))
@@ -984,7 +1043,7 @@ void Radiobutton::trackScreenReaderState() {
 			}
 		}
 		return Qt::StrongFocus;
-	}) | rpl::start_with_next([=](Qt::FocusPolicy value) {
+	}) | rpl::on_next([=](Qt::FocusPolicy value) {
 		if (focusPolicy() != value) {
 			setFocusPolicy(value);
 		}
@@ -1063,6 +1122,14 @@ Radiobutton::~Radiobutton() {
 
 AccessibilityState Checkbox::accessibilityState() const {
 	return { .checkable = true, .checked = checked() };
+}
+
+void Checkbox::accessibilityDoAction(const QString &name) {
+	if (name == QAccessibleActionInterface::pressAction()) {
+		if (!isDisabled()) {
+			handlePress();
+		}
+	}
 }
 
 bool Checkbox::isSubmitEvent(not_null<QKeyEvent*> e) const {

@@ -19,11 +19,11 @@ InnerDropdown::InnerDropdown(
 	const style::InnerDropdown &st)
 : RpWidget(parent)
 , _st(st)
-, _roundRect(ImageRoundRadius::Small, _st.bg)
+, _roundRect(st::innerDropdownRadius, _st.bg)
 , _hideTimer([=] { hideAnimated(); })
 , _scroll(this, _st.scroll) {
 	_scroll->scrolls(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		scrolled();
 	}, lifetime());
 
@@ -39,7 +39,7 @@ InnerDropdown::InnerDropdown(
 	}) | rpl::flatten_latest(
 	) | rpl::filter([=] {
 		return !isHidden();
-	}) | rpl::start_with_next([=] {
+	}) | rpl::on_next([=] {
 		leaveEvent(nullptr);
 	}, lifetime());
 }
@@ -48,7 +48,7 @@ QPointer<RpWidget> InnerDropdown::doSetOwnedWidget(
 		object_ptr<RpWidget> widget) {
 	auto result = QPointer<RpWidget>(widget);
 	widget->heightValue(
-	) | rpl::skip(1) | rpl::start_with_next([=] {
+	) | rpl::skip(1) | rpl::on_next([=] {
 		resizeToContent();
 	}, widget->lifetime());
 	auto container = _scroll->setOwnedWidget(
@@ -150,7 +150,16 @@ void InnerDropdown::leaveEventHook(QEvent *e) {
 
 void InnerDropdown::otherEnter() {
 	if (_autoHiding) {
-		showAnimated(_origin);
+		if (const auto widget = static_cast<RpWidget*>(_scroll->widget())) {
+			const auto weak = base::make_weak(widget);
+			SendPendingMoveResizeEvents(widget);
+			if (weak.get()) {
+				const auto padding = _st.scrollPadding;
+				if (widget->height() > padding.top() + padding.bottom()) {
+					showAnimated(_origin);
+				}
+			}
+		}
 	}
 }
 
@@ -179,11 +188,15 @@ void InnerDropdown::showAnimated() {
 }
 
 void InnerDropdown::hideAnimated(HideOption option) {
-	if (isHidden()) return;
+	if (isHidden()) {
+		return;
+	}
 	if (option == HideOption::IgnoreShow) {
 		_ignoreShowEvents = true;
 	}
-	if (_hiding) return;
+	if (_hiding) {
+		return;
+	}
 
 	_hideTimer.cancel();
 	startOpacityAnimation(true);
@@ -209,18 +222,32 @@ void InnerDropdown::showFast() {
 	finishAnimating();
 	if (isHidden()) {
 		showChildren();
-		show();
+		saveFocusWidgetAndShow();
 	}
 	_hiding = false;
 }
 
 void InnerDropdown::hideFast() {
-	if (isHidden()) return;
-
+	if (isHidden()) {
+		return;
+	}
 	_hideTimer.cancel();
 	finishAnimating();
 	_hiding = false;
 	hideFinished();
+}
+
+void InnerDropdown::saveFocusWidgetAndShow() {
+	_savedFocusWidget = window()->focusWidget();
+	show();
+}
+
+void InnerDropdown::maybeReturnFocus() {
+	if (const auto was = base::take(_savedFocusWidget).data()) {
+		if (InFocusChain(this)) {
+			was->setFocus();
+		}
+	}
 }
 
 void InnerDropdown::hideFinished() {
@@ -230,7 +257,8 @@ void InnerDropdown::hideFinished() {
 	_ignoreShowEvents = false;
 	if (!isHidden()) {
 		const auto weak = base::make_weak(this);
-		if (const auto onstack = _hiddenCallback) {
+		maybeReturnFocus();
+		if (const auto onstack = weak ? _hiddenCallback : nullptr) {
 			onstack();
 		}
 		if (weak) {
@@ -257,7 +285,8 @@ void InnerDropdown::prepareCache() {
 void InnerDropdown::startOpacityAnimation(bool hiding) {
 	const auto weak = base::make_weak(this);
 	if (hiding) {
-		if (const auto onstack = _hideStartCallback) {
+		maybeReturnFocus();
+		if (const auto onstack = weak ? _hideStartCallback : nullptr) {
 			onstack();
 		}
 	} else if (const auto onstack = _showStartCallback) {
@@ -279,9 +308,10 @@ void InnerDropdown::startOpacityAnimation(bool hiding) {
 }
 
 void InnerDropdown::showStarted() {
-	if (_ignoreShowEvents) return;
-	if (isHidden()) {
-		show();
+	if (_ignoreShowEvents) {
+		return;
+	} else if (isHidden()) {
+		saveFocusWidgetAndShow();
 		startShowAnimation();
 		return;
 	} else if (!_hiding) {
@@ -303,9 +333,9 @@ void InnerDropdown::startShowAnimation() {
 		const auto pixelRatio = style::DevicePixelRatio();
 		_showAnimation = std::make_unique<PanelAnimation>(_st.animation, _origin);
 		auto inner = rect().marginsRemoved(_st.padding);
-		_showAnimation->setFinalImage(std::move(cache), QRect(inner.topLeft() * pixelRatio, inner.size() * pixelRatio));
+		_showAnimation->setFinalImage(std::move(cache), QRect(inner.topLeft() * pixelRatio, inner.size() * pixelRatio), st::innerDropdownRadius);
 		_showAnimation->setCornerMasks(
-			Images::CornersMask(ImageRoundRadius::Small));
+			Images::CornersMask(st::innerDropdownRadius));
 		_showAnimation->start();
 	}
 	hideChildren();

@@ -7,71 +7,48 @@ namespace GLib = gi::repository::GLib;
 namespace GObject_ = gi::repository::GObject;
 namespace Gio = gi::repository::Gio;
 
-template<typename R>
-class async_result_promise_type_t : public promise_type_t<R>
+class async_result
 {
-public:
-  Gio::Cancellable cancel_;
-};
+  using p_type = co_promise<Gio::AsyncResult>;
 
-template<typename RESULT = Gio::AsyncResult>
-class async_result : public task<RESULT, async_result_promise_type_t<RESULT>>
-{
-public:
-  using super_type = task<RESULT, async_result_promise_type_t<RESULT>>;
-
-  using super_type::super_type;
-
-  using super_type::await_suspend;
-
-  // NOTE; in general, if await_ready == false, then there is no result yet,
-  // so the handle's frame should not have co_return'ed yet
-  // so the handle/promise should still be valid
-
-  template<typename OR>
-  void await_suspend(
-      std::coroutine_handle<async_result_promise_type_t<OR>> handle)
+  // protect against cancellation/destruction of async call stack
+  struct state
   {
-    // propagate cancellable
-    // the handle should be valid
-    // (as await_ready == false, otherwise no suspend should happen)
-    handle.promise().cancel_ = this->promise().cancel_;
-    // usual suspend
-    super_type::await_suspend(handle);
+    p_type p_;
+    Gio::Cancellable cancel_;
+  };
+
+  std::shared_ptr<state> s_ = std::make_shared<state>();
+
+public:
+  ~async_result()
+  {
+    auto c = cancellable(false);
+    if (c)
+      c.cancel();
   }
 
   operator Gio::AsyncReadyCallback()
   {
-    // only makes sense in default case
-    static_assert(std::is_same<RESULT, Gio::AsyncResult>::value, "");
-    if (this->p_) {
-      // setup for new gio call
-      this->result_ = this->p_->get_return_object(true).f;
-      // also arrange for new cancellable below
-      this->p_->cancel_ = nullptr;
-      return [this](GObject_::Object, Gio::AsyncResult result) {
-        this->promise().return_value(std::move(result));
-      };
-    } else {
-      // so this task is the result of a coroutine frame
-      // then it should be completed by the latter, not a Gio callback
-      g_warning("no callback to complete coroutine");
-      return nullptr;
-    }
+    // setup for new gio call
+    s_->p_.reset();
+    return [wp = std::weak_ptr(s_)](GObject_::Object, Gio::AsyncResult result) {
+      if (auto sp = wp.lock(); sp) {
+        // clear state for subsequent re-use if needed
+        if (sp->cancel_ && sp->cancel_.is_cancelled())
+          sp->cancel_ = nullptr;
+        sp->p_.set_value(result);
+        sp->p_.resume();
+      }
+    };
   }
 
-  Gio::Cancellable cancellable()
+  Gio::Cancellable cancellable(bool create = true)
   {
-    Gio::Cancellable ret;
-    if (this->p_) {
-      if (!this->p_->cancel_)
-        this->p_->cancel_ = Gio::Cancellable::new_();
-      ret = this->p_->cancel_;
-    } else if (!this->await_ready()) {
-      // no create here, only propagate
-      ret = this->promise().cancel_;
-    }
-    return ret;
+    auto &s = *s_;
+    if (!s.cancel_ && create)
+      s.cancel_ = Gio::Cancellable::new_();
+    return s.cancel_;
   }
 
   static Gio::Cancellable timeout(
@@ -83,13 +60,22 @@ public:
     }
     return cancel;
   }
+
+  auto operator co_await() { return s_->p_.operator co_await(); }
 };
 
-async_result<void>
+task<void>
 sleep_for(std::chrono::milliseconds to)
 {
-  async_result<void> w;
-  GLib::timeout_add_once(to.count(), [&w] { w.promise().return_void(); });
+  co_promise<void> w;
+  GLib::SourceFunc func = [&w]() {
+    w.set_value();
+    w.resume();
+    return GLib::SOURCE_REMOVE_;
+  };
+  auto id = GLib::timeout_add(to.count(), func);
+  // scope guard on w in case task stack gets dropped
+  GLib::SourceScopedConnection guard = gi::make_connection(id, func);
   co_await w;
   co_return;
 }
@@ -140,6 +126,7 @@ async_handle_client(Gio::SocketConnection conn)
   async_result w;
 
   // say hello
+  std::cout << "server: hello" << std::endl;
   auto os = conn.get_output_stream();
   std::string msg = "hello ";
   os.write_all_async(
@@ -152,6 +139,7 @@ async_handle_client(Gio::SocketConnection conn)
     guint8 data[1024];
     // give up if timeout
     GLib::Error error;
+    std::cout << "server: reading ..." << std::endl;
     is.read_async(data, sizeof(data), GLib::PRIORITY_DEFAULT_,
         w.timeout(std::chrono::milliseconds(200), w.cancellable()), w);
     auto size = gi::expect(is.read_finish(co_await w, &error));
@@ -190,12 +178,13 @@ async_server(int clients, int &port)
     // spawn client handler
     std::cout << "server: new connection" << std::endl;
     // task will run itself to completion, no need to wait/watch it here
-    async_handle_client(conn);
+    async_handle_client(conn).detach();
     ++count;
   }
 
   // wait a bit more and shutdown, because we can
   co_await sleep_for(std::chrono::milliseconds(1000));
+  std::cout << "server going down" << std::endl;
 }
 
 void
@@ -212,14 +201,15 @@ async_demo(GLib::MainLoop loop, int clients)
     ++count;
     // client task runs to completion, no need to wait/watch
     // NOTE this frame will stay alive, so count ref is valid
-    async_client(port, i, count);
+    async_client(port, i, count).detach();
   }
 
   // plain-and-simple; poll regularly and quit when all clients done
-  task<void> cd;
+  co_promise<void> cd;
   auto check = [&]() -> gboolean {
     if (!count) {
-      cd.promise().return_void();
+      cd.set_value();
+      cd.resume();
       return G_SOURCE_REMOVE;
     }
     return G_SOURCE_CONTINUE;
@@ -229,13 +219,15 @@ async_demo(GLib::MainLoop loop, int clients)
   auto wait = [&]() -> task<void> {
     // wait clients
     co_await cd;
+    std::cout << "clients down" << std::endl;
     // server should also have completed
     co_await server;
     std::cout << "server down" << std::endl;
     loop.quit();
   };
 
-  wait();
+  // avoid destruct, alternatively detach()
+  auto w = wait();
 
   std::cout << "running loop" << std::endl;
   loop.run();

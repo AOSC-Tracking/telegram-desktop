@@ -28,12 +28,19 @@ namespace {
 constexpr auto kMinimalSchedule = TimeId(10);
 
 QString DayString(const QDate &date) {
-	return tr::lng_month_day(
-		tr::now,
-		lt_month,
-		Lang::MonthDay(date.month())(tr::now),
-		lt_day,
-		QString::number(date.day()));
+	const auto month = Lang::MonthDay(date.month())(tr::now);
+	const auto day = QString::number(date.day());
+	if (date.year() != QDate::currentDate().year()) {
+		return tr::lng_month_day_year(
+			tr::now,
+			lt_month,
+			month,
+			lt_day,
+			day,
+			lt_year,
+			QString::number(date.year()));
+	}
+	return tr::lng_month_day(tr::now, lt_month, month, lt_day, day);
 }
 
 QString TimeString(QTime time) {
@@ -95,7 +102,7 @@ ChooseDateTimeBoxDescriptor ChooseDateTimeBox(
 	});
 
 	state->date.value(
-	) | rpl::start_with_next([=](QDate date) {
+	) | rpl::on_next([=](QDate date) {
 		state->day->setText(DayString(date));
 		state->time->setFocusFast();
 	}, state->day->lifetime());
@@ -129,7 +136,7 @@ ChooseDateTimeBoxDescriptor ChooseDateTimeBox(
 		return base::EventFilterResult::Continue;
 	});
 
-	state->at->widthValue() | rpl::start_with_next([=](int width) {
+	state->at->widthValue() | rpl::on_next([=](int width) {
 		const auto full = st::scheduleDateWidth
 			+ st::scheduleAtSkip
 			+ width
@@ -140,7 +147,7 @@ ChooseDateTimeBoxDescriptor ChooseDateTimeBox(
 	}, state->at->lifetime());
 
 	content->widthValue(
-	) | rpl::start_with_next([=](int width) {
+	) | rpl::on_next([=](int width) {
 		const auto paddings = width
 			- state->at->width()
 			- 2 * st::scheduleAtSkip
@@ -164,7 +171,7 @@ ChooseDateTimeBoxDescriptor ChooseDateTimeBox(
 		= content->lifetime().make_state<base::weak_qptr<CalendarBox>>();
 	const auto calendarStyle = args.style.calendarStyle;
 	state->day->focusedChanges(
-	) | rpl::start_with_next([=](bool focused) {
+	) | rpl::on_next([=](bool focused) {
 		if (*calendar || !focused) {
 			return;
 		}
@@ -172,16 +179,18 @@ ChooseDateTimeBoxDescriptor ChooseDateTimeBox(
 			Box<CalendarBox>(Ui::CalendarBoxArgs{
 				.month = state->date.current(),
 				.highlighted = state->date.current(),
-				.callback = crl::guard(box, [=](QDate chosen) {
+				.callback = crl::guard(box, [=](
+						QDate chosen,
+						Fn<void()> close) {
 					state->date = chosen;
-					(*calendar)->closeBox();
+					close();
 				}),
 				.minDate = minDate(),
 				.maxDate = maxDate(),
 				.stColors = *calendarStyle,
 			}));
 		(*calendar)->boxClosing(
-		) | rpl::start_with_next(crl::guard(state->time, [=] {
+		) | rpl::on_next(crl::guard(state->time, [=] {
 			state->time->setFocusFast();
 		}), (*calendar)->lifetime());
 	}, state->day->lifetime());
@@ -210,7 +219,7 @@ ChooseDateTimeBoxDescriptor ChooseDateTimeBox(
 		}
 	};
 	state->time->submitRequests(
-	) | rpl::start_with_next(save, state->time->lifetime());
+	) | rpl::on_next(save, state->time->lifetime());
 
 	auto result = ChooseDateTimeBoxDescriptor();
 	box->setFocusCallback([=] { state->time->setFocusFast(); });
@@ -267,10 +276,10 @@ object_ptr<Ui::RpWidget> ChooseRepeatPeriod(
 	rpl::combine(
 		raw->widthValue(),
 		label->naturalWidthValue()
-	) | rpl::start_with_next([=](int outer, int natural) {
+	) | rpl::on_next([=](int outer, int natural) {
 		label->resizeToWidth(std::min(outer, natural));
 	}, raw->lifetime());
-	label->heightValue() | rpl::start_with_next([=](int height) {
+	label->heightValue() | rpl::on_next([=](int height) {
 		raw->resize(raw->width(), height);
 	}, label->lifetime());
 
@@ -287,10 +296,10 @@ object_ptr<Ui::RpWidget> ChooseRepeatPeriod(
 	rpl::combine(
 		state->value.value(),
 		state->locked.value()
-	) | rpl::start_with_next([=](TimeId value, bool locked) {
+	) | rpl::on_next([=](TimeId value, bool locked) {
 		auto result = tr::lng_schedule_repeat_label(
 			tr::now,
-			Ui::Text::WithEntities);
+			tr::marked);
 
 		const auto text = [&] {
 			const auto i = ranges::lower_bound(
@@ -301,8 +310,8 @@ object_ptr<Ui::RpWidget> ChooseRepeatPeriod(
 			return (i != end(map)) ? i->text : map.back().text;
 		}();
 
-		label->setMarkedText(result.append(' ').append(Ui::Text::Link(
-			Ui::Text::Bold(text).append(
+		label->setMarkedText(result.append(' ').append(tr::link(
+			tr::bold(text).append(
 				Ui::Text::IconEmoji(locked
 					? &st::scheduleRepeatDropdownLock
 					: &st::scheduleRepeatDropdownArrow))

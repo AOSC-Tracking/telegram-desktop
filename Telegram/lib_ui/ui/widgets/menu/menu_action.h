@@ -17,7 +17,7 @@ namespace Ui::Menu {
 class Action : public ItemBase {
 public:
 	Action(
-		not_null<RpWidget*> parent,
+		not_null<Menu*> parent,
 		const style::Menu &st,
 		not_null<QAction*> action,
 		const style::icon *icon,
@@ -29,6 +29,9 @@ public:
 	QString accessibilityName() override {
 		return _action->text();
 	}
+	int accessibilityChildCount() const override;
+	QAccessible::Role accessibilityChildRole() const override;
+	QAccessible::State accessibilityChildState(int index) const override;
 
 	[[nodiscard]] const style::Menu &st() const;
 

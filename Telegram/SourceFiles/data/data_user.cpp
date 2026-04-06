@@ -33,6 +33,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_wall_paper.h"
 #include "data/notify/data_notify_settings.h"
 #include "history/history.h"
+#include "history/history_item.h"
 #include "api/api_peer_photo.h"
 #include "apiwrap.h"
 #include "lang/lang_keys.h"
@@ -315,6 +316,36 @@ void UserData::setPersonalChannel(ChannelId channelId, MsgId messageId) {
 		_personalChannelMessageId = messageId;
 		session().changes().peerUpdated(this, UpdateFlag::PersonalChannel);
 	}
+}
+
+UserId UserData::botManagerId() const {
+	return _botManagerId;
+}
+
+void UserData::setBotManagerId(UserId managerId) {
+	const auto changed = (_botManagerId != managerId);
+	_botManagerId = managerId;
+	if (changed) {
+		session().changes().peerUpdated(this, UpdateFlag::ManagedBot);
+	}
+}
+
+MTPInputUser UserData::inputUser() const {
+	const auto item = isLoaded() ? nullptr : owner().messageWithPeer(id);
+	if (item) {
+		const auto peer = item->history()->peer;
+		Assert(peer.get() != this);
+
+		return MTP_inputUserFromMessage(
+			item->history()->peer->input(),
+			MTP_int(item->id.bare),
+			MTP_long(peerToUser(id).bare));
+	} else if (isSelf()) {
+		return MTP_inputUserSelf();
+	}
+	return MTP_inputUser(
+		MTP_long(peerToUser(id).bare),
+		MTP_long(_accessHash));
 }
 
 void UserData::setName(
@@ -627,6 +658,21 @@ bool UserData::readDatesPrivate() const {
 	return (flags() & UserDataFlag::ReadDatesPrivate);
 }
 
+bool UserData::allowsForwarding() const {
+	return !(flags() & Flag::NoForwardsMyEnabled)
+		&& !(flags() & Flag::NoForwardsPeerEnabled);
+}
+
+void UserData::setNoForwardsFlags(bool myEnabled, bool peerEnabled) {
+	const auto mask = Flag::NoForwardsMyEnabled | Flag::NoForwardsPeerEnabled;
+	setFlags((flags() & ~mask)
+		| (myEnabled ? Flag::NoForwardsMyEnabled : Flag())
+		| (peerEnabled ? Flag::NoForwardsPeerEnabled : Flag()));
+	if (!myEnabled && !peerEnabled) {
+		owner().clearSharingDisabledTime(this);
+	}
+}
+
 int UserData::starsPerMessage() const {
 	return _starsPerMessage;
 }
@@ -917,7 +963,7 @@ void ApplyUserUpdate(not_null<UserData*> user, const MTPDuserFull &update) {
 				}
 				creditsLoadLifetime->destroy();
 			});
-			base::timer_once(kTimeout) | rpl::start_with_next([=] {
+			base::timer_once(kTimeout) | rpl::on_next([=] {
 				creditsLoadLifetime->destroy();
 			}, *creditsLoadLifetime);
 			const auto currencyLoadLifetime
@@ -930,13 +976,13 @@ void ApplyUserUpdate(not_null<UserData*> user, const MTPDuserFull &update) {
 				}
 				currencyLoadLifetime->destroy();
 			};
-			currencyLoad->request() | rpl::start_with_error_done(
+			currencyLoad->request() | rpl::on_error_done(
 				[=](const QString &error) {
 					apply(CreditsAmount(0, CreditsType::Ton));
 				},
 				[=] { apply(currencyLoad->data().currentBalance); },
 				*currencyLoadLifetime);
-			base::timer_once(kTimeout) | rpl::start_with_next([=] {
+			base::timer_once(kTimeout) | rpl::on_next([=] {
 				currencyLoadLifetime->destroy();
 			}, *currencyLoadLifetime);
 		}
@@ -959,6 +1005,7 @@ void ApplyUserUpdate(not_null<UserData*> user, const MTPDuserFull &update) {
 	user->setPersonalChannel(
 		update.vpersonal_channel_id().value_or_empty(),
 		update.vpersonal_channel_message().value_or_empty());
+	user->setBotManagerId(update.vbot_manager_id().value_or_empty());
 	if (user->isSelf()) {
 		user->owner().businessInfo().applyAwaySettings(
 			FromMTP(&user->owner(), update.vbusiness_away_message()));
@@ -1016,6 +1063,10 @@ void ApplyUserUpdate(not_null<UserData*> user, const MTPDuserFull &update) {
 	} else {
 		user->setNote(TextWithEntities());
 	}
+
+	user->setNoForwardsFlags(
+		update.is_noforwards_my_enabled(),
+		update.is_noforwards_peer_enabled());
 
 	user->fullUpdated();
 }

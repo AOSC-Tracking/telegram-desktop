@@ -193,7 +193,7 @@ constexpr auto kSponsoredUserpicLines = 2;
 
 [[nodiscard]] TextWithEntities PageToPhrase(not_null<WebPageData*> page) {
 	const auto type = page->type;
-	const auto text = Ui::Text::Upper(page->iv
+	const auto text = tr::upper(page->iv
 		? tr::lng_view_button_iv(tr::now)
 		: page->uniqueGift
 		? tr::lng_view_button_collectible(tr::now)
@@ -237,11 +237,19 @@ constexpr auto kSponsoredUserpicLines = 2;
 		? tr::lng_view_button_storyalbum(tr::now)
 		: (type == WebPageType::GiftCollection)
 		? tr::lng_view_button_collection(tr::now)
+		: (type == WebPageType::NewBot)
+		? tr::lng_view_button_newbot(tr::now)
 		: (type == WebPageType::Auction)
-		? (page->auction && page->auction->endDate
+		? ((page->auction
+			&& page->auction->endDate
 			&& page->auction->endDate <= base::unixtime::now())
 			? tr::lng_auction_preview_view_results(tr::now)
-			: tr::lng_auction_preview_join(tr::now)
+			: (page->auction
+				&& page->auction->auctionGift->auctionStartDate
+				&& (page->auction->auctionGift->auctionStartDate
+				> base::unixtime::now()))
+			? tr::lng_auction_bar_view(tr::now)
+			: tr::lng_auction_preview_join(tr::now))
 		: QString());
 	if (page->iv) {
 		return Ui::Text::IconEmoji(&st::historyIvIcon).append(text);
@@ -278,7 +286,8 @@ constexpr auto kSponsoredUserpicLines = 2;
 		|| (type == WebPageType::StickerSet)
 		|| (type == WebPageType::StoryAlbum)
 		|| (type == WebPageType::GiftCollection)
-		|| (type == WebPageType::Auction);
+		|| (type == WebPageType::Auction)
+		|| (type == WebPageType::NewBot);
 }
 
 } // namespace
@@ -402,7 +411,7 @@ QSize WebPage::countOptimalSize() {
 	} else if (sponsored && !sponsored->buttonText.isEmpty()) {
 		_openButton.setText(
 			st::semiboldTextStyle,
-			Ui::Text::Upper(sponsored->buttonText));
+			tr::upper(sponsored->buttonText));
 	}
 
 	const auto padding = inBubblePadding() + innerMargin();
@@ -527,23 +536,20 @@ QSize WebPage::countOptimalSize() {
 					.paintBgFactory = [=] {
 						return UniqueGiftBg(_parent, _data->uniqueGift);
 					},
+					.expandCurrentWidth = true,
 				});
 	} else if (!_attach && _data->auction) {
 		const auto &gift = _data->auction->auctionGift;
-		const auto backdrop = Data::UniqueGiftBackdrop{
-			.centerColor = _data->auction->centerColor,
-			.edgeColor = _data->auction->edgeColor,
-			.patternColor = _data->auction->edgeColor,
-			.textColor = _data->auction->textColor,
-		};
+		const auto backdrop = gift->background
+			? gift->background->backdrop()
+			: Data::UniqueGiftBackdrop();
 		_attach = std::make_unique<MediaGeneric>(
 			_parent,
 			GenerateAuctionPreview(
 				_parent,
 				nullptr,
 				gift,
-				backdrop,
-				_data->auction->endDate),
+				backdrop),
 			MediaGenericDescriptor{
 				.maxWidth = st::msgServiceGiftPreview,
 				.paintBgFactory = [=] {
@@ -551,8 +557,10 @@ QSize WebPage::countOptimalSize() {
 						_parent,
 						backdrop,
 						gift,
+						_data->auction->auctionGift->auctionStartDate,
 						_data->auction->endDate);
 				},
+				.expandCurrentWidth = true,
 			});
 	} else if (!_attach && !_asArticle) {
 		_attach = CreateAttach(
@@ -594,14 +602,14 @@ QSize WebPage::countOptimalSize() {
 		_siteNameLines = 1;
 		_siteName.setMarkedText(
 			st::webPageTitleStyle,
-			Ui::Text::Link(siteName, _data->url),
+			tr::link(siteName, _data->url),
 			Ui::WebpageTextTitleOptions());
 	}
 	if (_title.isEmpty() && !title.isEmpty()) {
 		if (!_siteNameLines && !_data->url.isEmpty()) {
 			_title.setMarkedText(
 				st::webPageTitleStyle,
-				Ui::Text::Link(title, _data->url),
+				tr::link(title, _data->url),
 				Ui::WebpageTextTitleOptions());
 
 		} else {
@@ -1618,6 +1626,15 @@ bool WebPage::enforceBubbleWidth() const {
 	return (_attach != nullptr)
 		&& (_data->document != nullptr)
 		&& (_data->document->isWallPaper() || _data->document->isTheme());
+}
+
+bool WebPage::allowsNarrowBubble() const {
+	return (_attach != nullptr)
+		&& (_data->uniqueGift != nullptr || _data->auction != nullptr);
+}
+
+int WebPage::minBubbleWidthForNarrowBubble() const {
+	return allowsNarrowBubble() ? maxWidth() : 0;
 }
 
 void WebPage::playAnimation(bool autoplay) {

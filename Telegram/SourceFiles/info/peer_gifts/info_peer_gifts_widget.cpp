@@ -200,6 +200,7 @@ private:
 
 	void subscribeToUpdates();
 	void applyUpdateTo(Entries &entries, const Data::GiftUpdate &update);
+	void switchTo(int collectionId);
 	void loadCollections();
 	void loadMore();
 	void loaded(const MTPpayments_SavedStarGifts &result);
@@ -358,7 +359,7 @@ InnerWidget::InnerWidget(
 	loadCollections();
 
 	_window->session().data().giftsUpdates(
-	) | rpl::start_with_next([=](const Data::GiftsUpdate &update) {
+	) | rpl::on_next([=](const Data::GiftsUpdate &update) {
 		if (update.peer != _peer) {
 			return;
 		}
@@ -389,16 +390,19 @@ InnerWidget::InnerWidget(
 	}, lifetime());
 
 	_descriptor.value(
-	) | rpl::start_with_next([=](Descriptor now) {
-		const auto id = now.collectionId;
-		_collectionsLoadedCallback = nullptr;
-		_api.request(base::take(_loadMoreRequestId)).cancel();
-		_entries = id ? &_perCollection[id] : &_all;
-		_list = &_entries->list;
-		refreshButtons();
-		refreshAbout();
-		loadMore();
+	) | rpl::on_next([=](Descriptor now) {
+		switchTo(now.collectionId);
 	}, lifetime());
+}
+
+void InnerWidget::switchTo(int collectionId) {
+	_collectionsLoadedCallback = nullptr;
+	_api.request(base::take(_loadMoreRequestId)).cancel();
+	_entries = collectionId ? &_perCollection[collectionId] : &_all;
+	_list = &_entries->list;
+	refreshButtons();
+	refreshAbout();
+	loadMore();
 }
 
 void InnerWidget::loadCollections() {
@@ -406,7 +410,7 @@ void InnerWidget::loadCollections() {
 		return;
 	}
 	_api.request(MTPpayments_GetStarGiftCollections(
-		_peer->input,
+		_peer->input(),
 		MTP_long(Api::CountHash(_collections
 			| ranges::views::transform(&Data::GiftCollection::hash)))
 	)).done([=](const MTPpayments_StarGiftCollections &result) {
@@ -430,10 +434,12 @@ void InnerWidget::loadCollections() {
 
 void InnerWidget::subscribeToUpdates() {
 	_peer->owner().giftUpdates(
-	) | rpl::start_with_next([=](const Data::GiftUpdate &update) {
+	) | rpl::on_next([=](const Data::GiftUpdate &update) {
 		applyUpdateTo(_all, update);
 		using Action = Data::GiftUpdate::Action;
-		if (update.action == Action::Pin || update.action == Action::Unpin) {
+		if (update.action == Action::Pin
+			|| update.action == Action::Unpin
+			|| update.action == Action::Delete) {
 			for (auto &[_, entries] : _perCollection) {
 				applyUpdateTo(entries, update);
 			}
@@ -504,6 +510,9 @@ void InnerWidget::applyUpdateTo(
 				view.manageId = {};
 			}
 		}
+	} else if (update.action == Action::Upgraded) {
+		_scrollToTop.fire({});
+		reloadCollection(_descriptor.current().collectionId);
 	} else {
 		return;
 	}
@@ -642,7 +651,7 @@ void InnerWidget::loadMore() {
 			| (filter.skipSaved ? Flag::f_exclude_saved : Flag())
 			| (filter.skipUnsaved ? Flag::f_exclude_unsaved : Flag())
 			| (collectionId ? Flag::f_collection_id : Flag())),
-		_peer->input,
+		_peer->input(),
 		MTP_int(collectionId),
 		MTP_string(filterChanged ? QString() : _offset),
 		MTP_int(kPerPage)
@@ -749,12 +758,12 @@ std::unique_ptr<GiftButton> InnerWidget::createGiftButton() {
 	auto button = std::make_unique<GiftButton>(this, &_delegate);
 	const auto raw = button.get();
 	raw->contextMenuRequests(
-	) | rpl::start_with_next([=](QPoint point) {
+	) | rpl::on_next([=](QPoint point) {
 		showMenuFor(raw, point);
 	}, raw->lifetime());
 
 	raw->mouseEvents(
-	) | rpl::start_with_next([=](QMouseEvent *e) {
+	) | rpl::on_next([=](QMouseEvent *e) {
 		switch (e->type()) {
 		case QEvent::MouseButtonPress:
 			raw->raise();
@@ -994,7 +1003,7 @@ void InnerWidget::showMenuForCollection(int id) {
 		editCollectionGifts(id);
 	}, &st::menuIconGiftPremium);
 	if (const auto username = _peer->username(); !username.isEmpty()) {
-		addAction(tr::lng_stories_album_share(tr::now), [=] {
+		addAction(tr::lng_gift_collection_share(tr::now), [=] {
 			shareCollectionLink(username, id);
 		}, &st::menuIconShare);
 	}
@@ -1042,7 +1051,7 @@ void InnerWidget::editCollectionName(int id) {
 void InnerWidget::confirmDeleteCollection(int id) {
 	const auto done = [=](Fn<void()> close) {
 		_window->session().api().request(
-			MTPpayments_DeleteStarGiftCollection(_peer->input, MTP_int(id))
+			MTPpayments_DeleteStarGiftCollection(_peer->input(), MTP_int(id))
 		).send();
 		collectionRemoved(id);
 		close();
@@ -1095,7 +1104,7 @@ void InnerWidget::addGiftToCollection(
 	_window->session().api().request(
 		MTPpayments_UpdateStarGiftCollection(
 			MTP_flags(Flag::f_add_stargift),
-			_peer->input,
+			_peer->input(),
 			MTP_int(collectionId),
 			MTPstring(),
 			MTPVector<MTPInputSavedStarGift>(),
@@ -1134,7 +1143,9 @@ void InnerWidget::addGiftToCollection(
 			refreshCollectionsTabs();
 		}
 	}).fail([=, show = _window->uiShow()](const MTP::Error &error) {
-		show->showToast(error.type());
+		if (!Ui::ShowGiftErrorToast(show, error)) {
+			show->showToast(error.type());
+		}
 	}).send();
 }
 
@@ -1257,8 +1268,8 @@ void InnerWidget::refreshAbout() {
 	if (filteredEmpty) {
 		auto text = tr::lng_peer_gifts_empty_search(
 			tr::now,
-			Ui::Text::RichLangValue);
-		text.append("\n\n").append(Ui::Text::Link(
+			tr::rich);
+		text.append("\n\n").append(tr::link(
 			tr::lng_peer_gifts_view_all(tr::now)));
 		auto about = std::make_unique<Ui::FlatLabel>(
 			this,
@@ -1316,13 +1327,13 @@ void InnerWidget::refreshAbout() {
 		_about = std::make_unique<Ui::FlatLabel>(
 			this,
 			((maybeEmpty && !knownEmpty)
-				? tr::lng_contacts_loading(Ui::Text::WithEntities)
+				? tr::lng_contacts_loading(tr::marked)
 				: _peer->isSelf()
-				? tr::lng_peer_gifts_about_mine(Ui::Text::RichLangValue)
+				? tr::lng_peer_gifts_about_mine(tr::rich)
 				: tr::lng_peer_gifts_about(
 					lt_user,
-					rpl::single(Ui::Text::Bold(_peer->shortName())),
-					Ui::Text::RichLangValue)),
+					rpl::single(tr::bold(_peer->shortName())),
+					tr::rich)),
 			st::giftListAbout);
 		_about->show();
 		resizeToWidth(width());
@@ -1380,11 +1391,11 @@ void InnerWidget::editCollectionGifts(int id) {
 		state->changes = content->changes();
 
 		content->descriptorChanges(
-		) | rpl::start_with_next([=](Descriptor now) {
+		) | rpl::on_next([=](Descriptor now) {
 			state->descriptor = now;
 		}, content->lifetime());
 
-		content->scrollToTop() | rpl::start_with_next([=] {
+		content->scrollToTop() | rpl::on_next([=] {
 			box->scrollToY(0);
 		}, content->lifetime());
 
@@ -1433,7 +1444,7 @@ void InnerWidget::editCollectionGifts(int id) {
 						| (remove.isEmpty()
 							? Flag()
 							: Flag::f_delete_stargift)),
-					_peer->input,
+					_peer->input(),
 					MTP_int(id),
 					MTPstring(),
 					MTP_vector<MTPInputSavedStarGift>(remove),
@@ -1451,7 +1462,9 @@ void InnerWidget::editCollectionGifts(int id) {
 			}).fail([=](const MTP::Error &error) {
 				if (const auto strong = weakBox.get()) {
 					state->saving = false;
-					strong->uiShow()->showToast(error.type());
+					if (!Ui::ShowGiftErrorToast(strong->uiShow(), error)) {
+						strong->uiShow()->showToast(error.type());
+					}
 				}
 			}).send();
 		});
@@ -1469,7 +1482,7 @@ void InnerWidget::refreshCollectionsTabs() {
 	auto tabs = std::vector<Ui::SubTabs::Tab>();
 	tabs.push_back({
 		.id = u"all"_q,
-		.text = tr::lng_gift_collection_all(tr::now, Ui::Text::WithEntities),
+		.text = tr::lng_gift_collection_all(tr::now, tr::marked),
 	});
 	for (const auto &collection : _collections) {
 		auto &per = _perCollection[collection.id];
@@ -1519,7 +1532,7 @@ void InnerWidget::refreshCollectionsTabs() {
 		_collectionsTabs->show();
 
 		_collectionsTabs->activated(
-		) | rpl::start_with_next([=](const QString &id) {
+		) | rpl::on_next([=](const QString &id) {
 			if (id == u"add"_q) {
 				const auto added = [=](MTPStarGiftCollection result) {
 					collectionAdded(result);
@@ -1540,7 +1553,7 @@ void InnerWidget::refreshCollectionsTabs() {
 		}, _collectionsTabs->lifetime());
 
 		_collectionsTabs->contextMenuRequests(
-		) | rpl::start_with_next([=](const QString &id) {
+		) | rpl::on_next([=](const QString &id) {
 			if (id == u"add"_q
 				|| id == u"all"_q
 				|| !_peer->canManageGifts()) {
@@ -1551,7 +1564,7 @@ void InnerWidget::refreshCollectionsTabs() {
 
 		using ReorderUpdate = Ui::SubTabs::ReorderUpdate;
 		_collectionsTabs->reorderUpdates(
-		) | rpl::start_with_next([=](const ReorderUpdate &update) {
+		) | rpl::on_next([=](const ReorderUpdate &update) {
 			if (update.state == ReorderUpdate::State::Applied) {
 				reorderCollectionsLocally(update);
 			}
@@ -1588,7 +1601,7 @@ void InnerWidget::removeGiftFromCollection(
 	_window->session().api().request(
 		MTPpayments_UpdateStarGiftCollection(
 			MTP_flags(Flag::f_delete_stargift),
-			_peer->input,
+			_peer->input(),
 			MTP_int(collectionId),
 			MTPstring(),
 			MTP_vector<MTPInputSavedStarGift>({
@@ -1641,7 +1654,9 @@ void InnerWidget::removeGiftFromCollection(
 			refreshCollectionsTabs();
 		}
 	}).fail([=, show = _window->uiShow()](const MTP::Error &error) {
-		show->showToast(error.type());
+		if (!Ui::ShowGiftErrorToast(show, error)) {
+			show->showToast(error.type());
+		}
 	}).send();
 }
 
@@ -1897,7 +1912,7 @@ void InnerWidget::flushCollectionReorder() {
 	}
 
 	_api.request(MTPpayments_ReorderStarGiftCollections(
-		_peer->input,
+		_peer->input(),
 		MTP_vector<MTPint>(order)
 	)).fail([show = _window->uiShow()](const MTP::Error &error) {
 		show->showToast(error.type());
@@ -1907,7 +1922,7 @@ void InnerWidget::flushCollectionReorder() {
 }
 
 void InnerWidget::mousePressEvent(QMouseEvent *e) {
-	if (e->button() != Qt::LeftButton || _addingToCollectionId) {
+	if (e->button() != Qt::LeftButton) {
 		return;
 	}
 	const auto index = giftFromGlobalPos(e->globalPos());
@@ -1916,7 +1931,8 @@ void InnerWidget::mousePressEvent(QMouseEvent *e) {
 	}
 	_pressedIndex = index;
 	const auto collectionId = _descriptor.current().collectionId;
-	const auto canDrag = _peer->canManageGifts()
+	const auto canDrag = !_addingToCollectionId
+		&& _peer->canManageGifts()
 		&& _list->size() > 1
 		&& (collectionId
 			|| (!collectionId
@@ -2275,7 +2291,7 @@ void InnerWidget::requestReorder(int fromIndex, int toIndex) {
 		_api.request(
 			MTPpayments_UpdateStarGiftCollection(
 				MTP_flags(MTPpayments_UpdateStarGiftCollection::Flag::f_order),
-				_peer->input,
+				_peer->input(),
 				MTP_int(collectionId),
 				MTPstring(),
 				MTPVector<MTPInputSavedStarGift>(),
@@ -2291,7 +2307,9 @@ void InnerWidget::requestReorder(int fromIndex, int toIndex) {
 				refreshCollectionsTabs();
 			}
 		}).fail([show = _window->uiShow()](const MTP::Error &error) {
-			show->showToast(error.type());
+			if (!Ui::ShowGiftErrorToast(show, error)) {
+				show->showToast(error.type());
+			}
 		}).send();
 	} else {
 		_window->session().recentSharedGifts().reorderPinned(
@@ -2426,22 +2444,22 @@ Widget::Widget(QWidget *parent, not_null<Controller*> controller)
 			scroll()));
 	_emptyCollectionShown = _inner->collectionEmptyValue();
 	_inner->notifyEnabled(
-	) | rpl::take(1) | rpl::start_with_next([=](bool enabled) {
+	) | rpl::take(1) | rpl::on_next([=](bool enabled) {
 		_notifyEnabled = enabled;
 		refreshBottom();
 	}, _inner->lifetime());
 	_inner->descriptorChanges(
-	) | rpl::start_with_next([=](Descriptor descriptor) {
+	) | rpl::on_next([=](Descriptor descriptor) {
 		_descriptor = descriptor;
 	}, _inner->lifetime());
-	_inner->scrollToTop() | rpl::start_with_next([=] {
+	_inner->scrollToTop() | rpl::on_next([=] {
 		scrollTo({ 0, 0 });
 	}, _inner->lifetime());
 
 	rpl::combine(
 		_descriptor.value(),
 		_emptyCollectionShown.value()
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		refreshBottom();
 	}, _inner->lifetime());
 }
@@ -2496,14 +2514,14 @@ void Widget::setupBottomButton(int wasBottomHeight) {
 	});
 
 	const auto buttonTop = st::boxRadius;
-	bottom->widthValue() | rpl::start_with_next([=](int width) {
+	bottom->widthValue() | rpl::on_next([=](int width) {
 		const auto normal = width - 2 * buttonTop;
 		button->resizeToWidth(normal);
 		const auto buttonLeft = (width - normal) / 2;
 		button->moveToLeft(buttonLeft, buttonTop);
 	}, button->lifetime());
 
-	button->heightValue() | rpl::start_with_next([=](int height) {
+	button->heightValue() | rpl::on_next([=](int height) {
 		bottom->resize(bottom->width(), st::boxRadius + height);
 	}, button->lifetime());
 
@@ -2513,7 +2531,7 @@ void Widget::setupBottomButton(int wasBottomHeight) {
 	};
 
 	_inner->sizeValue(
-	) | rpl::start_with_next([=](const QSize &s) {
+	) | rpl::on_next([=](const QSize &s) {
 		wrap->resizeToWidth(s.width());
 		crl::on_main(wrap, processHeight);
 	}, wrap->lifetime());
@@ -2521,7 +2539,7 @@ void Widget::setupBottomButton(int wasBottomHeight) {
 	rpl::combine(
 		wrap->heightValue(),
 		heightValue()
-	) | rpl::start_with_next(processHeight, wrap->lifetime());
+	) | rpl::on_next(processHeight, wrap->lifetime());
 
 	if (_shown) {
 		wrap->toggle(
@@ -2553,13 +2571,13 @@ void Widget::setupNotifyCheckbox(int wasBottomHeight, bool enabled) {
 		enabled);
 	notify->show();
 
-	notify->checkedChanges() | rpl::start_with_next([=](bool checked) {
+	notify->checkedChanges() | rpl::on_next([=](bool checked) {
 		const auto api = &controller()->session().api();
 		const auto show = controller()->uiShow();
 		using Flag = MTPpayments_ToggleChatStarGiftNotifications::Flag;
 		api->request(MTPpayments_ToggleChatStarGiftNotifications(
 			MTP_flags(checked ? Flag::f_enabled : Flag()),
-			_inner->peer()->input
+			_inner->peer()->input()
 		)).send();
 		if (checked) {
 			show->showToast(tr::lng_peer_gifts_notify_enabled(tr::now));
@@ -2568,7 +2586,7 @@ void Widget::setupNotifyCheckbox(int wasBottomHeight, bool enabled) {
 
 	const auto &checkSt = st::defaultCheckbox;
 	const auto checkTop = st::boxRadius + checkSt.margin.top();
-	bottom->widthValue() | rpl::start_with_next([=](int width) {
+	bottom->widthValue() | rpl::on_next([=](int width) {
 		const auto normal = notify->naturalWidth()
 			- checkSt.margin.left()
 			- checkSt.margin.right();
@@ -2577,7 +2595,7 @@ void Widget::setupNotifyCheckbox(int wasBottomHeight, bool enabled) {
 		notify->moveToLeft(checkLeft, checkTop);
 	}, notify->lifetime());
 
-	notify->heightValue() | rpl::start_with_next([=](int height) {
+	notify->heightValue() | rpl::on_next([=](int height) {
 		bottom->resize(bottom->width(), st::boxRadius + height);
 	}, notify->lifetime());
 
@@ -2587,7 +2605,7 @@ void Widget::setupNotifyCheckbox(int wasBottomHeight, bool enabled) {
 	};
 
 	_inner->sizeValue(
-	) | rpl::start_with_next([=](const QSize &s) {
+	) | rpl::on_next([=](const QSize &s) {
 		wrap->resizeToWidth(s.width());
 		crl::on_main(wrap, processHeight);
 	}, wrap->lifetime());
@@ -2595,7 +2613,7 @@ void Widget::setupNotifyCheckbox(int wasBottomHeight, bool enabled) {
 	rpl::combine(
 		wrap->heightValue(),
 		heightValue()
-	) | rpl::start_with_next(processHeight, wrap->lifetime());
+	) | rpl::on_next(processHeight, wrap->lifetime());
 
 	if (_shown) {
 		wrap->toggle(

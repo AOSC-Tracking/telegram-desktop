@@ -666,7 +666,7 @@ void EnvironmentMac::setCaptureMuteTracker(
 			_captureMuteTrackerLifetime.destroy();
 			_captureMuteTracker = tracker;
 			_captureMuteTracker->captureMuteDeviceId(
-			) | rpl::start_with_next([=](DeviceResolvedId deviceId) {
+			) | rpl::on_next([=](DeviceResolvedId deviceId) {
 				_admSetDeviceIdCallback(deviceId);
 				captureMuteRestartAdm();
 			}, _captureMuteTrackerLifetime);

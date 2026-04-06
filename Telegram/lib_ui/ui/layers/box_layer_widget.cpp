@@ -42,7 +42,7 @@ BoxLayerWidget::BoxLayerWidget(
 	_content->setDelegate(this);
 
 	_additionalTitle.changes(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		updateSize();
 		update();
 	}, lifetime());
@@ -165,14 +165,21 @@ void BoxLayerWidget::parentResized() {
 	update();
 }
 
-void BoxLayerWidget::setTitle(rpl::producer<TextWithEntities> title) {
+void BoxLayerWidget::setTitle(
+		rpl::producer<TextWithEntities> title,
+		Text::MarkedContext context) {
 	const auto wasTitle = hasTitle();
 	if (title) {
-		_title.create(this, rpl::duplicate(title), st().title);
+		_title.create(
+			this,
+			rpl::duplicate(title),
+			st().title,
+			st::defaultPopupMenu,
+			context);
 		_title->show();
 		std::move(
 			title
-		) | rpl::start_with_next([=] {
+		) | rpl::on_next([=] {
 			updateTitlePosition();
 		}, _title->lifetime());
 	} else {
@@ -281,7 +288,7 @@ void BoxLayerWidget::addButton(object_ptr<AbstractButton> button) {
 	raw->setParent(this);
 	raw->show();
 	if (st().buttonWide) {
-		widthValue() | rpl::start_with_next([=](int width) {
+		widthValue() | rpl::on_next([=](int width) {
 			const auto buttonWidth = width
 				- st().buttonPadding.left()
 				- st().buttonPadding.right();
@@ -291,7 +298,7 @@ void BoxLayerWidget::addButton(object_ptr<AbstractButton> button) {
 		}, raw->lifetime());
 	}
 	raw->widthValue(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		if (st().buttonWide) {
 			const auto buttonWidth = width()
 				- st().buttonPadding.left()
@@ -310,7 +317,7 @@ void BoxLayerWidget::addLeftButton(object_ptr<AbstractButton> button) {
 	raw->setParent(this);
 	raw->show();
 	raw->widthValue(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		updateButtonsPositions();
 	}, raw->lifetime());
 }

@@ -48,6 +48,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_boxes.h"
 #include "styles/style_chat_helpers.h" // defaultComposeFiles.
 #include "styles/style_layers.h"
+#include "styles/style_polls.h"
 #include "styles/style_settings.h"
 
 namespace {
@@ -185,7 +186,8 @@ void InitField(
 		not_null<Main::Session*> session) {
 	field->setInstantReplaces(Ui::InstantReplaces::Default());
 	field->setInstantReplacesEnabled(
-		Core::App().settings().replaceEmojiValue());
+		Core::App().settings().replaceEmojiValue(),
+		Core::App().settings().systemTextReplaceValue());
 	auto options = Ui::Emoji::SuggestionsController::Options();
 	options.suggestExactFirstWord = false;
 	Ui::Emoji::SuggestionsController::Init(
@@ -227,7 +229,7 @@ not_null<Ui::FlatLabel*> CreateWarningLabel(
 		st::createPollWarning);
 	result->setAttribute(Qt::WA_TransparentForMouseEvents);
 	field->changes(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		Ui::PostponeCall(crl::guard(field, [=] {
 			const auto length = field->getLastText().size();
 			const auto value = valueLimit - length;
@@ -290,7 +292,7 @@ Tasks::Task::Task(
 	Ui::CreateChild<Ui::InputField>(
 		_content.get(),
 		session->user()->isPremium()
-			? st::createPollOptionFieldPremium
+			? st::createTodoOptionField
 			: st::createPollOptionField,
 		Ui::InputField::Mode::MultiLine,
 		tr::lng_todo_create_list_add()))
@@ -303,19 +305,17 @@ Tasks::Task::Task(
 	_field->show();
 	if (locked) {
 		_field->setDisabled(true);
-	} else {
-		_field->customTab(true);
 	}
 
 	_wrap->hide(anim::type::instant);
 
 	_content->widthValue(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		updateFieldGeometry();
 	}, _field->lifetime());
 
 	_field->heightValue(
-	) | rpl::start_with_next([=](int height) {
+	) | rpl::on_next([=](int height) {
 		_content->resize(_content->width(), height);
 	}, _field->lifetime());
 
@@ -340,7 +340,7 @@ void Tasks::Task::createShadow() {
 	_shadow.reset(Ui::CreateChild<Ui::PlainShadow>(field().get()));
 	_shadow->show();
 	field()->sizeValue(
-	) | rpl::start_with_next([=](QSize size) {
+	) | rpl::on_next([=](QSize size) {
 		const auto left = st::createPollFieldPadding.left();
 		_shadow->setGeometry(
 			left,
@@ -369,7 +369,7 @@ void Tasks::Task::createRemove() {
 	_removeAlways = lifetime.make_state<rpl::variable<bool>>(false);
 
 	field->changes(
-	) | rpl::start_with_next([field, toggle] {
+	) | rpl::on_next([field, toggle] {
 		// Don't capture 'this'! Because Option is a value type.
 		*toggle = !field->getLastText().isEmpty();
 	}, field->lifetime());
@@ -378,13 +378,13 @@ void Tasks::Task::createRemove() {
 		toggle->value(),
 		_removeAlways->value(),
 		_1 || _2
-	) | rpl::start_with_next([=](bool shown) {
+	) | rpl::on_next([=](bool shown) {
 		remove->toggle(shown, anim::type::normal);
 	}, remove->lifetime());
 #endif
 
 	field->widthValue(
-	) | rpl::start_with_next([=](int width) {
+	) | rpl::on_next([=](int width) {
 		remove->moveToRight(
 			st::createPollOptionRemovePosition.x(),
 			st::createPollOptionRemovePosition.y(),
@@ -406,7 +406,7 @@ void Tasks::Task::createWarning() {
 	rpl::combine(
 		field->sizeValue(),
 		warning->sizeValue()
-	) | rpl::start_with_next([=](QSize size, QSize label) {
+	) | rpl::on_next([=](QSize size, QSize label) {
 		warning->moveToLeft(
 			(size.width()
 				- label.width()
@@ -715,21 +715,21 @@ void Tasks::initTaskField(not_null<Task*> task, TextWithEntities text) {
 			_controller,
 			emojiPanel,
 			QPoint(
-				-st::createPollOptionFieldPremium.textMargins.right(),
+				-st::createTodoOptionField.textMargins.right(),
 				st::createPollOptionEmojiPositionSkip));
-		emojiToggle->shownValue() | rpl::start_with_next([=](bool shown) {
+		emojiToggle->shownValue() | rpl::on_next([=](bool shown) {
 			if (!shown) {
 				return;
 			}
 			_emojiPanelLifetime.destroy();
 			emojiPanel->selector()->emojiChosen(
-			) | rpl::start_with_next([=](ChatHelpers::EmojiChosen data) {
+			) | rpl::on_next([=](ChatHelpers::EmojiChosen data) {
 				if (field->hasFocus()) {
 					Ui::InsertEmojiAtCursor(field->textCursor(), data.emoji);
 				}
 			}, _emojiPanelLifetime);
 			emojiPanel->selector()->customEmojiChosen(
-			) | rpl::start_with_next([=](ChatHelpers::FileChosen data) {
+			) | rpl::on_next([=](ChatHelpers::FileChosen data) {
 				if (field->hasFocus()) {
 					Data::InsertCustomEmoji(field, data.document);
 				}
@@ -741,14 +741,14 @@ void Tasks::initTaskField(not_null<Task*> task, TextWithEntities text) {
 		TextUtilities::ConvertEntitiesToTextTags(text.entities)
 	});
 	field->submits(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		const auto index = findField(field);
 		if (_list[index]->isGood() && index + 1 < _list.size()) {
 			_list[index + 1]->setFocus();
 		}
 	}, field->lifetime());
 	field->changes(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		auto list = ParsePastedList(field->getLastText());
 		if (!list.empty()) {
 			field->setText(list.front());
@@ -762,17 +762,18 @@ void Tasks::initTaskField(not_null<Task*> task, TextWithEntities text) {
 		}));
 	}, field->lifetime());
 	field->focusedChanges(
-	) | rpl::filter(rpl::mappers::_1) | rpl::start_with_next([=] {
+	) | rpl::filter(rpl::mappers::_1) | rpl::on_next([=] {
 		_scrollToWidget.fire_copy(field);
 	}, field->lifetime());
 	field->tabbed(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=](not_null<bool*> handled) {
 		const auto index = findField(field);
 		if (index + 1 < _list.size()) {
 			_list[index + 1]->setFocus();
 		} else {
 			_tabbed.fire({});
 		}
+		*handled = true;
 	}, field->lifetime());
 	base::install_event_filter(field, [=](not_null<QEvent*> event) {
 		if (event->type() != QEvent::KeyPress
@@ -794,7 +795,7 @@ void Tasks::initTaskField(not_null<Task*> task, TextWithEntities text) {
 	});
 
 	task->removeClicks(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		Ui::PostponeCall(crl::guard(field, [=] {
 			Expects(!_list.empty());
 
@@ -895,7 +896,7 @@ EditTodoListBox::EditTodoListBox(
 , _titleLimit(controller->session().appConfig().todoListTitleLimit()) {
 	_controller->session().changes().messageUpdates(
 		Data::MessageUpdate::Flag::Destroyed
-	) | rpl::start_with_next([=](const Data::MessageUpdate &update) {
+	) | rpl::on_next([=](const Data::MessageUpdate &update) {
 		if (update.item == item) {
 			closeBox();
 		}
@@ -933,7 +934,6 @@ not_null<Ui::InputField*> EditTodoListBox::setupTitle(
 	InitField(getDelegate()->outerContainer(), title, session);
 	title->setMaxLength(_titleLimit + kErrorLimit);
 	title->setSubmitSettings(Ui::InputField::SubmitSettings::Both);
-	title->customTab(true);
 
 	if (isPremium) {
 		_emojiPanel = MakeEmojiPanel(
@@ -944,15 +944,15 @@ not_null<Ui::InputField*> EditTodoListBox::setupTitle(
 			this,
 			_controller,
 			_emojiPanel.get(),
-			st::createPollOptionFieldPremiumEmojiPosition);
+			st::createTodoOptionFieldEmojiPosition);
 		_emojiPanel->selector()->emojiChosen(
-		) | rpl::start_with_next([=](ChatHelpers::EmojiChosen data) {
+		) | rpl::on_next([=](ChatHelpers::EmojiChosen data) {
 			if (title->hasFocus()) {
 				Ui::InsertEmojiAtCursor(title->textCursor(), data.emoji);
 			}
 		}, emojiToggle->lifetime());
 		_emojiPanel->selector()->customEmojiChosen(
-		) | rpl::start_with_next([=](ChatHelpers::FileChosen data) {
+		) | rpl::on_next([=](ChatHelpers::FileChosen data) {
 			if (title->hasFocus()) {
 				Data::InsertCustomEmoji(title, data.document);
 			}
@@ -976,7 +976,7 @@ not_null<Ui::InputField*> EditTodoListBox::setupTitle(
 	rpl::combine(
 		title->geometryValue(),
 		warning->sizeValue()
-	) | rpl::start_with_next([=](QRect geometry, QSize label) {
+	) | rpl::on_next([=](QRect geometry, QSize label) {
 		warning->moveToLeft(
 			(container->width()
 				- label.width()
@@ -1044,8 +1044,9 @@ object_ptr<Ui::RpWidget> EditTodoListBox::setupContent() {
 			st::createPollLimitPadding));
 
 	title->tabbed(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=](not_null<bool*> handled) {
 		tasks->focusFirst();
+		*handled = true;
 	}, title->lifetime());
 
 	Ui::AddSkip(container);
@@ -1067,7 +1068,7 @@ object_ptr<Ui::RpWidget> EditTodoListBox::setupContent() {
 		st::createPollCheckboxMargin);
 
 	tasks->tabbed(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		title->setFocus();
 	}, title->lifetime());
 
@@ -1076,7 +1077,7 @@ object_ptr<Ui::RpWidget> EditTodoListBox::setupContent() {
 		return !text.isEmpty() && (text.size() <= _titleLimit);
 	};
 	title->submits(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		if (isValidTitle()) {
 			tasks->focusFirst();
 		}
@@ -1146,12 +1147,12 @@ object_ptr<Ui::RpWidget> EditTodoListBox::setupContent() {
 		crl::guard(this, send));
 
 	tasks->scrollToWidget(
-	) | rpl::start_with_next([=](not_null<QWidget*> widget) {
+	) | rpl::on_next([=](not_null<QWidget*> widget) {
 		scrollToWidget(widget);
 	}, lifetime());
 
 	tasks->backspaceInFront(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		FocusAtEnd(title);
 	}, lifetime());
 
@@ -1201,7 +1202,7 @@ AddTodoListTasksBox::AddTodoListTasksBox(
 , _item(item) {
 	_controller->session().changes().messageUpdates(
 		Data::MessageUpdate::Flag::Destroyed
-	) | rpl::start_with_next([=](const Data::MessageUpdate &update) {
+	) | rpl::on_next([=](const Data::MessageUpdate &update) {
 		if (update.item == item) {
 			closeBox();
 		}
@@ -1266,7 +1267,7 @@ object_ptr<Ui::RpWidget> AddTodoListTasksBox::setupContent() {
 	};
 
 	tasks->scrollToWidget(
-	) | rpl::start_with_next([=](not_null<QWidget*> widget) {
+	) | rpl::on_next([=](not_null<QWidget*> widget) {
 		scrollToWidget(widget);
 	}, lifetime());
 

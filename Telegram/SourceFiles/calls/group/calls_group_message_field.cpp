@@ -167,7 +167,7 @@ void ReactionPanel::create() {
 	_parent = std::make_unique<Ui::RpWidget>(_outer);
 	_parent->show();
 
-	_parent->events() | rpl::start_with_next([=](not_null<QEvent*> e) {
+	_parent->events() | rpl::on_next([=](not_null<QEvent*> e) {
 		if (e->type() == QEvent::MouseButtonPress) {
 			const auto event = static_cast<QMouseEvent*>(e.get());
 			if (event->button() == Qt::LeftButton) {
@@ -191,7 +191,7 @@ void ReactionPanel::create() {
 		true);
 
 	_selector->chosen(
-	) | rpl::start_with_next([=](Chosen reaction) {
+	) | rpl::on_next([=](Chosen reaction) {
 		if (reaction.id.custom() && !_show->session().premium()) {
 			ShowPremiumPreviewBox(
 				_show,
@@ -215,7 +215,7 @@ void ReactionPanel::create() {
 		_fieldGeometry.value(),
 		_shownValue.value(),
 		_expanded.value()
-	) | rpl::start_with_next([=](QRect field, float64 shown, bool expanded) {
+	) | rpl::on_next([=](QRect field, float64 shown, bool expanded) {
 		const auto width = margins.left()
 			+ _selector->countAppearedWidth(shown)
 			+ margins.right();
@@ -241,7 +241,7 @@ void ReactionPanel::create() {
 	}, _selector->lifetime());
 
 	_selector->willExpand(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		_expanded = true;
 
 		const auto raw = _parent.get();
@@ -260,7 +260,7 @@ void ReactionPanel::create() {
 		});
 	}, _selector->lifetime());
 
-	_selector->escapes() | rpl::start_with_next([=] {
+	_selector->escapes() | rpl::on_next([=] {
 		collapse();
 	}, _selector->lifetime());
 }
@@ -276,7 +276,7 @@ void ReactionPanel::fadeOutSelector() {
 	raw->widget.setGeometry(geometry);
 	raw->widget.show();
 	raw->widget.paintRequest(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		if (const auto opacity = raw->animation.value(0.)) {
 			auto p = QPainter(&raw->widget);
 			p.setOpacity(opacity);
@@ -332,8 +332,9 @@ void MessageField::createControls(PeerData *peer) {
 		Ui::InputField::Mode::MultiLine,
 		tr::lng_message_ph());
 	_field->setMaxLength(_limit + kErrorLimit);
-	_field->setMinHeight(
-		st::historySendSize.height() - 2 * st::historySendPadding);
+	_field->setMinHeight(st.attach.height
+		- st.padding.top()
+		- st.padding.bottom());
 	_field->setMaxHeight(st::historyComposeFieldMaxHeight);
 	_field->setDocumentMargin(4.);
 	_field->setAdditionalMargin(style::ConvertScale(4) - 4);
@@ -349,7 +350,7 @@ void MessageField::createControls(PeerData *peer) {
 	rpl::combine(
 		_fieldFocused.value(),
 		_fieldEmpty.value()
-	) | rpl::start_with_next([=](bool focused, bool empty) {
+	) | rpl::on_next([=](bool focused, bool empty) {
 		if (!focused) {
 			_reactionPanel->hideIfCollapsed();
 		} else if (empty) {
@@ -360,7 +361,7 @@ void MessageField::createControls(PeerData *peer) {
 	}, _field->lifetime());
 
 	_reactionPanel->chosen(
-	) | rpl::start_with_next([=](Chosen reaction) {
+	) | rpl::on_next([=](Chosen reaction) {
 		if (const auto customId = reaction.id.custom()) {
 			const auto document = _show->session().data().document(customId);
 			if (const auto sticker = document->sticker()) {
@@ -439,11 +440,11 @@ void MessageField::createControls(PeerData *peer) {
 	panel->hide();
 	panel->selector()->setCurrentPeer(peer);
 	panel->selector()->emojiChosen(
-	) | rpl::start_with_next([=](ChatHelpers::EmojiChosen data) {
+	) | rpl::on_next([=](ChatHelpers::EmojiChosen data) {
 		Ui::InsertEmojiAtCursor(_field->textCursor(), data.emoji);
 	}, lifetime());
 	panel->selector()->customEmojiChosen(
-	) | rpl::start_with_next([=](ChatHelpers::FileChosen data) {
+	) | rpl::on_next([=](ChatHelpers::FileChosen data) {
 		const auto info = data.document->sticker();
 		if (info
 			&& info->setType == Data::StickersType::Emoji
@@ -467,39 +468,40 @@ void MessageField::createControls(PeerData *peer) {
 	_width.value(
 	) | rpl::filter(
 		rpl::mappers::_1 > 0
-	) | rpl::start_with_next([=](int newWidth) {
+	) | rpl::on_next([=](int newWidth) {
+		const auto &st = st::storiesComposeControls;
 		const auto fieldWidth = newWidth
-			- st::historySendPadding
+			- st.padding.top()
 			- _emojiToggle->width()
 			- _send->width();
 		_field->resizeToWidth(fieldWidth);
-		_field->moveToLeft(
-			st::historySendPadding,
-			st::historySendPadding,
-			newWidth);
+		_field->moveToLeft(st.padding.top(), st.padding.top(), newWidth);
 		updateWrapSize(newWidth);
 	}, _lifetime);
 
 	rpl::combine(
 		_width.value(),
 		_field->heightValue()
-	) | rpl::start_with_next([=](int width, int height) {
+	) | rpl::on_next([=](int width, int height) {
 		if (width <= 0) {
 			return;
 		}
-		const auto minHeight = st::historySendSize.height()
-			- 2 * st::historySendPadding;
+		const auto &st = st::storiesComposeControls;
+		const auto minHeight = st.attach.height
+			- st.padding.top()
+			- st.padding.bottom();
 		_send->moveToRight(0, height - minHeight, width);
 		_emojiToggle->moveToRight(_send->width(), height - minHeight, width);
 		updateWrapSize();
 	}, _lifetime);
 
-	_field->cancelled() | rpl::start_with_next([=] {
+	_field->cancelled() | rpl::on_next([=] {
 		_closeRequests.fire({});
 	}, _lifetime);
 
 	const auto updateLimitPosition = [=](QSize parent, QSize label) {
-		const auto skip = st::historySendPadding;
+		const auto &st = st::storiesComposeControls;
+		const auto skip = st.padding.top();
 		return QPoint(parent.width() - label.width() - skip, skip);
 	};
 	Ui::AddLengthLimitLabel(_field, _limit, {
@@ -510,7 +512,7 @@ void MessageField::createControls(PeerData *peer) {
 	rpl::merge(
 		_field->submits() | rpl::to_empty,
 		_send->clicks() | rpl::to_empty
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		auto text = _field->getTextWithTags();
 		if (text.text.size() <= _limit) {
 			_submitted.fire(std::move(text));
@@ -527,8 +529,9 @@ void MessageField::updateEmojiPanelGeometry() {
 }
 
 void MessageField::setupBackground() {
-	_wrap->paintRequest() | rpl::start_with_next([=] {
-		const auto radius = st::historySendSize.height() / 2.;
+	_wrap->paintRequest() | rpl::on_next([=] {
+		const auto &st = st::storiesComposeControls;
+		const auto radius = st.attach.height / 2.;
 		auto p = QPainter(_wrap.get());
 		auto hq = PainterHighQualityEnabler(p);
 
@@ -568,7 +571,7 @@ void MessageField::toggle(bool shown) {
 			auto image = Ui::GrabWidgetToImage(_wrap.get());
 			_cache = std::make_unique<Ui::RpWidget>(_parent);
 			const auto raw = _cache.get();
-			raw->paintRequest() | rpl::start_with_next([=] {
+			raw->paintRequest() | rpl::on_next([=] {
 				auto p = QPainter(raw);
 				auto hq = PainterHighQualityEnabler(p);
 				const auto scale = raw->height() / float64(_wrap->height());
@@ -609,8 +612,11 @@ void MessageField::raise() {
 }
 
 void MessageField::updateWrapSize(int widthOverride) {
+	const auto &st = st::storiesComposeControls;
 	const auto width = widthOverride ? widthOverride : _wrap->width();
-	const auto height = _field->height() + 2 * st::historySendPadding;
+	const auto height = _field->height()
+		+ st.padding.top()
+		+ st.padding.bottom();
 	_wrap->resize(width, height);
 	updateHeight();
 }

@@ -79,6 +79,9 @@ concepts used in the following descriptions.
   Also generate convenience `.cpp` and `.hpp` files in root output directory
   per namespace, as may be useful for some build tool setups.
 
+* `--only-changed`:
+  Disable overwriting (and timestamp update) of unchanged existing output file.
+
 * `--dump-ignore`:
   (only if compiled with embedded ignore) Dumps embedded ignore data.
 
@@ -386,7 +389,7 @@ variations, as in following excerpt from an example:
       // the above constructor is also re-used during (C-side) type registration
       // (in that case with an "empty" id and no associated GObject setup)
       // that can avoided by providing a separate ...
-      GType get_type_()
+      static GType get_type_()
       {
         // no interfaces, properties or signals to declare
         return register_type_<TreeViewFilterWindow>("TreeViewFilterWindow", 0, {}, {}, {});

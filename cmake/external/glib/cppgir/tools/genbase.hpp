@@ -23,6 +23,8 @@ struct GeneratorOptions
   bool const_method;
   // generate top-level helpers in rootdir
   bool output_top;
+  // only generate/overwrite output if changed
+  bool only_changed;
   // min number of non-required function arguments
   // that triggers generation a CallArgs variant
   int call_args;

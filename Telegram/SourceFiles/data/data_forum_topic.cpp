@@ -222,7 +222,7 @@ TopicIconDescriptor ParseTopicIconEmojiEntity(QStringView entity) {
 		const auto parts = entity.mid(normal.size()).split(' ');
 		if (parts.size() == 2) {
 			return {
-				.title = parts[1].toString(),
+				.title = parts[1].isEmpty() ? u" "_q : parts[1].toString(),
 				.colorId = int32(parts[0].toUInt()),
 			};
 		}
@@ -250,7 +250,7 @@ ForumTopic::ForumTopic(not_null<Forum*> forum, MsgId rootId)
 
 	if (isGeneral()) {
 		style::PaletteChanged(
-		) | rpl::start_with_next([=] {
+		) | rpl::on_next([=] {
 			_defaultIcon = QImage();
 		}, _lifetime);
 	}
@@ -374,7 +374,7 @@ void ForumTopic::subscribeToUnreadChanges() {
 	) | rpl::combine_previous(
 	) | rpl::filter([=] {
 		return inChatList();
-	}) | rpl::start_with_next([=](
+	}) | rpl::on_next([=](
 			std::optional<int> previous,
 			std::optional<int> now) {
 		if (previous.value_or(0) != now.value_or(0)) {
@@ -431,6 +431,7 @@ void ForumTopic::applyTopic(const MTPDforumTopic &data) {
 		applyTopicTopMessage(data.vtop_message().v);
 		unreadMentions().setCount(data.vunread_mentions_count().v);
 		unreadReactions().setCount(data.vunread_reactions_count().v);
+		unreadPollVotes().setCount(data.vunread_poll_votes_count().v);
 	}
 }
 
@@ -477,7 +478,7 @@ void ForumTopic::setClosedAndSave(bool closed) {
 	const auto weak = base::make_weak(this);
 	api->request(MTPmessages_EditForumTopic(
 		MTP_flags(MTPmessages_EditForumTopic::Flag::f_closed),
-		peer()->input,
+		peer()->input(),
 		MTP_int(_rootId),
 		MTPstring(), // title
 		MTPlong(), // icon_emoji_id
@@ -987,6 +988,9 @@ void ForumTopic::hasUnreadReactionChanged(bool has) {
 		was.reactionsMuted = muted() ? was.reactions : 0;
 	}
 	notifyUnreadStateChange(was);
+}
+
+void ForumTopic::hasUnreadPollVoteChanged(bool has) {
 }
 
 const QString &ForumTopic::chatListNameSortKey() const {

@@ -8,6 +8,7 @@
 
 #include "webrtc/webrtc_device_common.h"
 
+#include <api/scoped_refptr.h>
 #include <modules/audio_device/include/audio_device.h>
 #include <modules/audio_device/audio_device_buffer.h>
 
@@ -15,12 +16,18 @@
 #include <al.h>
 #include <alc.h>
 #include <atomic>
+#include <vector>
 
 #include <QtCore/QMutex>
 
 namespace rtc {
 class Thread;
 } // namespace rtc
+
+namespace webrtc {
+class AudioFrame;
+class AudioProcessing;
+} // namespace webrtc
 
 namespace Webrtc::details {
 
@@ -36,6 +43,8 @@ public:
 	~AudioDeviceOpenAL();
 
 	[[nodiscard]] Fn<void(DeviceResolvedId)> setDeviceIdCallback();
+	void setLoopbackCaptureDeviceId(QString id);
+	void setLoopbackCaptureDeviceIds(std::vector<QString> ids);
 
 	int32_t ActiveAudioLayer(AudioLayer *audioLayer) const override;
 	int32_t RegisterAudioCallback(
@@ -203,6 +212,18 @@ private:
 	bool _speakerInitialized = false;
 	bool _microphoneInitialized = false;
 	bool _initialized = false;
+	bool _loopbackOnly = false;
+	std::vector<QString> _loopbackCaptureDeviceIds;
+	int _loopbackCaptureDeviceIndex = 0;
+	bool _rotateLoopbackCaptureDevice = false;
+	bool _recordingLoopback = false;
+	int _recordingChannels = 1;
+
+#ifdef WEBRTC_LINUX
+	rtc::scoped_refptr<webrtc::AudioProcessing> _loopbackAudioProcessing;
+	std::unique_ptr<webrtc::AudioFrame> _loopbackCapturedFrame;
+	std::unique_ptr<webrtc::AudioFrame> _loopbackRenderedFrame;
+#endif // WEBRTC_LINUX
 
 };
 

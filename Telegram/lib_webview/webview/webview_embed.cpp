@@ -33,7 +33,7 @@ base::options::toggle OptionWebviewDebugEnabled({
 
 base::options::toggle OptionWebviewLegacyEdge({
 	.id = kOptionWebviewLegacyEdge,
-	.name = "Force legacy Edge WebView.",
+	.name = "Force legacy Edge WebView",
 	.description = "Skip modern CoreWebView2 check and force using legacy Edge WebView on Windows.",
 	.scope = base::options::windows,
 	.restartRequired = true,
@@ -166,6 +166,19 @@ void Window::focus() {
 	_webview->focus();
 }
 
+void Window::setInteractionHandler(Fn<void()> handler) {
+	_interactionHandler = std::move(handler);
+	if (_webview) {
+		_webview->setInteractionHandler([=] {
+			if (_interactionHandler) {
+				base::Integration::Instance().enterFromEventLoop([&] {
+					_interactionHandler();
+				});
+			}
+		});
+	}
+}
+
 void Window::refreshNavigationHistoryState() {
 	Expects(_webview != nullptr);
 
@@ -182,7 +195,7 @@ auto Window::navigationHistoryState() const
 
 		std::move(
 			data
-		) | rpl::start_with_next([=](NavigationHistoryState state) {
+		) | rpl::on_next([=](NavigationHistoryState state) {
 			base::Integration::Instance().enterFromEventLoop([&] {
 				consumer.put_next_copy(state);
 			});

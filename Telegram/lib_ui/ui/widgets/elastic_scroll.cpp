@@ -361,7 +361,7 @@ ElasticScroll::ElasticScroll(
 	setAttribute(Qt::WA_AcceptTouchEvents);
 
 	_bar->visibleFromDragged(
-	) | rpl::start_with_next([=](int from) {
+	) | rpl::on_next([=](int from) {
 		tryScrollTo(from, false);
 	}, _bar->lifetime());
 }
@@ -1203,6 +1203,10 @@ object_ptr<QWidget> ElasticScroll::doTakeWidget() {
 
 void ElasticScroll::updateBars() {
 	_bar->update();
+}
+
+QWidget *ElasticScroll::widget() const {
+	return _widget.data();
 }
 
 void ElasticScroll::setOverscrollTypes(

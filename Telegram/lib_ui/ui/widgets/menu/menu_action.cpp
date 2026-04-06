@@ -49,7 +49,7 @@ TextParseOptions MenuTextOptions = {
 } // namespace
 
 Action::Action(
-	not_null<RpWidget*> parent,
+	not_null<Menu*> parent,
 	const style::Menu &st,
 	not_null<QAction*> action,
 	const style::icon *icon,
@@ -64,7 +64,7 @@ Action::Action(
 	+ _st.itemPadding.bottom()) {
 	setAcceptBoth(true);
 
-	initResizeHook(parent->sizeValue());
+	fitToMenuWidth();
 	processAction();
 
 	enableMouseSelecting();
@@ -74,6 +74,20 @@ Action::Action(
 
 bool Action::hasSubmenu() const {
 	return _action->menu() != nullptr;
+}
+
+int Action::accessibilityChildCount() const {
+	return hasSubmenu() ? 1 : -1;
+}
+
+QAccessible::Role Action::accessibilityChildRole() const {
+	return QAccessible::PopupMenu;
+}
+
+QAccessible::State Action::accessibilityChildState(int index) const {
+	QAccessible::State state;
+	state.invisible = 1;
+	return state;
 }
 
 void Action::paintEvent(QPaintEvent *e) {
@@ -210,7 +224,9 @@ void Action::handleKeyPress(not_null<QKeyEvent*> e) {
 		return;
 	}
 	const auto key = e->key();
-	if (key == Qt::Key_Enter || key == Qt::Key_Return) {
+	if (key == Qt::Key_Enter
+		|| key == Qt::Key_Return
+		|| key == Qt::Key_Space) {
 		setClicked(TriggeredSource::Keyboard);
 		return;
 	}

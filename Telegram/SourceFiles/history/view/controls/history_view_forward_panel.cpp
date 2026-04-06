@@ -66,18 +66,18 @@ void ForwardPanel::update(
 		Assert(to != nullptr);
 
 		_data.items.front()->history()->owner().itemRemoved(
-		) | rpl::start_with_next([=](not_null<const HistoryItem*> item) {
+		) | rpl::on_next([=](not_null<const HistoryItem*> item) {
 			itemRemoved(item);
 		}, _dataLifetime);
 
 		if (const auto topic = _to->asTopic()) {
 			topic->destroyed(
-			) | rpl::start_with_next([=] {
+			) | rpl::on_next([=] {
 				update(nullptr, {});
 			}, _dataLifetime);
 		} else if (const auto sublist = _to->asSublist()) {
 			sublist->destroyed(
-			) | rpl::start_with_next([=] {
+			) | rpl::on_next([=] {
 				update(nullptr, {});
 			}, _dataLifetime);
 		}
@@ -105,7 +105,7 @@ void ForwardPanel::checkTexts() {
 		? kNameWithCaptionsVersion
 		: kNameNoCaptionsVersion;
 	if (keepNames) {
-		for (const auto item : _data.items) {
+		for (const auto &item : _data.items) {
 			if (const auto from = item->originalSender()) {
 				version += from->nameVersion();
 			} else if (item->originalHiddenSenderInfo()) {
@@ -142,7 +142,7 @@ void ForwardPanel::updateTexts() {
 		auto fullname = QString();
 		auto names = std::vector<QString>();
 		names.reserve(_data.items.size());
-		for (const auto item : _data.items) {
+		for (const auto &item : _data.items) {
 			if (const auto from = item->originalSender()) {
 				if (!insertedPeers.contains(from)) {
 					insertedPeers.emplace(from);
@@ -353,7 +353,7 @@ void ClearDraftReplyTo(
 		.topicRootId = topicRootId,
 		.monoforumPeerId = monoforumPeerId,
 	};
-	draft.suggest = SuggestPostOptions();
+	draft.suggest = SuggestOptions();
 	if (Data::DraftIsNull(&draft)) {
 		history->clearLocalDraft(topicRootId, monoforumPeerId);
 	} else {
@@ -372,7 +372,7 @@ void EditWebPageOptions(
 		Data::WebPageDraft draft,
 		Fn<void(Data::WebPageDraft)> done) {
 	show->show(Box([=](not_null<Ui::GenericBox*> box) {
-		box->setTitle(rpl::single(u"Link Preview"_q));
+		box->setTitle(u"Link Preview"_q);
 
 		struct State {
 			rpl::variable<Data::WebPageDraft> result;
@@ -408,7 +408,7 @@ void EditWebPageOptions(
 		});
 
 		state->result.value(
-		) | rpl::start_with_next([=](const Data::WebPageDraft &draft) {
+		) | rpl::on_next([=](const Data::WebPageDraft &draft) {
 			state->large->setColorOverride(draft.forceLargeMedia
 				? st::windowActiveTextFg->c
 				: std::optional<QColor>());

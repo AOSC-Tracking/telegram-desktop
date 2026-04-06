@@ -593,43 +593,43 @@ inline auto start(lifetime &alive_while)
 }
 
 template <typename OnNext>
-inline auto start_with_next(OnNext &&next)
+inline auto on_next(OnNext &&next)
 -> details::with_next<std::decay_t<OnNext>> {
 	return { std::forward<OnNext>(next) };
 }
 
 template <typename OnNext>
-inline auto start_with_next(OnNext &&next, lifetime &alive_while)
+inline auto on_next(OnNext &&next, lifetime &alive_while)
 -> details::lifetime_with_next<std::decay_t<OnNext>> {
 	return { alive_while, std::forward<OnNext>(next) };
 }
 
 template <typename OnError>
-inline auto start_with_error(OnError &&error)
+inline auto on_error(OnError &&error)
 -> details::with_error<std::decay_t<OnError>> {
 	return { std::forward<OnError>(error) };
 }
 
 template <typename OnError>
-inline auto start_with_error(OnError &&error, lifetime &alive_while)
+inline auto on_error(OnError &&error, lifetime &alive_while)
 -> details::lifetime_with_error<std::decay_t<OnError>> {
 	return { alive_while, std::forward<OnError>(error) };
 }
 
 template <typename OnDone>
-inline auto start_with_done(OnDone &&done)
+inline auto on_done(OnDone &&done)
 -> details::with_done<std::decay_t<OnDone>> {
 	return { std::forward<OnDone>(done) };
 }
 
 template <typename OnDone>
-inline auto start_with_done(OnDone &&done, lifetime &alive_while)
+inline auto on_done(OnDone &&done, lifetime &alive_while)
 -> details::lifetime_with_done<std::decay_t<OnDone>> {
 	return { alive_while, std::forward<OnDone>(done) };
 }
 
 template <typename OnNext, typename OnError>
-inline auto start_with_next_error(
+inline auto on_next_error(
 	OnNext &&next,
 	OnError &&error)
 -> details::with_next_error<
@@ -642,7 +642,7 @@ inline auto start_with_next_error(
 }
 
 template <typename OnNext, typename OnError>
-inline auto start_with_next_error(
+inline auto on_next_error(
 	OnNext &&next,
 	OnError &&error,
 	lifetime &alive_while)
@@ -657,7 +657,7 @@ inline auto start_with_next_error(
 }
 
 template <typename OnError, typename OnDone>
-inline auto start_with_error_done(
+inline auto on_error_done(
 	OnError &&error,
 	OnDone &&done)
 -> details::with_error_done<
@@ -670,7 +670,7 @@ inline auto start_with_error_done(
 }
 
 template <typename OnError, typename OnDone>
-inline auto start_with_error_done(
+inline auto on_error_done(
 	OnError &&error,
 	OnDone &&done,
 	lifetime &alive_while)
@@ -685,7 +685,7 @@ inline auto start_with_error_done(
 }
 
 template <typename OnNext, typename OnDone>
-inline auto start_with_next_done(
+inline auto on_next_done(
 	OnNext &&next,
 	OnDone &&done)
 -> details::with_next_done<
@@ -698,7 +698,7 @@ inline auto start_with_next_done(
 }
 
 template <typename OnNext, typename OnDone>
-inline auto start_with_next_done(
+inline auto on_next_done(
 	OnNext &&next,
 	OnDone &&done,
 	lifetime &alive_while)
@@ -713,7 +713,7 @@ inline auto start_with_next_done(
 }
 
 template <typename OnNext, typename OnError, typename OnDone>
-inline auto start_with_next_error_done(
+inline auto on_next_error_done(
 	OnNext &&next,
 	OnError &&error,
 	OnDone &&done)
@@ -729,7 +729,7 @@ inline auto start_with_next_error_done(
 }
 
 template <typename OnNext, typename OnError, typename OnDone>
-inline auto start_with_next_error_done(
+inline auto on_next_error_done(
 	OnNext &&next,
 	OnError &&error,
 	OnDone &&done,

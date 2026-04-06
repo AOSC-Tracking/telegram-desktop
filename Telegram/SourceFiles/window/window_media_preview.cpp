@@ -46,12 +46,12 @@ MediaPreviewWidget::MediaPreviewWidget(
 , _emojiSize(Ui::Emoji::GetSizeLarge() / style::DevicePixelRatio()) {
 	setAttribute(Qt::WA_TransparentForMouseEvents);
 	_controller->session().downloaderTaskFinished(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		update();
 	}, lifetime());
 
 	style::PaletteChanged(
-	) | rpl::start_with_next([=] {
+	) | rpl::on_next([=] {
 		if (_document && _document->emojiUsesTextColor()) {
 			_cache = QPixmap();
 		}
@@ -62,7 +62,7 @@ QRect MediaPreviewWidget::updateArea() const {
 	const auto size = currentDimensions();
 	const auto position = QPoint(
 		(width() - size.width()) / 2,
-		(height() - size.height()) / 2);
+		(height() - size.height()) / 2 + _contentShiftY);
 	const auto premium = _document && _document->isPremiumSticker();
 	const auto adjusted = position
 		- (premium
@@ -153,7 +153,7 @@ void MediaPreviewWidget::paintEvent(QPaintEvent *e) {
 			+ (emojiCount - 1) * st::stickerEmojiSkip;
 		auto emojiLeft = (width() - emojiWidth) / 2;
 		const auto esize = Ui::Emoji::GetSizeLarge();
-		for (const auto emoji : _emojiList) {
+		for (const auto &emoji : _emojiList) {
 			Ui::Emoji::Draw(
 				p,
 				emoji,
@@ -181,7 +181,7 @@ QPoint MediaPreviewWidget::innerPosition(QSize size) const {
 	if (!_document || !_document->isPremiumSticker()) {
 		return QPoint(
 			(width() - size.width()) / 2,
-			(height() - size.height()) / 2);
+			(height() - size.height()) / 2 + _contentShiftY);
 	}
 	const auto outer = size * kPremiumMultiplier;
 	const auto shift = size.width() * kPremiumShift;
@@ -195,7 +195,7 @@ QPoint MediaPreviewWidget::outerPosition(QSize size) const {
 	const auto outer = size * kPremiumMultiplier;
 	return QPoint(
 		(width() - outer.width()) / 2,
-		(height() - outer.height()) / 2);
+		(height() - outer.height()) / 2 + _contentShiftY);
 }
 
 void MediaPreviewWidget::showPreview(
@@ -243,7 +243,10 @@ void MediaPreviewWidget::startShow() {
 				Window::GifPauseReason::MediaPreview);
 		}
 		_hiding = false;
-		_a_shown.start([=] { update(); }, 0., 1., st::stickerPreviewDuration);
+		const auto duration = _customDuration
+			? _customDuration
+			: st::stickerPreviewDuration;
+		_a_shown.start([=] { update(); }, 0., 1., duration);
 	} else {
 		update();
 	}
@@ -257,7 +260,10 @@ void MediaPreviewWidget::hidePreview() {
 		_cache = currentImage();
 	}
 	_hiding = true;
-	_a_shown.start([=] { update(); }, 1., 0., st::stickerPreviewDuration);
+	const auto duration = _customDuration
+		? _customDuration
+		: st::stickerPreviewDuration;
+	_a_shown.start([=] { update(); }, 1., 0., duration);
 	_photo = nullptr;
 	_photoMedia = nullptr;
 	_document = nullptr;
@@ -267,7 +273,7 @@ void MediaPreviewWidget::hidePreview() {
 
 void MediaPreviewWidget::fillEmojiString() {
 	_emojiList.clear();
-	if (_photo) {
+	if (_photo || _hideEmoji) {
 		return;
 	}
 	if (const auto sticker = _document->sticker()) {
@@ -309,6 +315,28 @@ void MediaPreviewWidget::setCustomRadius(int radius) {
 	update();
 }
 
+void MediaPreviewWidget::setCustomDuration(crl::time duration) {
+	_customDuration = duration;
+}
+
+void MediaPreviewWidget::setHideEmoji(bool hide) {
+	_hideEmoji = hide;
+	if (hide) {
+		_emojiList.clear();
+	}
+}
+
+void MediaPreviewWidget::setContentShift(int y) {
+	_contentShiftY = y;
+	_cachedSize = QSize();
+	update();
+}
+
+int MediaPreviewWidget::contentBottom() const {
+	const auto s = currentDimensions();
+	return (height() + s.height()) / 2 + _contentShiftY;
+}
+
 QSize MediaPreviewWidget::currentDimensions() const {
 	if (!_cachedSize.isEmpty()) {
 		return _cachedSize;
@@ -322,8 +350,9 @@ QSize MediaPreviewWidget::currentDimensions() const {
 	auto box = QSize();
 	if (_photo) {
 		result = QSize(_photo->width(), _photo->height());
-		const auto skip = st::defaultBox.margin.top();
-		box = QSize(width() - 2 * skip, height() - 2 * skip);
+		const auto skip = st::mediaPreviewPhotoSkip;
+		const auto shiftSkip = 2 * std::abs(_contentShiftY);
+		box = QSize(width() - 2 * skip, height() - 2 * skip - shiftSkip);
 	} else {
 		result = _document->dimensions;
 		if (result.isEmpty()) {
@@ -418,9 +447,9 @@ void MediaPreviewWidget::setupLottie() {
 		});
 	};
 
-	_lottie->updates() | rpl::start_with_next(handler, lifetime());
+	_lottie->updates() | rpl::on_next(handler, lifetime());
 	if (_effect) {
-		_effect->updates() | rpl::start_with_next(handler, lifetime());
+		_effect->updates() | rpl::on_next(handler, lifetime());
 	}
 }
 
@@ -600,6 +629,10 @@ void MediaPreviewWidget::clipCallback(
 }
 
 MediaPreviewWidget::~MediaPreviewWidget() {
+	if (!isHidden()) {
+		_controller->disableGifPauseReason(
+			Window::GifPauseReason::MediaPreview);
+	}
 }
 
 } // namespace Window

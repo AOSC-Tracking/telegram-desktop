@@ -22,7 +22,7 @@ struct HistoryMessageMarkupData;
 struct HistoryMessageReplyMarkup;
 struct HistoryMessageTranslation;
 struct HistoryMessageForwarded;
-struct HistoryMessageSuggestedPost;
+struct HistoryMessageSuggestion;
 struct HistoryServiceDependentData;
 struct HistoryServiceTodoCompletions;
 enum class HistorySelfDestructType;
@@ -31,6 +31,10 @@ struct MessageFactcheck;
 class ReplyKeyboard;
 struct LanguageId;
 enum class SuggestionActions : uchar;
+
+namespace Api {
+struct SummaryEntry;
+} // namespace Api
 
 namespace base {
 template <typename Enum>
@@ -92,6 +96,7 @@ struct HistoryItemCommonFields {
 	HistoryMessageSuggestInfo suggest;
 	bool ignoreForwardFrom = false;
 	bool ignoreForwardCaptions = false;
+	bool mediaSpoiler = false;
 };
 
 enum class HistoryReactionSource : char {
@@ -212,8 +217,11 @@ public:
 	void setFactcheck(MessageFactcheck info);
 	[[nodiscard]] bool hasUnrequestedFactcheck() const;
 	[[nodiscard]] TextWithEntities factcheckText() const;
+	[[nodiscard]] const Api::SummaryEntry &summaryEntry() const;
+	void setHasSummaryEntry();
 
 	[[nodiscard]] not_null<Data::Thread*> notificationThread() const;
+	[[nodiscard]] Data::Thread *maybeNotificationThread() const;
 	[[nodiscard]] not_null<History*> history() const {
 		return _history;
 	}
@@ -252,12 +260,15 @@ public:
 	[[nodiscard]] bool mentionsMe() const;
 	[[nodiscard]] bool isUnreadMention() const;
 	[[nodiscard]] bool hasUnreadReaction() const;
+	[[nodiscard]] bool hasUnreadPollVote() const;
+	void setHasUnreadPollVote();
 	[[nodiscard]] bool hasUnwatchedEffect() const;
 	bool markEffectWatched();
 	[[nodiscard]] bool isUnreadMedia() const;
 	[[nodiscard]] bool isIncomingUnreadMedia() const;
 	[[nodiscard]] bool hasUnreadMediaFlag() const;
 	void markReactionsRead();
+	void markPollVotesRead();
 	void markMediaAndMentionRead();
 	bool markContentsRead(bool fromThisClient = false);
 	void setIsPinned(bool isPinned);
@@ -328,6 +339,9 @@ public:
 	}
 	[[nodiscard]] bool showSimilarChannels() const {
 		return _flags & MessageFlag::ShowSimilarChannels;
+	}
+	[[nodiscard]] bool canBeSummarized() const {
+		return _flags & MessageFlag::CanBeSummarized;
 	}
 	[[nodiscard]] bool hasRealFromId() const;
 	[[nodiscard]] bool isPostHidingAuthor() const;
@@ -486,6 +500,8 @@ public:
 	[[nodiscard]] std::vector<Data::ReactionId> chosenReactions() const;
 	[[nodiscard]] Data::ReactionId lookupUnreadReaction(
 		not_null<UserData*> from) const;
+	[[nodiscard]] QByteArray lookupUnreadPollVote(
+		not_null<PeerData*> from) const;
 	[[nodiscard]] crl::time lastReactionsRefreshTime() const;
 
 	[[nodiscard]] bool reactionsAreTags() const;
@@ -577,10 +593,11 @@ public:
 
 	[[nodiscard]] SuggestionActions computeSuggestionActions() const;
 	[[nodiscard]] SuggestionActions computeSuggestionActions(
-		const HistoryMessageSuggestedPost *suggest) const;
+		const HistoryMessageSuggestion *suggest) const;
 	[[nodiscard]] SuggestionActions computeSuggestionActions(
 		bool accepted,
-		bool rejected) const;
+		bool rejected,
+		TimeId giftOfferExpiresAt) const;
 
 	[[nodiscard]] bool needsUpdateForVideoQualities(const MTPMessage &data);
 
@@ -591,6 +608,8 @@ public:
 	[[nodiscard]] int boostsApplied() const {
 		return _boostsApplied;
 	}
+
+	[[nodiscard]] QString fromRank() const;
 
 	MsgId id;
 
@@ -620,7 +639,7 @@ private:
 	void setReplyMarkup(
 		HistoryMessageMarkupData &&markup,
 		bool ignoreSuggestButtons = false);
-	void updateSuggestControls(const HistoryMessageSuggestedPost *suggest);
+	void updateSuggestControls(const HistoryMessageSuggestion *suggest);
 
 	void changeReplyToTopCounter(
 		not_null<HistoryMessageReply*> reply,
@@ -669,7 +688,7 @@ private:
 	void setReactions(const MTPMessageReactions *reactions);
 	[[nodiscard]] bool changeReactions(const MTPMessageReactions *reactions);
 	void setServiceMessageByAction(const MTPmessageAction &action);
-	void applyAction(const MTPMessageAction &action);
+	void processAction(const MTPMessageAction &action);
 	void refreshMedia(const MTPMessageMedia *media);
 	void refreshSentMedia(const MTPMessageMedia *media);
 	void createServiceFromMtp(const MTPDmessage &message);
@@ -694,6 +713,8 @@ private:
 		TimeId scheduleDate);
 	[[nodiscard]] PreparedServiceText prepareTodoCompletionsText();
 	[[nodiscard]] PreparedServiceText prepareTodoAppendTasksText();
+	[[nodiscard]] PreparedServiceText preparePollAppendAnswerText();
+	[[nodiscard]] PreparedServiceText preparePollDeleteAnswerText();
 
 	[[nodiscard]] PreparedServiceText composeTodoIncompleted(
 		not_null<HistoryServiceTodoCompletions*> done);

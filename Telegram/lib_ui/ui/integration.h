@@ -49,6 +49,8 @@ public:
 
 	virtual void textActionsUpdated();
 	virtual void activationFromTopPanel();
+	virtual void touchCounterIncrement() = 0;
+	[[nodiscard]] virtual int touchCounterNow() = 0;
 
 	[[nodiscard]] virtual bool screenIsLocked();
 
@@ -83,6 +85,7 @@ public:
 	[[nodiscard]] virtual QString phraseFormattingBlockquote();
 	[[nodiscard]] virtual QString phraseFormattingMonospace();
 	[[nodiscard]] virtual QString phraseFormattingSpoiler();
+	[[nodiscard]] virtual QString phraseFormattingDate();
 	[[nodiscard]] virtual QString phraseButtonOk();
 	[[nodiscard]] virtual QString phraseButtonClose();
 	[[nodiscard]] virtual QString phraseButtonCancel();

@@ -21,6 +21,7 @@ namespace Ui::Text {
 namespace {
 
 constexpr auto kMaxItemLength = 4096;
+constexpr auto kQuoteHeaderTextLarge = 25;
 
 void InitTextItemWithScriptItem(QTextItemInt &ti, const QScriptItem &si) {
 	// explicitly initialize flags so that initFontAttributes can be called
@@ -372,9 +373,24 @@ void Renderer::fillParagraphBg(int paddingBottom) {
 				const auto topleft = rect.topLeft();
 				const auto position = topleft + st.headerPosition;
 				const auto lbaseline = position + QPoint(0, font->ascent);
+				const auto headerText = _t->quoteHeaderText(_quote);
 				_p->setFont(font);
 				_p->setPen(_palette->monoFg->p);
-				_p->drawText(lbaseline, _t->quoteHeaderText(_quote));
+				if (headerText.size() > kQuoteHeaderTextLarge) {
+					const auto availableWidth = _startLineWidth
+						- st.headerPosition.x()
+						- st.iconPosition.x()
+						- (!st.icon.empty() ? st.icon.width() : 0);
+					if (font->width(headerText) > availableWidth) {
+						_p->drawText(
+							lbaseline,
+							font->elided(headerText, availableWidth));
+					} else {
+						_p->drawText(lbaseline, headerText);
+					}
+				} else {
+					_p->drawText(lbaseline, headerText);
+				}
 			} else if (_lookupX >= left
 				&& _lookupX < left + _startLineWidth
 				&& _lookupY >= top
@@ -900,6 +916,18 @@ bool Renderer::drawLine(uint16 lineEnd, Blocks::const_iterator blocksEnd) {
 			glyphsEnd = si.num_glyphs;
 		}
 
+		const auto isSpaceGlyph = [&](int g) {
+			if (!glyphs.attributes[g].dontPrint) {
+				return false;
+			}
+			for (auto p = itemStart; p < itemEnd; ++p) {
+				if (logClusters[p - si.position] == g) {
+					return lineText.at(p).isSpace();
+				}
+			}
+			return false;
+		};
+
 		QFixed itemWidth = 0;
 		for (int g = glyphsStart; g < glyphsEnd; ++g)
 			itemWidth += glyphs.effectiveAdvance(g);
@@ -910,7 +938,7 @@ bool Renderer::drawLine(uint16 lineEnd, Blocks::const_iterator blocksEnd) {
 				const auto adv = glyphs.effectiveAdvance(g);
 				if (leftLineLengthLeft - adv.toReal() < 0) {
 					leftLineLengthLeft = 0;
-					if (lineText.at(g).isSpace()) {
+					if (isSpaceGlyph(g)) {
 						rightLineLengthLeft += _f->spacew;
 					}
 					glyphsEnd = g;
@@ -935,7 +963,7 @@ bool Renderer::drawLine(uint16 lineEnd, Blocks::const_iterator blocksEnd) {
 					rightLineLengthLeft = 0;
 					glyphsStart = std::min(g + 1, glyphsEnd - 1);
 					i = nItems;
-					if (lineText.at(glyphsStart).isSpace()) {
+					if (isSpaceGlyph(glyphsStart)) {
 						x -= _f->spacew;
 					}
 					{
@@ -1584,7 +1612,7 @@ void Renderer::applyBlockProperties(
 		if (const auto color = block->colorIndex()) {
 			if (color == 1) {
 				if (_quote && _quote->blockquote && _quoteBlockquoteCache) {
-					_quoteLinkPenOverride = QPen(_quoteBlockquoteCache->outlines[0]);
+					_quoteLinkPenOverride = QPen(_quoteBlockquoteCache->icon);
 					_currentPen = &_quoteLinkPenOverride;
 					_currentPenSelected = &_quoteLinkPenOverride;
 				} else {
@@ -1603,7 +1631,7 @@ void Renderer::applyBlockProperties(
 			_currentPenSelected = &_palette->selectMonoFg->p;
 		} else if (block->linkIndex()) {
 			if (_quote && _quote->blockquote && _quoteBlockquoteCache) {
-				_quoteLinkPenOverride = QPen(_quoteBlockquoteCache->outlines[0]);
+				_quoteLinkPenOverride = QPen(_quoteBlockquoteCache->icon);
 				_currentPen = &_quoteLinkPenOverride;
 				_currentPenSelected = &_quoteLinkPenOverride;
 			} else {
@@ -1623,9 +1651,29 @@ ClickHandlerPtr Renderer::lookupLink(const AbstractBlock *block) const {
 		&& (block->flags() & TextBlockFlag::Spoiler))
 		? _spoiler->link
 		: ClickHandlerPtr();
-	return (spoilerLink || !block->linkIndex() || !_t->_extended)
-		? spoilerLink
-		: _t->_extended->links[block->linkIndex() - 1];
+	if (spoilerLink) {
+		return spoilerLink;
+	}
+	if (!block->linkIndex()) {
+		if (block->type() != TextBlockType::CustomEmoji
+			|| !_t->_extended) {
+			return nullptr;
+		}
+		const auto customEmoji = _t->_extended->customEmoji.get();
+		if (!customEmoji || !customEmoji->link) {
+			return nullptr;
+		}
+		const auto customBlock = static_cast<const CustomEmojiBlock*>(block);
+		customEmoji->entityData = customBlock->custom()->entityData();
+		if (customEmoji->predicate
+			&& !customEmoji->predicate(customEmoji->entityData)) {
+			return nullptr;
+		}
+		return customEmoji->link;
+	}
+	return _t->_extended
+		? _t->_extended->links[block->linkIndex() - 1]
+		: nullptr;
 }
 
 } // namespace Ui::Text

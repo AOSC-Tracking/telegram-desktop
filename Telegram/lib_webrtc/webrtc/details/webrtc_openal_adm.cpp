@@ -20,24 +20,32 @@
 #include <rtc_base/thread.h>
 #include <QtCore/QPointer>
 #include <QtCore/QThread>
+#include <cctype>
 
 #ifdef WEBRTC_WIN
 #include "webrtc/platform/win/webrtc_loopback_adm_win.h"
-#endif // WEBRTC_WIN
+#elif defined WEBRTC_LINUX
+#include "webrtc/platform/linux/webrtc_loopback_adm_linux.h"
+#endif // WEBRTC_WIN || WEBRTC_LINUX
+
+#ifdef WEBRTC_LINUX
+#include <api/audio/audio_frame.h>
+#include <modules/audio_processing/include/audio_processing.h>
+#include <modules/audio_processing/include/audio_frame_proxies.h>
+#endif // WEBRTC_LINUX
 
 namespace Webrtc::details {
 namespace {
 
 constexpr auto kRecordingFrequency = 48000;
 constexpr auto kPlayoutFrequency = 48000;
-constexpr auto kRecordingChannels = 1;
+constexpr auto kRecordingChannelsMono = 1;
+constexpr auto kRecordingChannelsStereo = 2;
 constexpr auto kBufferSizeMs = crl::time(10);
 constexpr auto kPlayoutPart = (kPlayoutFrequency * kBufferSizeMs + 999)
 	/ 1000;
 constexpr auto kRecordingPart = (kRecordingFrequency * kBufferSizeMs + 999)
 	/ 1000;
-constexpr auto kRecordingBufferSize = kRecordingPart * sizeof(int16_t)
-	* kRecordingChannels;
 constexpr auto kRestartAfterEmptyData = 50; // Half a second with no data.
 constexpr auto kProcessInterval = crl::time(10);
 
@@ -159,6 +167,33 @@ void SetStringToArray(const std::string &string, char *array, int size) {
 	array[length] = 0;
 }
 
+[[nodiscard]] std::string ToLower(std::string value) {
+	for (auto &ch : value) {
+		ch = char(std::tolower(static_cast<unsigned char>(ch)));
+	}
+	return value;
+}
+
+[[nodiscard]] bool LooksLikeLoopbackDeviceId(const std::string &id) {
+	const auto lower = ToLower(id);
+	return (lower.find("monitor") != std::string::npos)
+		|| (lower.find("loopback") != std::string::npos)
+		|| (lower.find("stereo mix") != std::string::npos)
+		|| (lower.find("what u hear") != std::string::npos);
+}
+
+#ifdef WEBRTC_LINUX
+[[nodiscard]] auto CreateLoopbackAudioProcessing()
+-> rtc::scoped_refptr<webrtc::AudioProcessing> {
+	auto result = webrtc::AudioProcessingBuilder().Create();
+	auto config = webrtc::AudioProcessing::Config();
+	config.echo_canceller.enabled = true;
+	config.echo_canceller.mobile_mode = true;
+	result->ApplyConfig(config);
+	return result;
+}
+#endif // WEBRTC_LINUX
+
 [[nodiscard]] int DeviceName(
 		ALCenum specifier,
 		int index,
@@ -230,7 +265,7 @@ AudioDeviceOpenAL::AudioDeviceOpenAL(
 : _audioDeviceBuffer(taskQueueFactory)
 , _deviceResolvedIds(std::make_shared<DeviceResolvedIds>()) {
 	_audioDeviceBuffer.SetRecordingSampleRate(kRecordingFrequency);
-	_audioDeviceBuffer.SetRecordingChannels(kRecordingChannels);
+	_audioDeviceBuffer.SetRecordingChannels(_recordingChannels);
 }
 
 AudioDeviceOpenAL::~AudioDeviceOpenAL() {
@@ -247,6 +282,21 @@ Fn<void(DeviceResolvedId)> AudioDeviceOpenAL::setDeviceIdCallback() {
 				: shared->capture) = std::move(id);
 		}
 	};
+}
+
+void AudioDeviceOpenAL::setLoopbackCaptureDeviceId(QString id) {
+	_loopbackOnly = true;
+	_loopbackCaptureDeviceIds.clear();
+	_loopbackCaptureDeviceIds.push_back(std::move(id));
+	_loopbackCaptureDeviceIndex = 0;
+	_rotateLoopbackCaptureDevice = false;
+}
+
+void AudioDeviceOpenAL::setLoopbackCaptureDeviceIds(std::vector<QString> ids) {
+	_loopbackOnly = true;
+	_loopbackCaptureDeviceIds = std::move(ids);
+	_loopbackCaptureDeviceIndex = 0;
+	_rotateLoopbackCaptureDevice = false;
 }
 
 int32_t AudioDeviceOpenAL::ActiveAudioLayer(AudioLayer *audioLayer) const {
@@ -453,15 +503,24 @@ int32_t AudioDeviceOpenAL::MinMicrophoneVolume(uint32_t *minVolume) const {
 }
 
 int16_t AudioDeviceOpenAL::PlayoutDevices() {
+	if (_loopbackOnly) {
+		return 0;
+	}
 	return DevicesCount(ALC_ALL_DEVICES_SPECIFIER);
 }
 
 int32_t AudioDeviceOpenAL::SetPlayoutDevice(uint16_t index) {
+	if (_loopbackOnly) {
+		return -1;
+	}
 	// We should've receive the id through setDeviceIdCallback by now.
 	return restartPlayout();
 }
 
 int32_t AudioDeviceOpenAL::SetPlayoutDevice(WindowsDeviceType /*device*/) {
+	if (_loopbackOnly) {
+		return -1;
+	}
 	// We should've receive the id through setDeviceIdCallback by now.
 	return restartPlayout();
 }
@@ -470,6 +529,9 @@ int32_t AudioDeviceOpenAL::PlayoutDeviceName(
 		uint16_t index,
 		char name[webrtc::kAdmMaxDeviceNameSize],
 		char guid[webrtc::kAdmMaxGuidSize]) {
+	if (_loopbackOnly) {
+		return -1;
+	}
 	return DeviceName(ALC_ALL_DEVICES_SPECIFIER, index, name, guid);
 }
 
@@ -508,6 +570,9 @@ int32_t AudioDeviceOpenAL::RecordingIsAvailable(bool *available) {
 }
 
 int32_t AudioDeviceOpenAL::InitPlayout() {
+	if (_loopbackOnly) {
+		return -1;
+	}
 	if (!_initialized) {
 		return -1;
 	} else if (_playoutInitialized) {
@@ -527,12 +592,34 @@ void AudioDeviceOpenAL::openRecordingDevice() {
 	const auto id = _deviceResolvedIds->capture;
 	lock.unlock();
 
-	const auto utf = id.isDefault() ? std::string() : id.value.toStdString();
-	_recordingDevice = alcCaptureOpenDevice(
-		utf.empty() ? nullptr : utf.c_str(),
-		kRecordingFrequency,
-		AL_FORMAT_MONO16,
-		kRecordingFrequency / 4);
+	const auto utf = _loopbackOnly
+		? ((_loopbackCaptureDeviceIds.empty()
+			|| _loopbackCaptureDeviceIndex < 0
+			|| _loopbackCaptureDeviceIndex
+				>= int(_loopbackCaptureDeviceIds.size()))
+			? std::string()
+			: _loopbackCaptureDeviceIds[_loopbackCaptureDeviceIndex].toStdString())
+		: (id.isDefault() ? std::string() : id.value.toStdString());
+	_recordingLoopback = _loopbackOnly
+		|| (!utf.empty() && LooksLikeLoopbackDeviceId(utf));
+	_recordingChannels = kRecordingChannelsMono;
+	if (_recordingLoopback) {
+		_recordingDevice = alcCaptureOpenDevice(
+			utf.c_str(),
+			kRecordingFrequency,
+			AL_FORMAT_STEREO16,
+			kRecordingFrequency / 4);
+		if (_recordingDevice) {
+			_recordingChannels = kRecordingChannelsStereo;
+		}
+	}
+	if (!_recordingDevice) {
+		_recordingDevice = alcCaptureOpenDevice(
+			utf.empty() ? nullptr : utf.c_str(),
+			kRecordingFrequency,
+			AL_FORMAT_MONO16,
+			kRecordingFrequency / 4);
+	}
 	if (!_recordingDevice) {
 		RTC_LOG(LS_ERROR)
 			<< "OpenAL Capture Device open failed, deviceID: '"
@@ -541,6 +628,33 @@ void AudioDeviceOpenAL::openRecordingDevice() {
 		_recordingFailed = true;
 		return;
 	}
+	if (_loopbackOnly) {
+		RTC_LOG(LS_WARNING)
+			<< "OpenAL Loopback Capture Device selected: '"
+			<< utf
+			<< "'";
+	}
+	_audioDeviceBuffer.SetRecordingChannels(_recordingChannels);
+#ifdef WEBRTC_LINUX
+	if (_recordingLoopback
+		&& _recordingChannels == kRecordingChannelsStereo) {
+		_loopbackAudioProcessing = CreateLoopbackAudioProcessing();
+
+		_loopbackCapturedFrame = std::make_unique<webrtc::AudioFrame>();
+		_loopbackCapturedFrame->sample_rate_hz_ = kRecordingFrequency;
+		_loopbackCapturedFrame->num_channels_ = _recordingChannels;
+		_loopbackCapturedFrame->samples_per_channel_ = kRecordingPart;
+
+		_loopbackRenderedFrame = std::make_unique<webrtc::AudioFrame>();
+		_loopbackRenderedFrame->sample_rate_hz_ = kRecordingFrequency;
+		_loopbackRenderedFrame->num_channels_ = kRecordingChannelsStereo;
+		_loopbackRenderedFrame->samples_per_channel_ = kRecordingPart;
+	} else {
+		_loopbackAudioProcessing = nullptr;
+		_loopbackCapturedFrame = nullptr;
+		_loopbackRenderedFrame = nullptr;
+	}
+#endif // WEBRTC_LINUX
 	// This does not work for capture devices :(
 	//_context = alcCreateContext(_device, nullptr);
 	//	alEventCallbackSOFT([](
@@ -631,7 +745,7 @@ int32_t AudioDeviceOpenAL::InitRecording() {
 	ensureThreadStarted();
 	openRecordingDevice();
 	_audioDeviceBuffer.SetRecordingSampleRate(kRecordingFrequency);
-	_audioDeviceBuffer.SetRecordingChannels(kRecordingChannels);
+	_audioDeviceBuffer.SetRecordingChannels(_recordingChannels);
 	return 0;
 }
 
@@ -675,6 +789,9 @@ bool AudioDeviceOpenAL::processRecordedPart(bool firstInCycle) {
 		if (firstInCycle) {
 			++_data->emptyRecordingData;
 			if (_data->emptyRecordingData == kRestartAfterEmptyData) {
+				if (_loopbackOnly) {
+					_rotateLoopbackCaptureDevice = true;
+				}
 				restartRecordingQueued();
 			}
 		}
@@ -688,8 +805,11 @@ bool AudioDeviceOpenAL::processRecordedPart(bool firstInCycle) {
 	//RTC_LOG(LS_ERROR) << "RECORDING LATENCY: " << _recordingLatency << "ms";
 
 	_data->emptyRecordingData = 0;
-	if (_data->recordedSamples.size() < kRecordingBufferSize) {
-		_data->recordedSamples.resize(kRecordingBufferSize);
+	const auto recordingBufferSize = kRecordingPart
+		* int(sizeof(int16_t))
+		* _recordingChannels;
+	if (_data->recordedSamples.size() < recordingBufferSize) {
+		_data->recordedSamples.resize(recordingBufferSize);
 	}
 	alcCaptureSamples(
 		_recordingDevice,
@@ -699,9 +819,46 @@ bool AudioDeviceOpenAL::processRecordedPart(bool firstInCycle) {
 		restartRecordingQueued();
 		return false;
 	}
+#ifdef WEBRTC_LINUX
+	if (_recordingLoopback
+		&& _recordingChannels == kRecordingChannelsStereo
+		&& _loopbackAudioProcessing
+		&& _loopbackCapturedFrame
+		&& _loopbackRenderedFrame) {
+		const auto delay = LoopbackCaptureTakeFarEndLinux(
+			*_loopbackRenderedFrame,
+			crl::now() - _recordingLatency);
+		if (delay.has_value()) {
+			_loopbackAudioProcessing->set_stream_delay_ms(*delay);
+			webrtc::ProcessReverseAudioFrame(
+				_loopbackAudioProcessing.get(),
+				_loopbackRenderedFrame.get());
+
+			memcpy(
+				_loopbackCapturedFrame->mutable_data(),
+				_data->recordedSamples.constData(),
+				recordingBufferSize);
+			webrtc::ProcessAudioFrame(
+				_loopbackAudioProcessing.get(),
+				_loopbackCapturedFrame.get());
+			_audioDeviceBuffer.SetRecordedBuffer(
+				_loopbackCapturedFrame->data(),
+				kRecordingPart);
+		} else {
+			_audioDeviceBuffer.SetRecordedBuffer(
+				_data->recordedSamples.data(),
+				kRecordingPart);
+		}
+	} else {
+		_audioDeviceBuffer.SetRecordedBuffer(
+			_data->recordedSamples.data(),
+			kRecordingPart);
+	}
+#else // WEBRTC_LINUX
 	_audioDeviceBuffer.SetRecordedBuffer(
 		_data->recordedSamples.data(),
 		kRecordingPart);
+#endif // !WEBRTC_LINUX
 	_audioDeviceBuffer.SetVQEData(_playoutLatency, _recordingLatency);
 	_audioDeviceBuffer.DeliverRecordedData();
 	return true;
@@ -864,7 +1021,15 @@ void AudioDeviceOpenAL::processPlayoutData() {
 				kPlayoutFrequency,
 				_playoutChannels);
 		}
-#endif // WEBRTC_WIN
+#elif defined WEBRTC_LINUX
+		if (IsLoopbackCaptureActiveLinux() && _playoutChannels == 2) {
+			LoopbackCapturePushFarEndLinux(
+				now + _playoutLatency,
+				_data->playoutSamples,
+				kPlayoutFrequency,
+				_playoutChannels);
+		}
+#endif // WEBRTC_WIN || WEBRTC_LINUX
 
 		_data->queuedBuffers[index] = true;
 		++_data->queuedBuffersCount;
@@ -936,6 +1101,11 @@ void AudioDeviceOpenAL::startCaptureOnThread() {
 			_recordingFailed = true;
 			return;
 		}
+#ifdef WEBRTC_LINUX
+		if (_recordingLoopback) {
+			SetLoopbackCaptureActiveLinux(true);
+		}
+#endif // WEBRTC_LINUX
 		if (!_data->timer.isActive()) {
 			_data->timer.callEach(kProcessInterval);
 		}
@@ -953,6 +1123,11 @@ void AudioDeviceOpenAL::stopCaptureOnThread() {
 	}
 	sync([&] {
 		_data->recording = false;
+#ifdef WEBRTC_LINUX
+		if (_recordingLoopback) {
+			SetLoopbackCaptureActiveLinux(false);
+		}
+#endif // WEBRTC_LINUX
 		if (_recordingFailed) {
 			return;
 		}
@@ -1092,6 +1267,16 @@ int AudioDeviceOpenAL::restartRecording() {
 	}
 	stopCaptureOnThread();
 	closeRecordingDevice();
+	if (_loopbackOnly
+		&& _rotateLoopbackCaptureDevice
+		&& _loopbackCaptureDeviceIds.size() > 1) {
+		_loopbackCaptureDeviceIndex = (_loopbackCaptureDeviceIndex + 1)
+			% int(_loopbackCaptureDeviceIds.size());
+		RTC_LOG(LS_WARNING)
+			<< "OpenAL Loopback Capture Device switched to index "
+			<< _loopbackCaptureDeviceIndex;
+	}
+	_rotateLoopbackCaptureDevice = false;
 
 	_recordingFailed = false;
 	openRecordingDevice();
@@ -1132,10 +1317,20 @@ void AudioDeviceOpenAL::closeRecordingDevice() {
 	//	alcDestroyContext(_context);
 	//	_context = nullptr;
 	//}
+#ifdef WEBRTC_LINUX
+	if (_recordingLoopback) {
+		SetLoopbackCaptureActiveLinux(false);
+	}
+	_loopbackAudioProcessing = nullptr;
+	_loopbackCapturedFrame = nullptr;
+	_loopbackRenderedFrame = nullptr;
+#endif // WEBRTC_LINUX
 	if (_recordingDevice) {
 		alcCaptureCloseDevice(_recordingDevice);
 		_recordingDevice = nullptr;
 	}
+	_recordingLoopback = false;
+	_recordingChannels = kRecordingChannelsMono;
 }
 
 void AudioDeviceOpenAL::closePlayoutDevice() {
@@ -1158,10 +1353,13 @@ bool AudioDeviceOpenAL::Recording() const {
 }
 
 bool AudioDeviceOpenAL::PlayoutIsInitialized() const {
-	return _playoutInitialized;
+	return _loopbackOnly ? false : _playoutInitialized;
 }
 
 int32_t AudioDeviceOpenAL::StartPlayout() {
+	if (_loopbackOnly) {
+		return -1;
+	}
 	if (!_playoutInitialized) {
 		return -1;
 	} else if (Playing()) {
@@ -1179,6 +1377,9 @@ int32_t AudioDeviceOpenAL::StartPlayout() {
 }
 
 int32_t AudioDeviceOpenAL::StopPlayout() {
+	if (_loopbackOnly) {
+		return -1;
+	}
 	if (_data) {
 		stopPlayingOnThread();
 		_audioDeviceBuffer.StopPlayout();
@@ -1225,7 +1426,7 @@ int32_t AudioDeviceOpenAL::EnableBuiltInNS(bool enable) {
 }
 
 bool AudioDeviceOpenAL::Playing() const {
-	return _data && _data->playing;
+	return !_loopbackOnly && _data && _data->playing;
 }
 
 } // namespace Webrtc::details
