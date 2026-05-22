@@ -364,11 +364,14 @@ void PopupMenu::handleTriggered(const Menu::CallbackData &data) {
 		if (!data.preventClose) {
 			hideMenu();
 		}
+		auto weak = base::make_weak(this);
 		data.action->trigger();
-		_triggering = false;
-		if (_deleteLater) {
-			_deleteLater = false;
-			deleteLater();
+		if (weak) {
+			_triggering = false;
+			if (_deleteLater) {
+				_deleteLater = false;
+				deleteLater();
+			}
 		}
 	}
 }
@@ -403,7 +406,10 @@ void PopupMenu::popupSubmenu(
 		_activeSubmenu = submenu;
 		_activeSubmenu->menu()->clearSelection();
 		_activeSubmenu->setAccessibleName(action->text());
-		if (_activeSubmenu->prepareGeometryFor(geometry().topLeft() + p, this)) {
+		if (_activeSubmenu->prepareGeometryFor(
+				geometry().topLeft() + p,
+				this,
+				_menu->itemForAction(action))) {
 			_activeSubmenu->showPrepared(source);
 			_menu->setChildShownAction(action);
 		} else {
@@ -778,7 +784,7 @@ QPoint PopupMenu::ConstrainToParentScreen(
 }
 
 void PopupMenu::popup(const QPoint &p) {
-	if (prepareGeometryFor(p)) {
+	if (!empty() && prepareGeometryFor(p)) {
 		popupPrepared();
 		return;
 	}
@@ -835,10 +841,13 @@ rpl::producer<PopupMenu::ShowState> PopupMenu::showStateValue() const {
 }
 
 bool PopupMenu::prepareGeometryFor(const QPoint &p) {
-	return prepareGeometryFor(p, nullptr);
+	return prepareGeometryFor(p, nullptr, nullptr);
 }
 
-bool PopupMenu::prepareGeometryFor(const QPoint &p, PopupMenu *parent) {
+bool PopupMenu::prepareGeometryFor(
+		const QPoint &p,
+		PopupMenu *parent,
+		QWidget *parentActionWidget) {
 	if (_clearLastSeparator) {
 		_menu->clearLastSeparator();
 		for (const auto &[action, submenu] : _submenus) {
@@ -899,12 +908,14 @@ bool PopupMenu::prepareGeometryFor(const QPoint &p, PopupMenu *parent) {
 		base::take(r);
 		if (_parent) {
 			// we must have an action to position the submenu around
-			const auto action = not_null(
-				_parent->menu()->findSelectedAction());
+			Assert(parentActionWidget != nullptr);
 			native->setParentControlGeometry(
 				QRect(
-					action->mapTo(action->window(), QPoint()),
-					action->size()) + _st.scrollPadding);
+					parentActionWidget->mapTo(
+						parentActionWidget->window(),
+						QPoint()),
+					parentActionWidget->size())
+				+ _st.scrollPadding);
 		} else if (padding.top()) {
 			// provide the compositor with a range for flip_y so it uses
 			// the cursor point instead of the padding's top point
@@ -1005,10 +1016,15 @@ void PopupMenu::finishSwitchAnimation() {
 	if (!_switchState) {
 		return;
 	}
+	const auto positionShift = _switchState->positionShift;
+	const auto baseY = _switchState->baseY;
 	_switchState->overlay.destroy();
 	_switchState.reset();
 	_scroll->show();
 	handleMenuResize();
+	if (positionShift) {
+		move(x(), baseY + positionShift);
+	}
 }
 
 void PopupMenu::setupMenuWidget() {
@@ -1144,6 +1160,8 @@ void PopupMenu::swapStashed(SwitchDirection direction) {
 
 		std::swap(raw->oldSnapshot, raw->newSnapshot);
 		std::swap(raw->fromScrollHeight, raw->toScrollHeight);
+		raw->baseY = y();
+		raw->positionShift = computePositionShift(raw->toScrollHeight);
 		raw->direction = direction;
 		startSwitchAnimation(raw, 1. - progress);
 		return;
@@ -1195,6 +1213,9 @@ void PopupMenu::swapStashed(SwitchDirection direction) {
 		setFixedSize(maxSize);
 		resize(maxSize);
 	}
+
+	_switchState->baseY = y();
+	_switchState->positionShift = computePositionShift(newScrollHeight);
 	_inner = QRect(
 		_padding.left(),
 		_padding.top(),
@@ -1257,6 +1278,14 @@ void PopupMenu::startSwitchAnimation(
 			raw->toScrollHeight,
 			progress);
 
+		if (raw->positionShift) {
+			const auto shift = anim::interpolate(
+				0,
+				raw->positionShift,
+				progress);
+			move(x(), raw->baseY + shift);
+		}
+
 		raw->overlay->resize(scrollWidth, h);
 		raw->overlay->update();
 
@@ -1279,6 +1308,26 @@ void PopupMenu::startSwitchAnimation(
 
 bool PopupMenu::hasStashedContent() const {
 	return _stashedContent != nullptr;
+}
+
+int PopupMenu::computePositionShift(int targetScrollHeight) const {
+	const auto screen = QGuiApplication::screenAt(
+		QPoint(x() + width() / 2, y() + height() / 2));
+	if (!screen) {
+		return 0;
+	}
+	const auto r = screen->availableGeometry();
+	const auto targetH = _padding.top()
+		+ targetScrollHeight
+		+ _padding.bottom();
+	auto targetY = y();
+	if (targetY + targetH - _margins.bottom() > r.y() + r.height()) {
+		targetY = r.y() + r.height() + _margins.bottom() - targetH;
+	}
+	if (targetY + _margins.top() < r.y()) {
+		targetY = r.y() - _margins.top();
+	}
+	return targetY - y();
 }
 
 RpWidget *PopupMenu::accessibilityParent() const {

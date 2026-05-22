@@ -171,10 +171,21 @@ struct LineGeometry {
 	int width = 0;
 	bool elided = false;
 };
+struct LineLayoutInfo {
+	int left = 0;
+	int width = 0;
+	int bottom = 0;
+	bool rtl = false;
+};
 struct GeometryDescriptor {
 	Fn<LineGeometry(int line)> layout;
 	bool breakEverywhere = false;
 	bool *outElided = nullptr;
+};
+
+struct LinePostprocess {
+	Fn<Fn<void(QImage&)>(int lineIndex)> method;
+	not_null<QImage*> cache;
 };
 
 [[nodiscard]] not_null<SpoilerMessCache*> DefaultSpoilerCache();
@@ -261,6 +272,7 @@ struct PaintContext {
 	// Elision middle works only with elisionLines = 1 and is very limited.
 	bool elisionMiddle = false;
 	bool useFullWidth = false; // !(width = min(availableWidth, maxWidth()))
+	const LinePostprocess *linePostprocess = nullptr;
 };
 
 class String {
@@ -281,6 +293,9 @@ public:
 	String &operator=(String &&other);
 	~String();
 
+	[[nodiscard]] QSize countSize(
+		int width,
+		bool breakEverywhere = false) const;
 	[[nodiscard]] int countWidth(
 		int width,
 		bool breakEverywhere = false) const;
@@ -296,6 +311,8 @@ public:
 	[[nodiscard]] std::vector<int> countLineWidths(
 		int width,
 		LineWidthsOptions options) const;
+	[[nodiscard]] std::vector<LineLayoutInfo> countLinesGeometry(
+		int width) const;
 
 	struct DimensionsResult {
 		int width = 0;
@@ -474,8 +491,8 @@ private:
 		FlagsChangeCallback flagsChangeCallback) const;
 
 	// Template method for countWidth(), countHeight(), countLineWidths().
-	// callback(lineWidth, lineBottom) will be called for all lines with:
-	// QFixed lineWidth, int lineBottom
+	// callback(lineWidth, lineBottom, lineLeft) will be called for all lines
+	// with: QFixed lineWidth, int lineBottom, int lineLeft
 	template <typename Callback>
 	void enumerateLines(
 		int w,

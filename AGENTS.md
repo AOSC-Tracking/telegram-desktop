@@ -156,6 +156,18 @@ QString currentTitle = tr::lng_settings_title(tr::now);
 rpl::producer<QString> nameProducer = GetNameProducer();
 ```
 
+**Use `_q` for QString literals:**
+
+Prefer the project literal `u"..."_q` instead of the verbose `QStringLiteral("...")` macro when creating `QString` values:
+
+```cpp
+// Prefer this:
+auto text = u"Settings"_q;
+
+// Instead of this:
+auto text = QStringLiteral("Settings");
+```
+
 ## API Usage
 
 ### API Schema Files
@@ -212,6 +224,7 @@ api().request(MTPnamespace_MethodName(
   ```
 - For single constructors, use `.data()` shortcut
 - Include `.handleFloodErrors()` before `.send()` in rare cases where you want special case flood error handling
+- Silently ignore HTTP 406 errors in UI: the server uses 406 to mean "show nothing to the user". Guard toasts with `MTP::IgnoreError(error)` or use `MTP::ShowErrorFallback(show, error)` (both in `mtproto/mtproto_response.h`) which shows `error.type()` as a toast unless the error should be ignored.
 
 ## UI Styling
 
@@ -286,6 +299,8 @@ widget->setFixedHeight(st::myWidgetHeight);
 auto margin = st::myWidgetMargin;
 auto iconSize = st::myWidgetIconSize;
 ```
+
+**Duration constants**: Animation durations should NOT go in `.style` files, this is a legacy approach. Prefer `constexpr auto kName = crl::time(N)` in an anonymous namespace in the relevant `.cpp` file.
 
 ### Usage in Code
 

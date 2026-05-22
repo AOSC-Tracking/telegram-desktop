@@ -53,6 +53,12 @@ enum class NewMessageType {
 	Existing,
 };
 
+enum class NewAddType : uchar {
+	Outgoing,
+	RegularIncoming,
+	StreamedDraftFinish,
+};
+
 class History final : public Data::Thread {
 public:
 	using Element = HistoryView::Element;
@@ -93,6 +99,7 @@ public:
 	[[nodiscard]] Data::HistoryMessages *maybeMessages();
 
 	[[nodiscard]] HistoryStreamedDrafts &streamedDrafts();
+	[[nodiscard]] HistoryStreamedDrafts *streamedDraftsIfExists() const;
 
 	[[nodiscard]] HistoryItem *joinedMessageInstance() const;
 	void checkLocalMessages();
@@ -193,7 +200,7 @@ public:
 	void addOlderSlice(const QVector<MTPMessage> &slice);
 	void addNewerSlice(const QVector<MTPMessage> &slice);
 
-	void newItemAdded(not_null<HistoryItem*> item);
+	void newItemAdded(not_null<HistoryItem*> item, NewAddType type);
 
 	void registerClientSideMessage(not_null<HistoryItem*> item);
 	void unregisterClientSideMessage(not_null<HistoryItem*> item);
@@ -241,6 +248,8 @@ public:
 	[[nodiscard]] bool loadedAtBottom() const; // last message is in the list
 	void setNotLoadedAtBottom();
 	[[nodiscard]] bool loadedAtTop() const; // nothing was added after loading history back
+	[[nodiscard]] bool hasGuestChatBotMessages() const;
+	void setHasGuestChatBotMessages();
 	[[nodiscard]] bool isReadyFor(MsgId msgId); // has messages for showing history at msgId
 	void getReadyFor(MsgId msgId);
 
@@ -420,6 +429,7 @@ public:
 		PeerId dataPeerId,
 		const MTPmessages_Messages &data);
 
+	void viewHeightAdjusted(not_null<Element*> view, int delta);
 	void forgetScrollState() {
 		scrollTopItem = nullptr;
 	}
@@ -497,6 +507,7 @@ private:
 		HasPinnedMessages = (1 << 6),
 		ResolveChatListMessage = (1 << 7),
 		MonoAndForumUnreadInvalidatePending = (1 << 8),
+		HasGuestChatBotMessages = (1 << 9),
 	};
 	using Flags = base::flags<Flag>;
 	friend inline constexpr auto is_flag_type(Flag) {
@@ -558,6 +569,7 @@ private:
 	void mainViewRemoved(
 		not_null<HistoryBlock*> block,
 		not_null<Element*> view);
+	void mainViewHeightAdjusted(not_null<Element*> view, int delta);
 
 	TimeId adjustedChatListTimeId() const override;
 	void changedChatListPinHook() override;

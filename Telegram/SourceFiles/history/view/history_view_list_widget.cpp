@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_item_components.h"
 #include "history/history_item_helpers.h"
 #include "history/history_item_text.h"
+#include "history/history_streamed_drafts.h"
 #include "history/view/media/history_view_media.h"
 #include "history/view/media/history_view_sticker.h"
 #include "history/view/reactions/history_view_reactions.h"
@@ -98,6 +99,7 @@ constexpr auto kPreloadIfLessThanScreens = 2;
 constexpr auto kPreloadedScreensCountFull
 	= kPreloadedScreensCount + 1 + kPreloadedScreensCount;
 constexpr auto kClearUserpicsAfter = 50;
+constexpr auto kScrollDateHideOnDayCrossingTimeout = crl::time(3000);
 
 [[nodiscard]] std::unique_ptr<TranslateTracker> MaybeTranslateTracker(
 		History *history) {
@@ -463,6 +465,12 @@ ListWidget::ListWidget(
 			resizeItem(view);
 		}
 	}, lifetime());
+	_session->data().viewHeightAdjusted(
+	) | rpl::on_next([this](Data::Session::ViewHeightAdjusted data) {
+		if (data.view->delegate() == this) {
+			viewHeightAdjusted(data.view);
+		}
+	}, lifetime());
 	_session->data().itemViewRefreshRequest(
 	) | rpl::on_next([this](auto item) {
 		if (const auto view = viewForItem(item)) {
@@ -641,6 +649,10 @@ void ListWidget::refreshRows(const Data::MessagesSlice &old) {
 
 	saveScrollState();
 
+	const auto scrolledTillEnd = _itemsKnownTillEnd
+		&& (_visibleBottom == height())
+		&& (_visibleBottom > _visibleTop);
+
 	const auto addedToEndFrom = (old.skippedAfter == 0
 		&& (_slice.skippedAfter == 0)
 		&& !old.ids.empty())
@@ -678,7 +690,10 @@ void ListWidget::refreshRows(const Data::MessagesSlice &old) {
 		_translateTracker->addBunchFrom(_items);
 	}
 	for (auto e = end(_items), i = e - addedToEndCount; i != e; ++i) {
-		_itemRevealPending.emplace(*i);
+		const auto item = (*i)->data();
+		if (!item->history()->streamedDrafts().hasFor(item)) {
+			_itemRevealPending.emplace(*i);
+		}
 	}
 	updateAroundPositionFromNearest(nearestIndex);
 
@@ -699,7 +714,8 @@ void ListWidget::refreshRows(const Data::MessagesSlice &old) {
 	}
 	_viewsCapacity.clear();
 
-	checkUnreadBarCreation();
+	const auto markLastAsRead = (scrolledTillEnd && markingMessagesRead());
+	checkUnreadBarCreation(markLastAsRead);
 	restoreScrollState();
 	if (!_itemsRevealHeight) {
 		mouseActionUpdate(QCursor::pos());
@@ -876,6 +892,10 @@ void ListWidget::showAroundPosition(
 	refreshViewer();
 }
 
+void ListWidget::overrideInitialScroll(Fn<bool()> callback) {
+	_overrideInitialScroll = std::move(callback);
+}
+
 bool ListWidget::jumpToBottomInsteadOfUnread() const {
 	// If we want to jump to unread, but we're at the unread already,
 	// then jump to the end of the list.
@@ -980,18 +1000,21 @@ void ListWidget::computeScrollTo(
 	scrollTo(wanted, position, scrollDelta, type);
 }
 
-void ListWidget::checkUnreadBarCreation() {
-	if (!_bar.element) {
-		if (auto data = _delegate->listMessagesBar(_items); data.bar.element) {
-			_bar = std::move(data.bar);
-			_barText = std::move(data.text);
-			if (!_bar.hidden) {
-				_bar.element->createUnreadBar(_barText.value());
-				const auto i = ranges::find(_items, not_null{ _bar.element });
-				Assert(i != end(_items));
-				refreshAttachmentsAtIndex(i - begin(_items));
-			}
-		}
+void ListWidget::checkUnreadBarCreation(bool markLastAsRead) {
+	if (_bar.element) {
+		return;
+	}
+	auto data = _delegate->listMessagesBar(_items, markLastAsRead);
+	if (!data.bar.element) {
+		return;
+	}
+	_bar = std::move(data.bar);
+	_barText = std::move(data.text);
+	if (!_bar.hidden) {
+		_bar.element->createUnreadBar(_barText.value());
+		const auto i = ranges::find(_items, not_null{ _bar.element });
+		Assert(i != end(_items));
+		refreshAttachmentsAtIndex(i - begin(_items));
 	}
 }
 
@@ -1147,9 +1170,10 @@ void ListWidget::visibleTopBottomUpdated(
 	}
 	updateVisibleTopItem();
 	if (scrolledUp) {
+		_scrollDateAfterDayCrossing = false;
 		_scrollDateCheck.call();
 	} else {
-		scrollDateHideByTimer();
+		scrollDateCheckDownward();
 	}
 	_delegate->listVisibleAreaUpdated();
 	session().data().itemVisibilitiesUpdated();
@@ -1197,8 +1221,33 @@ void ListWidget::scrollDateCheck() {
 	}
 }
 
+void ListWidget::scrollDateCheckDownward() {
+	const auto previousDay = _scrollDateLastItem
+		? _scrollDateLastItem->dateTime().date()
+		: QDate();
+	const auto currentDay = _visibleTopItem
+		? _visibleTopItem->dateTime().date()
+		: QDate();
+	const auto crossedDay = previousDay.isValid()
+		&& currentDay.isValid()
+		&& (previousDay != currentDay);
+	_scrollDateLastItem = _visibleTopItem;
+	_scrollDateLastItemTop = _visibleTopFromItem;
+	if (crossedDay) {
+		if (!_scrollDateShown) {
+			toggleScrollDateShown();
+		}
+		_scrollDateAfterDayCrossing = true;
+		_scrollDateHideTimer.callOnce(
+			kScrollDateHideOnDayCrossingTimeout);
+	} else if (!_scrollDateAfterDayCrossing) {
+		scrollDateHideByTimer();
+	}
+}
+
 void ListWidget::scrollDateHideByTimer() {
 	_scrollDateHideTimer.cancel();
+	_scrollDateAfterDayCrossing = false;
 	if (!_scrollDateLink || ClickHandler::getPressed() != _scrollDateLink) {
 		scrollDateHide();
 	}
@@ -2734,9 +2783,9 @@ SelectedItems ListWidget::getSelectedItems() const {
 	return collectSelectedItems();
 }
 
-const TextSelection &ListWidget::getSelectedTextRange(
+TextSelection ListWidget::getSelectedTextRange(
 		not_null<HistoryItem*> item) const {
-	return _selectedTextRange;
+	return (_selectedTextItem == item) ? _selectedTextRange : TextSelection();
 }
 
 int ListWidget::findItemIndexByY(int y) const {
@@ -2855,11 +2904,11 @@ void ListWidget::mouseDoubleClickEvent(QMouseEvent *e) {
 void ListWidget::toggleFavoriteReaction(not_null<Element*> view) const {
 	const auto item = view->data();
 	const auto favorite = session().data().reactions().favoriteId();
-	if (!ranges::contains(
+	if (_delegate->listShowReactPremiumError(item, favorite)
+		|| !ranges::contains(
 			Data::LookupPossibleReactions(item).recent,
 			favorite,
-			&Data::Reaction::id)
-		|| _delegate->listShowReactPremiumError(item, favorite)) {
+			&Data::Reaction::id)) {
 		return;
 	} else if (!ranges::contains(item->chosenReactions(), favorite)) {
 		if (const auto top = itemTop(view); top >= 0) {
@@ -4352,6 +4401,30 @@ void ListWidget::refreshAttachmentsFromTill(int from, int till) {
 	}
 }
 
+void ListWidget::viewHeightAdjusted(not_null<Element*> view) {
+	const auto i = ranges::find(_items, view);
+	if (i == end(_items)) {
+		return;
+	}
+	auto next = i + 1;
+	const auto was = (next != end(_items))
+		? (*next)->y()
+		: _itemsHeight;
+	const auto now = view->y() + view->height();
+	const auto delta = now - was;
+	for (; next != end(_items); ++next) {
+		(*next)->setY((*next)->y() + delta);
+	}
+	_itemsHeight += delta;
+	_itemsTop = (_minHeight > _itemsHeight + st::historyPaddingBottom)
+		? (_minHeight - _itemsHeight - st::historyPaddingBottom)
+		: 0;
+	resize(width(), _itemsTop + _itemsHeight + st::historyPaddingBottom);
+	restoreScrollPosition();
+	updateVisibleTopItem();
+	update();
+}
+
 void ListWidget::refreshItem(not_null<const Element*> view) {
 	const auto i = ranges::find(_items, view);
 	const auto index = i - begin(_items);
@@ -4616,8 +4689,11 @@ void ConfirmDeleteSelectedItems(not_null<ListWidget*> widget) {
 	});
 	if (CanCreateModerateMessagesBox(historyItems)) {
 		const auto opt = DefaultModerateMessagesBoxOptions();
-		controller->show(
-			Box(CreateModerateMessagesBox, historyItems, confirmed, opt));
+		controller->show(Box(
+			CreateModerateMessagesBox,
+			ModerateMessagesBoxEntry{ .items = historyItems },
+			confirmed,
+			opt));
 	} else {
 		auto box = Box<DeleteMessagesBox>(
 			&widget->session(),

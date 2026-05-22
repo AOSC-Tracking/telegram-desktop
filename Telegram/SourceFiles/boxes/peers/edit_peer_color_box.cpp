@@ -56,7 +56,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/effects/path_shift_gradient.h"
 #include "ui/effects/premium_graphics.h"
 #include "ui/layers/generic_box.h"
-#include "ui/new_badges.h"
 #include "ui/peer/color_sample.h"
 #include "ui/text/text_utilities.h"
 #include "ui/widgets/buttons.h"
@@ -1546,7 +1545,6 @@ not_null<Info::Profile::TopBar*> CreateProfilePreview(
 }
 
 void ProcessButton(not_null<Ui::RoundButton*> button) {
-	button->setTextTransform(Ui::RoundButton::TextTransform::NoTransform);
 	// Raise to be above right emoji from buttons.
 	crl::on_main(button, [=] { button->raise(); });
 }
@@ -2426,10 +2424,12 @@ void EditPeerColorBox(
 		buttonContainer,
 		tr::lng_settings_color_apply(),
 		box->getDelegate()->style().button);
+	profileButton->setTextTransform(Ui::RoundButtonTextTransform::ToUpper);
 	const auto nameButton = Ui::CreateChild<Ui::RoundButton>(
 		buttonContainer,
 		tr::lng_settings_color_apply(),
 		box->getDelegate()->style().button);
+	nameButton->setTextTransform(Ui::RoundButtonTextTransform::ToUpper);
 	rpl::combine(
 		buttonContainer->widthValue(),
 		profileButton->sizeValue(),
@@ -2742,32 +2742,6 @@ not_null<Ui::SettingsButton*> AddPeerColorButton(
 
 	if (!peer->isMegagroup()) {
 		SetupPeerColorSample(button, peer, rpl::duplicate(label), style);
-	}
-
-	{
-		const auto badge = Ui::NewBadge::CreateNewBadge(
-			button,
-			tr::lng_premium_summary_new_badge()).get();
-		rpl::combine(
-			rpl::duplicate(label),
-			button->widthValue()
-		) | rpl::on_next([=](
-				const QString &text,
-				int width) {
-			const auto space = st.style.font->spacew;
-			const auto left = st.padding.left()
-				+ st.style.font->width(text)
-				+ space;
-			const auto available = width - left - st.padding.right();
-			badge->setVisible(available >= badge->width());
-			if (!badge->isHidden()) {
-				const auto top = st.padding.top()
-					+ st.style.font->ascent
-					- st::settingsPremiumNewBadge.style.font->ascent
-					- st::settingsPremiumNewBadgePadding.top();
-				badge->moveToLeft(left, top, width);
-			}
-		}, badge->lifetime());
 	}
 
 	button->setClickedCallback([=] {

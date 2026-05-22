@@ -15,6 +15,7 @@
 #include "ui/platform/ui_platform_utility.h"
 #include "emoji_suggestions_helper.h"
 #include "ui/text/text.h"
+#include "ui/text/text_html_tags.h"
 #include "ui/text/text_renderer.h" // kQuoteCollapsedLines
 #include "ui/widgets/fields/custom_field_object.h"
 #include "ui/widgets/labels.h"
@@ -141,6 +142,48 @@ QVariant InputDocument::loadResource(int type, const QUrl &name) {
 	return (tag == kTagBlockquote)
 		|| (tag == kTagBlockquoteCollapsed)
 		|| IsTagPre(tag);
+}
+
+[[nodiscard]] bool IsUsernameChar(QChar ch) {
+	const auto code = ch.unicode();
+	return (code >= 'a' && code <= 'z')
+		|| (code >= 'A' && code <= 'Z')
+		|| (code >= '0' && code <= '9')
+		|| (ch == '_');
+}
+
+[[nodiscard]] QStringView TrimmedView(QStringView text) {
+	auto from = 0;
+	auto till = text.size();
+	while (from != till && text[from].isSpace()) {
+		++from;
+	}
+	while (till != from && text[till - 1].isSpace()) {
+		--till;
+	}
+	return text.mid(from, till - from);
+}
+
+[[nodiscard]] QString StartingMention(QStringView text) {
+	const auto trimmed = TrimmedView(text);
+	if (trimmed.size() < 3 || trimmed[0] != '@') {
+		return QString();
+	}
+	auto till = 1;
+	while (till != trimmed.size() && IsUsernameChar(trimmed[till])) {
+		++till;
+	}
+	return (till > 1 && till != trimmed.size())
+		? trimmed.mid(0, till).toString()
+		: QString();
+}
+
+[[nodiscard]] bool HtmlTextMatchesPlainTextStart(
+		const QString &htmlText,
+		const QString &plainText) {
+	const auto htmlMention = StartingMention(QStringView(htmlText));
+	return htmlMention.isEmpty()
+		|| StartingMention(QStringView(plainText)) == htmlMention;
 }
 
 [[nodiscard]] QStringView FindBlockTag(QStringView tag) {
@@ -1281,7 +1324,6 @@ struct FormattingAction {
 		InsertEmoji,
 		InsertCustomEmoji,
 		RemoveCustomEmoji,
-		TildeFont,
 		RemoveTag,
 		RemoveNewline,
 		ClearInstantReplace,
@@ -1296,8 +1338,6 @@ struct FormattingAction {
 
 	Type type = Type::Invalid;
 	EmojiPtr emoji = nullptr;
-	bool isTilde = false;
-	QString tildeTag;
 	QString existingTags;
 	QString customEmojiText;
 	QString customEmojiLink;
@@ -2210,11 +2250,25 @@ void InputField::setMaxLength(int length) {
 }
 
 void InputField::setMinHeight(int height) {
+	if (_minHeight == height) {
+		return;
+	}
 	_minHeight = height;
+	if (_maxHeight >= 0 && _maxHeight < height) {
+		_maxHeight = height;
+	}
+	heightAutoupdated();
 }
 
 void InputField::setMaxHeight(int height) {
+	if (_maxHeight == height) {
+		return;
+	}
 	_maxHeight = height;
+	if (_minHeight >= 0 && _minHeight > height) {
+		_minHeight = height;
+	}
+	heightAutoupdated();
 }
 
 void InputField::setMode(Mode mode) {
@@ -2986,13 +3040,6 @@ bool InputField::isRedoAvailable() const {
 }
 
 void InputField::processFormatting(int insertPosition, int insertEnd) {
-	// Tilde formatting.
-	const auto ratio = style::DevicePixelRatio();
-	const auto processTilde = (_st.style.font->f.pixelSize() * ratio == 13)
-		&& (_st.style.font->f.family() == qstr("Open Sans"));
-	auto isTildeFragment = false;
-	auto tildeFixedFont = _st.style.font->semibold()->f;
-
 	// First tag handling (the one we inserted text to).
 	bool startTagFound = false;
 	bool breakTagOnNotLetter = false;
@@ -3090,15 +3137,6 @@ void InputField::processFormatting(int insertPosition, int insertEnd) {
 					action.intervalEnd = fragmentEnd;
 					break;
 				}
-				if (processTilde) {
-					const auto formatFont = format.font();
-					if (!tildeFixedFont.styleName().isEmpty()
-						&& formatFont.styleName().isEmpty()) {
-						tildeFixedFont.setStyleName(QString());
-					}
-					isTildeFragment = (format.font() == tildeFixedFont);
-				}
-
 				auto fragmentText = fragment.text();
 				auto *textStart = fragmentText.constData();
 				auto *textEnd = textStart + fragmentText.size();
@@ -3202,23 +3240,6 @@ void InputField::processFormatting(int insertPosition, int insertEnd) {
 							break;
 						}
 					}
-					if (processTilde) { // Tilde symbol fix in OpenSans.
-						bool tilde = (ch->unicode() == '~');
-						if ((tilde && !isTildeFragment) || (!tilde && isTildeFragment)) {
-							if (action.type == ActionType::Invalid) {
-								action.type = ActionType::TildeFont;
-								action.intervalStart = fragmentPosition + (ch - textStart);
-								action.intervalEnd = action.intervalStart + 1;
-								action.tildeTag = format.property(kTagProperty).toString();
-								action.isTilde = tilde;
-							} else {
-								++action.intervalEnd;
-							}
-						} else if (action.type == ActionType::TildeFont) {
-							break;
-						}
-					}
-
 					if (ch + 1 < textEnd && ch->isHighSurrogate() && (ch + 1)->isLowSurrogate()) {
 						++ch;
 					}
@@ -3384,13 +3405,6 @@ void InputField::processFormatting(int insertPosition, int insertEnd) {
 					action.existingTags,
 					action.intervalStart,
 					action.intervalEnd);
-			} else if (action.type == ActionType::TildeFont) {
-				auto format = QTextCharFormat();
-				format.setFont(action.isTilde
-					? tildeFixedFont
-					: PrepareTagFormat(_st, action.tildeTag).font());
-				cursor.mergeCharFormat(format);
-				insertPosition = action.intervalEnd;
 			} else if (action.type == ActionType::ClearInstantReplace) {
 				auto format = _defaultCharFormat;
 				ApplyTagFormat(format, cursor.charFormat());
@@ -3676,9 +3690,11 @@ QMimeData *InputField::createMimeDataFromSelectionInner() const {
 	const auto cursor = _inner->textCursor();
 	const auto start = cursor.selectionStart();
 	const auto end = cursor.selectionEnd();
-	const auto result = TextUtilities::MimeDataFromText((end > start)
+	auto selected = (end > start)
 		? getTextWithTagsPart(start, end)
-		: TextWithTags()
+		: TextWithTags();
+	const auto result = TextUtilities::MimeDataFromText(
+		std::move(selected)
 	).release();
 	return result ? result : new QMimeData;
 }
@@ -5308,6 +5324,9 @@ bool InputField::canInsertFromMimeDataInner(const QMimeData *source) const {
 }
 
 void InputField::insertFromMimeDataInner(const QMimeData *source) {
+	if (!source) {
+		return;
+	}
 	if (source
 		&& _mimeDataHook
 		&& _mimeDataHook(source, MimeAction::Insert)) {
@@ -5319,21 +5338,38 @@ void InputField::insertFromMimeDataInner(const QMimeData *source) {
 		const auto modifiers = QGuiApplication::keyboardModifiers();
 		const auto plain = (modifiers & Qt::ControlModifier)
 			&& (modifiers & Qt::ShiftModifier);
-		const auto skipTags = plain
-			|| !source->hasFormat(textMime)
-			|| !source->hasFormat(tagsMime);
-		if (skipTags) {
+		const auto plainText = [&] {
 			_insertedTags.clear();
+			_insertedTagsAreFromMime = false;
 
 			auto result = source->text();
 			return result.replace(u"\r\n"_q, u"\n"_q);
+		};
+		if (plain) {
+			return plainText();
 		}
-		auto result = QString::fromUtf8(source->data(textMime));
-		_insertedTags = TextUtilities::DeserializeTags(
-			source->data(tagsMime),
-			result.size());
-		_insertedTagsAreFromMime = true;
-		return result;
+		if (source->hasFormat(textMime) && source->hasFormat(tagsMime)) {
+			auto result = QString::fromUtf8(source->data(textMime));
+			_insertedTags = TextUtilities::DeserializeTags(
+				source->data(tagsMime),
+				result.size());
+			_insertedTagsAreFromMime = true;
+			return result;
+		}
+		if (source->hasHtml()) {
+			if (auto parsed = TextUtilities::TextWithTagsFromHtml(
+					source->html())) {
+				if (!HtmlTextMatchesPlainTextStart(
+						parsed->text,
+						source->text())) {
+					return plainText();
+				}
+				_insertedTags = std::move(parsed->tags);
+				_insertedTagsAreFromMime = false;
+				return std::move(parsed->text);
+			}
+		}
+		return plainText();
 	}();
 	auto cursor = textCursor();
 	if (!text.isEmpty()) {

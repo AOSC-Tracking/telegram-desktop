@@ -596,6 +596,8 @@ void EnvironmentMac::devicesRequested(DeviceType type) {
 void EnvironmentMac::setCaptureMuted(bool muted) {
 	if (@available(macOS 14.0, *)) {
 		if (!_captureMuteNotification) {
+			_captureMuted = muted;
+			_captureMuteDebounceTimer.cancel();
 			const auto value = muted ? YES : NO;
 			[[AVAudioApplication sharedInstance] setInputMuted:value error:nil];
 		}

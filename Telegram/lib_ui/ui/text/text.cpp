@@ -1013,7 +1013,7 @@ String::DimensionsResult String::countDimensions(
 	if (request.lineWidths && request.reserve) {
 		result.lineWidths.reserve(request.reserve);
 	}
-	enumerateLines(geometry, [&](QFixed lineWidth, int lineBottom) {
+	enumerateLines(geometry, [&](QFixed lineWidth, int lineBottom, int, bool) {
 		const auto width = lineWidth.ceil().toInt();
 		if (request.lineWidths) {
 			result.lineWidths.push_back(width);
@@ -1025,29 +1025,27 @@ String::DimensionsResult String::countDimensions(
 
 }
 
-int String::countWidth(int width, bool breakEverywhere) const {
+QSize String::countSize(int width, bool breakEverywhere) const {
 	if (QFixed(width) >= _maxWidth) {
-		return _maxWidth;
+		return { _maxWidth, _minHeight };
 	}
-
-	QFixed maxLineWidth = 0;
-	enumerateLines(width, breakEverywhere, [&](QFixed lineWidth, int) {
+	auto height = 0;
+	auto maxLineWidth = QFixed(0);
+	enumerateLines(width, breakEverywhere, [&](QFixed lineWidth, int lineBottom, int, bool) {
 		if (lineWidth > maxLineWidth) {
 			maxLineWidth = lineWidth;
 		}
+		height = lineBottom;
 	});
-	return maxLineWidth.ceil().toInt();
+	return { maxLineWidth.ceil().toInt(), height };
+}
+
+int String::countWidth(int width, bool breakEverywhere) const {
+	return countSize(width, breakEverywhere).width();
 }
 
 int String::countHeight(int width, bool breakEverywhere) const {
-	if (QFixed(width) >= _maxWidth) {
-		return _minHeight;
-	}
-	int result = 0;
-	enumerateLines(width, breakEverywhere, [&](auto, int lineBottom) {
-		result = lineBottom;
-	});
-	return result;
+	return countSize(width, breakEverywhere).height();
 }
 
 std::vector<int> String::countLineWidths(int width) const {
@@ -1061,8 +1059,21 @@ std::vector<int> String::countLineWidths(
 	if (options.reserve) {
 		result.reserve(options.reserve);
 	}
-	enumerateLines(width, options.breakEverywhere, [&](QFixed lineWidth, int) {
+	enumerateLines(width, options.breakEverywhere, [&](QFixed lineWidth, int, int, bool) {
 		result.push_back(lineWidth.ceil().toInt());
+	});
+	return result;
+}
+
+std::vector<LineLayoutInfo> String::countLinesGeometry(int width) const {
+	auto result = std::vector<LineLayoutInfo>();
+	enumerateLines(width, false, [&](QFixed lineWidth, int lineBottom, int lineLeft, bool rtl) {
+		result.push_back({
+			.left = lineLeft,
+			.width = lineWidth.ceil().toInt(),
+			.bottom = lineBottom,
+			.rtl = rtl,
+		});
 	});
 	return result;
 }
@@ -1129,6 +1140,13 @@ void String::enumerateLines(
 		initNextLine();
 	};
 
+	const auto resolveRTL = [](Qt::LayoutDirection dir) {
+		return (dir == Qt::RightToLeft)
+			|| (dir == Qt::LayoutDirectionAuto && style::RightToLeft());
+	};
+	auto paragraphRTL = resolveRTL(
+		UnpackParagraphDirection(_startParagraphLTR, _startParagraphRTL));
+
 	if ((*_blocks.cbegin())->type() != TextBlockType::Newline) {
 		initNextParagraph(_startQuoteIndex);
 	}
@@ -1153,7 +1171,7 @@ void String::enumerateLines(
 				--qlinesleft;
 			}
 			if (!hidden) {
-				callback(lineLeft + lineWidth - widthLeft, top += lineHeight);
+				callback(lineLeft + lineWidth - widthLeft, top += lineHeight, lineLeft + qpadding.left(), paragraphRTL);
 			}
 			if (lineElided) {
 				return withElided(true);
@@ -1162,6 +1180,8 @@ void String::enumerateLines(
 			last_rBearing = 0;// b->f_rbearing(); (0 for newline)
 			last_rPadding = w->f_rpadding();
 
+			paragraphRTL = resolveRTL(static_cast<const NewlineBlock*>(
+				_blocks[block].get())->paragraphDirection());
 			initNextParagraph(index);
 			longWordLine = true;
 			lastWordStart = w;
@@ -1202,7 +1222,11 @@ void String::enumerateLines(
 		if (qlinesleft > 0) {
 			--qlinesleft;
 		}
-		callback(lineLeft + lineWidth - widthLeft, top += lineHeight);
+		callback(
+			lineLeft + lineWidth - widthLeft,
+			top += lineHeight,
+			lineLeft + qpadding.left(),
+			paragraphRTL);
 		if (lineElided) {
 			return withElided(true);
 		}
@@ -1220,12 +1244,16 @@ void String::enumerateLines(
 	if (widthLeft < lineWidth) {
 		const auto useSkipHeight = (_blocks.back()->type() == TextBlockType::Skip)
 			&& (widthLeft + _words.back().f_width() == lineWidth);
-		const auto useLineHeight = useSkipHeight
+		const auto useLineHeight = !qlinesleft
+			? 0
+			: useSkipHeight
 			? _blocks.back().unsafe<SkipBlock>().height()
 			: lineHeight;
 		callback(
 			lineLeft + lineWidth - widthLeft,
-			top + useLineHeight + qpadding.bottom());
+			top + useLineHeight + qpadding.bottom(),
+			lineLeft + qpadding.left(),
+			paragraphRTL);
 	}
 	return withElided(false);
 }
@@ -1825,7 +1853,7 @@ TextForMimeData String::toText(
 				entity.type,
 				linkStart,
 				int(result.rich.text.size() - linkStart),
-				plainUrl ? QString() : entity.data });
+				entity.data });
 		}
 	};
 	const auto appendPartCallback = [&](
@@ -1965,6 +1993,13 @@ bool IsWordSeparator(QChar ch) {
 	case '`':
 	case '~':
 	case '|':
+	case 0x2013: // en dash
+	case 0x2014: // em dash
+	case 0x2018: // left single quotation mark
+	case 0x2019: // right single quotation mark
+	case 0x201C: // left double quotation mark
+	case 0x201D: // right double quotation mark
+	case 0x2026: // horizontal ellipsis
 		return true;
 	default:
 		break;

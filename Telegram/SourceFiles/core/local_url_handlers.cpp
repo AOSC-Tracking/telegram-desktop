@@ -31,6 +31,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/gift_premium_box.h"
 #include "boxes/edit_privacy_box.h"
 #include "boxes/premium_preview_box.h"
+#include "boxes/preview_ai_tone_box.h"
 #include "boxes/sticker_set_box.h"
 #include "boxes/star_gift_box.h"
 #include "boxes/language_box.h"
@@ -40,6 +41,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/toast/toast.h"
 #include "ui/vertical_list.h"
 #include "data/components/credits.h"
+#include "data/data_ai_compose_tones.h"
 #include "data/data_birthday.h"
 #include "data/data_channel.h"
 #include "data/data_document.h"
@@ -294,6 +296,41 @@ bool ShowTheme(
 	return true;
 }
 
+bool ShowAiStyle(
+		Window::SessionController *controller,
+		const Match &match,
+		const QVariant &context) {
+	if (!controller) {
+		return false;
+	}
+	const auto slug = match->captured(1);
+	Core::App().hideMediaView();
+	const auto weak = base::make_weak(controller);
+	auto &tones = controller->session().data().aiComposeTones();
+	tones.resolve(slug, [=](Data::AiComposeTone tone) {
+		const auto strong = weak.get();
+		if (!strong) {
+			return;
+		}
+		strong->window().show(Box(
+			PreviewAiToneBox,
+			&strong->session(),
+			std::move(tone)));
+	}, [=](const MTP::Error &error) {
+		const auto strong = weak.get();
+		if (!strong) {
+			return;
+		} else if (error.type() == u"AICOMPOSE_TONE_SLUG_INVALID"_q) {
+			strong->window().showToast(
+				tr::lng_ai_compose_tone_invalid(tr::now));
+		} else if (!MTP::IgnoreError(error)) {
+			strong->window().showToast(error.type());
+		}
+	});
+	controller->window().activate();
+	return true;
+}
+
 void ShowLanguagesBox(Window::SessionController *controller) {
 	static auto Guard = base::binary_guard();
 	Guard = LanguageBox::Show(controller);
@@ -388,6 +425,8 @@ bool ApplyMtprotoProxy(
 	auto params = url_parse_params(
 		match->captured(1),
 		qthelp::UrlParamNameTransform::ToLower);
+	auto &secret = params[u"secret"_q];
+	secret.replace('+', '-').replace('/', '_');
 	ProxiesBoxController::ShowApplyConfirmation(
 		controller,
 		MTP::ProxyData::Type::Mtproto,
@@ -460,7 +499,9 @@ bool ShowWallPaper(
 		const QString &value) {
 	auto result = ChatAdminRights();
 	for (const auto &element : value.split(QRegularExpression(u"[+ ]"_q))) {
-		if (element == u"change_info"_q) {
+		if (element.isEmpty()) {
+			continue;
+		} else if (element == u"change_info"_q) {
 			result |= ChatAdminRight::ChangeInfo;
 		} else if (element == u"post_messages"_q) {
 			result |= ChatAdminRight::PostMessages;
@@ -478,6 +519,12 @@ bool ShowWallPaper(
 			result |= ChatAdminRight::PinMessages;
 		} else if (element == u"promote_members"_q) {
 			result |= ChatAdminRight::AddAdmins;
+		} else if (element == u"post_stories"_q) {
+			result |= ChatAdminRight::PostStories;
+		} else if (element == u"edit_stories"_q) {
+			result |= ChatAdminRight::EditStories;
+		} else if (element == u"delete_stories"_q) {
+			result |= ChatAdminRight::DeleteStories;
 		} else if (element == u"manage_video_chats"_q) {
 			result |= ChatAdminRight::ManageCall;
 		} else if (element == u"manage_direct_messages"_q) {
@@ -487,7 +534,7 @@ bool ShowWallPaper(
 		} else if (element == u"manage_chat"_q) {
 			result |= ChatAdminRight::Other;
 		} else {
-			return {};
+			continue;
 		}
 	}
 	return result;
@@ -540,7 +587,8 @@ bool ResolveUsernameOrPhone(
 			UrlAuthBox::ActivateUrl(
 				controller->uiShow(),
 				&controller->session(),
-				u"tg://resolve?domain=oauth&startapp="_q + token,
+				u"tg://resolve?domain=oauth&startapp="_q
+					+ qthelp::url_encode(token),
 				context);
 			return true;
 		}
@@ -1619,7 +1667,7 @@ bool ResolveOAuth(
 	UrlAuthBox::ActivateUrl(
 		controller->uiShow(),
 		&controller->session(),
-		u"tg://oauth?token="_q + token,
+		u"tg://oauth?token="_q + qthelp::url_encode(token),
 		context);
 	return true;
 }
@@ -1649,6 +1697,10 @@ const std::vector<LocalUrlHandler> &LocalUrlHandlers() {
 		{
 			u"^addtheme/?\\?slug=([a-zA-Z0-9\\.\\_]+)(&|$)"_q,
 			ShowTheme
+		},
+		{
+			u"^addstyle/?\\?slug=([a-zA-Z0-9\\.\\_]+)(&|$)"_q,
+			ShowAiStyle
 		},
 		{
 			u"^setlanguage/?(\\?lang=([a-zA-Z0-9\\.\\_\\-]+))?(&|$)"_q,
@@ -1867,6 +1919,8 @@ QString TryConvertUrlToLocal(QString url) {
 			return u"tg://"_q + stickerSetMatch->captured(1) + "?set=" + url_encode(stickerSetMatch->captured(2));
 		} else if (const auto themeMatch = regex_match(u"^addtheme/([a-zA-Z0-9\\.\\_]+)(\\?|$)"_q, query, matchOptions)) {
 			return u"tg://addtheme?slug="_q + url_encode(themeMatch->captured(1));
+		} else if (const auto addStyleMatch = regex_match(u"^addstyle/([a-zA-Z0-9\\.\\_]+)(\\?|$)"_q, query, matchOptions)) {
+			return u"tg://addstyle?slug="_q + url_encode(addStyleMatch->captured(1));
 		} else if (const auto languageMatch = regex_match(u"^setlanguage/([a-zA-Z0-9\\.\\_\\-]+)(\\?|$)"_q, query, matchOptions)) {
 			return u"tg://setlanguage?lang="_q + url_encode(languageMatch->captured(1));
 		} else if (const auto shareUrlMatch = regex_match(u"^share/url/?\\?(.+)$"_q, query, matchOptions)) {
@@ -1912,7 +1966,7 @@ QString TryConvertUrlToLocal(QString url) {
 		} else if (const auto callMatch = regex_match(u"^call/([a-zA-Z0-9\\.\\_\\-]+)(\\?|$)"_q, query, matchOptions)) {
 			const auto slug = callMatch->captured(1);
 			return u"tg://call?slug="_q + slug;
-		} else if (const auto newbotMatch = regex_match(u"^newbot/([a-zA-Z0-9\\.\\_]+)(/([a-zA-Z0-9\\.\\_]+))?(\\?(.+))?$"_q, query, matchOptions)) {
+		} else if (const auto newbotMatch = regex_match(u"^newbot/([a-zA-Z0-9\\.\\_]+)(/([a-zA-Z0-9\\.\\_]*))?(/?\\?(.+))?$"_q, query, matchOptions)) {
 			const auto manager = newbotMatch->captured(1);
 			const auto username = newbotMatch->captured(3);
 			const auto params = newbotMatch->captured(5);
@@ -1991,46 +2045,64 @@ QString TryConvertUrlToLocal(QString url) {
 	return url;
 }
 
-bool InternalPassportOrOAuthLink(const QString &url) {
+struct InternalLinkCheckResult {
+	QString command;
+	QString username;
+};
+
+[[nodiscard]] InternalLinkCheckResult InternalLinkCheck(const QString &url) {
 	const auto urlTrimmed = url.trimmed();
 	if (!urlTrimmed.startsWith(u"tg://"_q, Qt::CaseInsensitive)) {
-		return false;
+		return {};
 	}
 	const auto command = base::StringViewMid(urlTrimmed, u"tg://"_q.size());
 
 	using namespace qthelp;
 	const auto matchOptions = RegExOption::CaseInsensitive;
-	const auto authMatch = regex_match(
-		u"^passport/?\\?(.+)(#|$)"_q,
-		command,
-		matchOptions);
-	const auto oauthMatch = regex_match(
-		u"^oauth/?\\?(.+)(#|$)"_q,
-		command,
-		matchOptions);
 	const auto usernameMatch = regex_match(
 		u"^resolve/?\\?(.+)(#|$)"_q,
 		command,
 		matchOptions);
-	auto usernameValue = QString();
+	auto username = QString();
 	if (usernameMatch->hasMatch()) {
 		const auto params = url_parse_params(
 			usernameMatch->captured(1),
 			UrlParamNameTransform::ToLower);
-		usernameValue = params.value(u"domain"_q);
+		username = params.value(u"domain"_q);
 	}
-	const auto authLegacy = (usernameValue == u"telegrampassport"_q);
-	const auto oauthLegacy = (usernameValue == u"oauth"_q);
-	return authMatch->hasMatch()
+	return { .command = command.toString(), .username = username };
+}
+
+bool InternalPassportLink(const QString &url) {
+	const auto result = InternalLinkCheck(url);
+
+	using namespace qthelp;
+	const auto matchOptions = RegExOption::CaseInsensitive;
+	const auto authMatch = regex_match(
+		u"^passport/?\\?(.+)(#|$)"_q,
+		result.command,
+		matchOptions);
+	const auto authLegacy = (result.username == u"telegrampassport"_q);
+	return authMatch->hasMatch() || authLegacy;
+}
+
+bool InternalPassportOrOAuthLink(const QString &url) {
+	const auto result = InternalLinkCheck(url);
+
+	using namespace qthelp;
+	const auto matchOptions = RegExOption::CaseInsensitive;
+	const auto oauthMatch = regex_match(
+		u"^oauth/?\\?(.+)(#|$)"_q,
+		result.command,
+		matchOptions);
+	const auto oauthLegacy = (result.username == u"oauth"_q);
+	return InternalPassportLink(url)
 		|| oauthMatch->hasMatch()
-		|| authLegacy
 		|| oauthLegacy;
 }
 
 bool StartUrlRequiresActivate(const QString &url) {
-	return Core::App().passcodeLocked()
-		? true
-		: !InternalPassportOrOAuthLink(url);
+	return Core::App().passcodeLocked() || !InternalPassportLink(url);
 }
 
 void ResolveAndShowUniqueGift(

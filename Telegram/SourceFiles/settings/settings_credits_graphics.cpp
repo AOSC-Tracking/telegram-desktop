@@ -1655,6 +1655,8 @@ void GenericCreditsEntryBody(
 					? tr::lng_credits_box_history_entry_posts_search(tr::now)
 					: e.premiumMonthsForStars
 					? tr::lng_premium_summary_title(tr::now)
+					: e.giftOffer
+					? tr::lng_credits_box_history_entry_gift_offer(tr::now)
 					: !e.title.isEmpty()
 					? e.title
 					: e.starrefCommission
@@ -3341,13 +3343,12 @@ void AddWithdrawalWidget(
 		buttonsContainer,
 		rpl::never<QString>(),
 		stButton);
+	button->setTextTransform(Ui::RoundButtonTextTransform::ToUpper);
 
 	const auto buttonCredits = Ui::CreateChild<Ui::RoundButton>(
 		buttonsContainer,
 		tr::lng_bot_earn_balance_button_buy_ads(),
 		stButton);
-	buttonCredits->setTextTransform(
-		Ui::RoundButton::TextTransform::NoTransform);
 	{
 		const auto icon = Ui::CreateChild<Ui::RpWidget>(buttonCredits);
 		const auto &st = st::msgBotKbUrlIcon;

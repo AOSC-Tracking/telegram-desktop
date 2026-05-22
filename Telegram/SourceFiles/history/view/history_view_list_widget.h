@@ -126,7 +126,8 @@ public:
 	virtual void listMarkContentsRead(
 		const base::flat_set<not_null<HistoryItem*>> &items) = 0;
 	virtual MessagesBarData listMessagesBar(
-		const std::vector<not_null<Element*>> &elements) = 0;
+		const std::vector<not_null<Element*>> &elements,
+		bool markLastAsRead) = 0;
 	virtual void listContentRefreshed() = 0;
 	virtual void listUpdateDateLink(
 		ClickHandlerPtr &link,
@@ -328,11 +329,12 @@ public:
 		const Window::SectionShow &params,
 		Fn<void(bool found)> done = nullptr);
 	void refreshViewer();
+	void overrideInitialScroll(Fn<bool()> callback);
 
 	[[nodiscard]] TextForMimeData getSelectedText() const;
 	[[nodiscard]] MessageIdsList getSelectedIds() const;
 	[[nodiscard]] SelectedItems getSelectedItems() const;
-	[[nodiscard]] const TextSelection &getSelectedTextRange(
+	[[nodiscard]] TextSelection getSelectedTextRange(
 		not_null<HistoryItem*> item) const;
 	void cancelSelection();
 	void selectItem(not_null<HistoryItem*> item);
@@ -596,6 +598,7 @@ private:
 	void repaintItem(const Element *view, QRect rect);
 	void resizeItem(not_null<Element*> view);
 	void refreshItem(not_null<const Element*> view);
+	void viewHeightAdjusted(not_null<Element*> view);
 	void showItemHighlight(not_null<HistoryItem*> item);
 	void itemRemoved(not_null<const HistoryItem*> item);
 	QPoint mapPointToItem(QPoint point, const Element *view) const;
@@ -627,6 +630,7 @@ private:
 	void scrollDateCheck();
 	void scrollDateHideByTimer();
 	void keepScrollDateForNow();
+	void scrollDateCheckDownward();
 
 	void computeScrollTo(
 		int to,
@@ -716,7 +720,7 @@ private:
 	TextSelection computeRenderSelection(
 		not_null<const SelectedMap*> selected,
 		not_null<const Element*> view) const;
-	void checkUnreadBarCreation();
+	void checkUnreadBarCreation(bool markLastAsRead = false);
 	void applyUpdatedScrollState();
 	void scrollToAnimationCallback(FullMsgId attachToId, int relativeTo);
 	void startItemRevealAnimations();
@@ -825,6 +829,7 @@ private:
 	base::Timer _scrollDateHideTimer;
 	Element *_scrollDateLastItem = nullptr;
 	int _scrollDateLastItemTop = 0;
+	bool _scrollDateAfterDayCrossing = false;
 	ClickHandlerPtr _scrollDateLink;
 	SingleQueuedInvokation _applyUpdatedScrollState;
 

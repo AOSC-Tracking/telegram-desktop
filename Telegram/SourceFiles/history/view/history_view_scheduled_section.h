@@ -139,7 +139,8 @@ public:
 	void listMarkContentsRead(
 		const base::flat_set<not_null<HistoryItem*>> &items) override;
 	MessagesBarData listMessagesBar(
-		const std::vector<not_null<Element*>> &elements) override;
+		const std::vector<not_null<Element*>> &elements,
+		bool markLastAsRead) override;
 	void listContentRefreshed() override;
 	void listUpdateDateLink(
 		ClickHandlerPtr &link,
@@ -238,7 +239,8 @@ private:
 		bool spoilered);
 	void highlightSingleNewMessage(const Data::MessagesSlice &slice);
 	void chooseAttach();
-	[[nodiscard]] SendMenu::Details sendMenuDetails() const;
+	[[nodiscard]] SendMenu::Details sendMenuDetails() const override;
+	bool processChosenSticker(ChatHelpers::FileChosen &&chosen) override;
 
 	void pushReplyReturn(not_null<HistoryItem*> item);
 	void checkReplyReturns();

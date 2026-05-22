@@ -53,6 +53,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_saved_messages.h"
 #include "data/data_saved_sublist.h"
 #include "data/data_stories.h"
+#include "data/stickers/data_custom_emoji.h"
 #include "data/stickers/data_stickers.h"
 #include "data/data_send_action.h"
 #include "base/unixtime.h"
@@ -868,7 +869,7 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 		const auto &key = row->key();
 		const auto active = mayBeActive && isRowActive(row, activeEntry);
 		const auto history = key.history();
-		const auto forum = history && history->isForum();
+		const auto forum = history && history->peer->displayAsForum();
 		const auto monoforum = history && history->amMonoforumAdmin();
 		if ((forum || monoforum) && !_topicJumpCache) {
 			_topicJumpCache = std::make_unique<Ui::TopicJumpCache>();
@@ -1559,7 +1560,8 @@ void InnerWidget::paintPeerSearchResult(
 		if (!result->badge.ready(info)) {
 			result->badge.set(
 				info,
-				peer->owner().customEmojiManager().factory(),
+				peer->owner().customEmojiManager().factory(
+					Data::CustomEmojiSizeTag::Isolated),
 				[=] { updateSearchResult(peer); });
 		}
 		const auto &st = Ui::VerifiedStyle(context);
@@ -2839,7 +2841,11 @@ void InnerWidget::dialogRowReplaced(
 		_selected = newRow;
 	}
 	if (_pressed == oldRow) {
-		setPressed(newRow, _pressedTopicJump, _pressedRightButton);
+		if (newRow) {
+			setPressed(newRow, _pressedTopicJump, _pressedRightButton);
+		} else {
+			clearPressed();
+		}
 	}
 	if (_dragging == oldRow) {
 		if (newRow) {
@@ -4334,8 +4340,6 @@ void InnerWidget::refreshEmpty() {
 			this,
 			tr::lng_no_conversations_button(),
 			st::dialogEmptyButton);
-		_emptyButton->setTextTransform(
-			Ui::RoundButton::TextTransform::NoTransform);
 		_emptyButton->setVisible(isListVisible);
 		_emptyButton->setClickedCallback([=, window = _controller] {
 			window->show(PrepareContactsBox(window));

@@ -204,7 +204,10 @@ private:
 		not_null<PopupMenu*> submenu,
 		int actionTop,
 		TriggeredSource source);
-	bool prepareGeometryFor(const QPoint &p, PopupMenu *parent);
+	bool prepareGeometryFor(
+		const QPoint &p,
+		PopupMenu *parent,
+		QWidget *parentActionWidget);
 	void showPrepared(TriggeredSource source);
 	void updateRoundingOverlay();
 
@@ -264,6 +267,7 @@ private:
 
 	void setupMenuWidget();
 	void swapWithStashed();
+	[[nodiscard]] int computePositionShift(int targetScrollHeight) const;
 
 	struct SwitchState {
 		QPixmap oldSnapshot;
@@ -272,6 +276,8 @@ private:
 		Animations::Simple animation;
 		int fromScrollHeight = 0;
 		int toScrollHeight = 0;
+		int positionShift = 0;
+		int baseY = 0;
 		SwitchDirection direction = SwitchDirection::LeftToRight;
 	};
 	std::unique_ptr<SwitchState> _switchState;

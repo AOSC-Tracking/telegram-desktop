@@ -4,7 +4,7 @@
 # For license and copyright information please follow this link:
 # https://github.com/desktop-app/legal/blob/master/LEGAL
 
-if (APPLE)
+if (APPLE AND NOT DESKTOP_APP_DISABLE_SWIFT6)
     enable_language(Swift)
 
     set(CMAKE_Swift_LANGUAGE_VERSION 6)
@@ -31,7 +31,7 @@ endif()
 
 add_library(desktop-app::lib_translate ALIAS lib_translate)
 
-if (APPLE)
+if (APPLE AND NOT DESKTOP_APP_DISABLE_SWIFT6)
     find_library(FOUNDATION_FRAMEWORK Foundation)
     find_library(NATURAL_LANGUAGE_FRAMEWORK NaturalLanguage)
     find_library(TRANSLATION_FRAMEWORK Translation)
