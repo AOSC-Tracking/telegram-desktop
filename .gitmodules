@@ -100,3 +100,6 @@
 [submodule "Telegram/ThirdParty/TooManyCooks"]
 	path = Telegram/ThirdParty/TooManyCooks
 	url = https://github.com/tzcnt/TooManyCooks.git
+[submodule "Telegram/ThirdParty/dispatch"]
+	path = Telegram/ThirdParty/dispatch
+	url = git@github.com:swiftlang/swift-corelibs-libdispatch.git
