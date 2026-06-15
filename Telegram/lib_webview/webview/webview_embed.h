@@ -9,10 +9,13 @@
 #include "base/unique_qptr.h"
 #include "base/basic_types.h"
 #include "webview/webview_common.h"
+#include "webview/webview_interface.h"
 
+#include <QMargins>
 #include <rpl/lifetime.h>
 #include <rpl/producer.h>
 #include <QColor>
+#include <QSize>
 
 class QString;
 class QWidget;
@@ -26,10 +29,12 @@ extern const char kOptionWebviewLegacyEdge[];
 struct DialogArgs;
 struct DialogResult;
 class Interface;
+struct PopupAnchor;
 class ZoomController;
 struct Config;
 struct DataRequest;
 enum class DataResult;
+struct Message;
 struct NavigationHistoryState;
 
 struct WindowConfig {
@@ -37,6 +42,11 @@ struct WindowConfig {
 	StorageId storageId;
 	QString dataProtocolOverride;
 	bool safe = false;
+	WindowMode mode = WindowMode::Embedded;
+	WindowStyle windowStyle = WindowStyle::Default;
+	QMargins windowMargins;
+	QSize initialSize;
+	QString shellMessageToken;
 };
 
 class Window final {
@@ -48,6 +58,8 @@ public:
 
 	// May be nullptr or destroyed any time (in case webview crashed).
 	[[nodiscard]] QWidget *widget() const;
+	[[nodiscard]] void *winId() const;
+	[[nodiscard]] PopupAnchor popupAnchor() const;
 
 	void updateTheme(
 		QColor opaqueBg,
@@ -58,16 +70,21 @@ public:
 	void navigate(const QString &url);
 	void navigateToData(const QString &id);
 	void reload();
+	void setMessageHandler(Fn<void(Message)> handler);
 	void setMessageHandler(Fn<void(std::string)> handler);
 	void setMessageHandler(Fn<void(const QJsonDocument&)> handler);
 	void setNavigationStartHandler(Fn<bool(QString,bool)> handler);
 	void setNavigationDoneHandler(Fn<void(bool)> handler);
+	void setExternalWindowCloseHandler(Fn<void()> handler);
 	void setDialogHandler(Fn<DialogResult(DialogArgs)> handler);
+	void setAsyncDialogHandler(AsyncDialogHandler handler);
 	void setDataRequestHandler(Fn<DataResult(DataRequest)> handler);
 	void init(const QByteArray &js);
 	void eval(const QByteArray &js);
 
 	void focus();
+	void resize(QSize size);
+	void setFullscreen(bool fullscreen);
 	void setInteractionHandler(Fn<void()> handler);
 
 	void refreshNavigationHistoryState();
@@ -82,17 +99,21 @@ public:
 
 private:
 	bool createWebView(QWidget *parent, const WindowConfig &config);
-	[[nodiscard]] Fn<void(std::string)> messageHandler() const;
+	[[nodiscard]] Fn<void(Message)> messageHandler() const;
 	[[nodiscard]] Fn<bool(std::string,bool)> navigationStartHandler() const;
 	[[nodiscard]] Fn<void(bool)> navigationDoneHandler() const;
+	[[nodiscard]] Fn<void()> externalWindowCloseHandler() const;
 	[[nodiscard]] Fn<DialogResult(DialogArgs)> dialogHandler() const;
+	[[nodiscard]] AsyncDialogHandler asyncDialogHandler() const;
 	[[nodiscard]] Fn<DataResult(DataRequest)> dataRequestHandler() const;
 
 	std::unique_ptr<Interface> _webview;
-	Fn<void(std::string)> _messageHandler;
+	Fn<void(Message)> _messageHandler;
 	Fn<bool(std::string,bool)> _navigationStartHandler;
 	Fn<void(bool)> _navigationDoneHandler;
+	Fn<void()> _externalWindowCloseHandler;
 	Fn<DialogResult(DialogArgs)> _dialogHandler;
+	AsyncDialogHandler _asyncDialogHandler;
 	Fn<DataResult(DataRequest)> _dataRequestHandler;
 	Fn<void()> _interactionHandler;
 	rpl::lifetime _lifetime;

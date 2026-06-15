@@ -62,19 +62,34 @@ bool Window::createWebView(QWidget *parent, const WindowConfig &config) {
 		.messageHandler = messageHandler(),
 		.navigationStartHandler = navigationStartHandler(),
 		.navigationDoneHandler = navigationDoneHandler(),
+		.externalWindowCloseHandler = externalWindowCloseHandler(),
 		.dialogHandler = dialogHandler(),
+		.asyncDialogHandler = asyncDialogHandler(),
 		.dataRequestHandler = dataRequestHandler(),
 		.dataProtocolOverride = config.dataProtocolOverride.toStdString(),
 		.userDataPath = config.storageId.path.toStdString(),
 		.userDataToken = config.storageId.token.toStdString(),
 		.debug = OptionWebviewDebugEnabled.value(),
 		.safe = config.safe,
+		.mode = config.mode,
+		.windowStyle = config.windowStyle,
+		.windowMargins = config.windowMargins,
+		.initialSize = config.initialSize,
+		.shellMessageToken = config.shellMessageToken.toStdString(),
 	});
 	return (_webview != nullptr);
 }
 
 QWidget *Window::widget() const {
 	return _webview ? _webview->widget() : nullptr;
+}
+
+void *Window::winId() const {
+	return _webview ? _webview->winId() : nullptr;
+}
+
+PopupAnchor Window::popupAnchor() const {
+	return _webview ? _webview->popupAnchor() : PopupAnchor();
 }
 
 void Window::updateTheme(
@@ -166,6 +181,18 @@ void Window::focus() {
 	_webview->focus();
 }
 
+void Window::resize(QSize size) {
+	Expects(_webview != nullptr);
+
+	_webview->resize(size.width(), size.height());
+}
+
+void Window::setFullscreen(bool fullscreen) {
+	Expects(_webview != nullptr);
+
+	_webview->setFullscreen(fullscreen);
+}
+
 void Window::setInteractionHandler(Fn<void()> handler) {
 	_interactionHandler = std::move(handler);
 	if (_webview) {
@@ -209,19 +236,29 @@ ZoomController *Window::zoomController() const {
 	return _webview ? _webview->zoomController() : nullptr;
 }
 
-void Window::setMessageHandler(Fn<void(std::string)> handler) {
+void Window::setMessageHandler(Fn<void(Message)> handler) {
 	_messageHandler = std::move(handler);
+}
+
+void Window::setMessageHandler(Fn<void(std::string)> handler) {
+	if (!handler) {
+		setMessageHandler(Fn<void(Message)>());
+		return;
+	}
+	setMessageHandler([=](Message message) {
+		handler(std::move(message.text));
+	});
 }
 
 void Window::setMessageHandler(Fn<void(const QJsonDocument&)> handler) {
 	if (!handler) {
-		setMessageHandler(Fn<void(std::string)>());
+		setMessageHandler(Fn<void(Message)>());
 		return;
 	}
-	setMessageHandler([=](std::string text) {
+	setMessageHandler([=](Message message) {
 		auto error = QJsonParseError();
 		auto document = QJsonDocument::fromJson(
-			QByteArray::fromRawData(text.data(), text.size()),
+			QByteArray::fromRawData(message.text.data(), message.text.size()),
 			&error);
 		if (error.error == QJsonParseError::NoError) {
 			handler(std::move(document));
@@ -229,8 +266,8 @@ void Window::setMessageHandler(Fn<void(const QJsonDocument&)> handler) {
 	});
 }
 
-Fn<void(std::string)> Window::messageHandler() const {
-	return [=](std::string message) {
+Fn<void(Message)> Window::messageHandler() const {
+	return [=](Message message) {
 		if (_messageHandler) {
 			base::Integration::Instance().enterFromEventLoop([&] {
 				_messageHandler(std::move(message));
@@ -253,8 +290,16 @@ void Window::setNavigationDoneHandler(Fn<void(bool)> handler) {
 	_navigationDoneHandler = std::move(handler);
 }
 
+void Window::setExternalWindowCloseHandler(Fn<void()> handler) {
+	_externalWindowCloseHandler = std::move(handler);
+}
+
 void Window::setDialogHandler(Fn<DialogResult(DialogArgs)> handler) {
 	_dialogHandler = handler ? handler : DefaultDialogHandler;
+}
+
+void Window::setAsyncDialogHandler(AsyncDialogHandler handler) {
+	_asyncDialogHandler = std::move(handler);
 }
 
 void Window::setDataRequestHandler(Fn<DataResult(DataRequest)> handler) {
@@ -292,6 +337,16 @@ Fn<void(bool)> Window::navigationDoneHandler() const {
 	};
 }
 
+Fn<void()> Window::externalWindowCloseHandler() const {
+	return [=] {
+		if (_externalWindowCloseHandler) {
+			base::Integration::Instance().enterFromEventLoop([&] {
+				_externalWindowCloseHandler();
+			});
+		}
+	};
+}
+
 Fn<DialogResult(DialogArgs)> Window::dialogHandler() const {
 	return [=](DialogArgs args) {
 		auto result = DialogResult();
@@ -301,6 +356,22 @@ Fn<DialogResult(DialogArgs)> Window::dialogHandler() const {
 				result = _dialogHandler(std::move(args));
 			});
 		}
+		return result;
+	};
+}
+
+AsyncDialogHandler Window::asyncDialogHandler() const {
+	return [=](
+			DialogArgs args,
+			std::function<void(DialogResult)> done) {
+		if (!_asyncDialogHandler) {
+			return false;
+		}
+		auto result = false;
+		base::Integration::Instance().enterFromEventLoop([&] {
+			args.parent = widget();
+			result = _asyncDialogHandler(std::move(args), std::move(done));
+		});
 		return result;
 	};
 }

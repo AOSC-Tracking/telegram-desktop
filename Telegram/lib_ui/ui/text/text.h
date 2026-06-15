@@ -164,6 +164,8 @@ private:
 struct SpecialColor {
 	const QPen *pen = nullptr;
 	const QPen *penSelected = nullptr;
+	const QBrush *bg = nullptr;
+	const QBrush *bgSelected = nullptr;
 };
 
 struct LineGeometry {
@@ -176,6 +178,7 @@ struct LineLayoutInfo {
 	int width = 0;
 	int bottom = 0;
 	bool rtl = false;
+	int baseline = 0;
 };
 struct GeometryDescriptor {
 	Fn<LineGeometry(int line)> layout;
@@ -312,7 +315,8 @@ public:
 		int width,
 		LineWidthsOptions options) const;
 	[[nodiscard]] std::vector<LineLayoutInfo> countLinesGeometry(
-		int width) const;
+		int width,
+		bool breakEverywhere = false) const;
 
 	struct DimensionsResult {
 		int width = 0;
@@ -368,6 +372,9 @@ public:
 	}
 	[[nodiscard]] int minHeight() const {
 		return _minHeight;
+	}
+	[[nodiscard]] int minResizeWidth() const {
+		return _minResizeWidth;
 	}
 	[[nodiscard]] int countMaxMonospaceWidth() const;
 
@@ -451,6 +458,15 @@ private:
 
 	};
 
+	struct LineMetrics {
+		QFixed ascent = 0;
+		QFixed descent = 0;
+
+		[[nodiscard]] int height() const {
+			return (ascent + descent).toInt();
+		}
+	};
+
 	[[nodiscard]] not_null<ExtendedData*> ensureExtended();
 	[[nodiscard]] not_null<QuotesData*> ensureQuotes();
 
@@ -470,6 +486,14 @@ private:
 	[[nodiscard]] QMargins quotePadding(QuoteDetails *quote) const;
 	[[nodiscard]] int quoteMinWidth(QuoteDetails *quote) const;
 	[[nodiscard]] const QString &quoteHeaderText(QuoteDetails *quote) const;
+	[[nodiscard]] QFixed blockBaselineShift(const AbstractBlock *block) const;
+	[[nodiscard]] LineMetrics defaultLineMetrics() const;
+	[[nodiscard]] LineMetrics resolveLineMetrics(
+		int lineStart,
+		int lineEnd,
+		int blockIndexHint) const;
+	[[nodiscard]] bool hasObjectAtPosition(int position) const;
+	[[nodiscard]] bool hasReplacementObjectAtPosition(int position) const;
 
 	// Returns -1 in case there is no limit.
 	[[nodiscard]] int quoteLinesLimit(QuoteDetails *quote) const;
@@ -491,8 +515,8 @@ private:
 		FlagsChangeCallback flagsChangeCallback) const;
 
 	// Template method for countWidth(), countHeight(), countLineWidths().
-	// callback(lineWidth, lineBottom, lineLeft) will be called for all lines
-	// with: QFixed lineWidth, int lineBottom, int lineLeft
+	// callback(lineWidth, lineBottom, lineLeft, lineBaseline, rtl)
+	// will be called for all lines.
 	template <typename Callback>
 	void enumerateLines(
 		int w,
@@ -531,6 +555,7 @@ private:
 	bool _isIsolatedEmoji : 1 = false;
 	bool _isOnlyCustomEmoji : 1 = false;
 	bool _hasNotEmojiAndSpaces : 1 = false;
+	bool _hasSubscriptsOrSuperscripts : 1 = false;
 	bool _skipBlockAddedNewline : 1 = false;
 	bool _endsWithQuoteOrOtherDirection : 1 = false;
 
