@@ -61,8 +61,7 @@ class qu_spsc_unbounded {
   static inline constexpr size_t BlockSizeMask = BlockSize - 1;
   static inline constexpr bool ConsumerCanSuspend = Config::ConsumerCanSuspend;
   static_assert(
-    BlockSize && ((BlockSize & (BlockSize - 1)) == 0),
-    "BlockSize must be a power of 2"
+    BlockSize && ((BlockSize & (BlockSize - 1)) == 0), "BlockSize must be a power of 2"
   );
 
   // Ensure that the subtraction of unsigned offsets always results in a value
@@ -96,16 +95,14 @@ class qu_spsc_unbounded {
 
     static constexpr size_t UNPADLEN =
       sizeof(std::atomic<void*>) + sizeof(tmc::detail::qu_storage<T>);
-    static constexpr size_t WANTLEN = (UNPADLEN + TMC_CACHE_LINE_SIZE - 1) &
-                                      static_cast<size_t>(
-                                        0 - TMC_CACHE_LINE_SIZE
-                                      ); // round up to TMC_CACHE_LINE_SIZE
-    static constexpr size_t PADLEN =
-      UNPADLEN < WANTLEN ? (WANTLEN - UNPADLEN) : 999;
+    static constexpr size_t WANTLEN =
+      (UNPADLEN + TMC_CACHE_LINE_SIZE - 1) &
+      static_cast<size_t>(0 - TMC_CACHE_LINE_SIZE); // round up to TMC_CACHE_LINE_SIZE
+    static constexpr size_t PADLEN = UNPADLEN < WANTLEN ? (WANTLEN - UNPADLEN) : 999;
 
     struct empty {};
-    using Padding = std::conditional_t<
-      Config::PackingLevel == 0 && PADLEN != 999, char[PADLEN], empty>;
+    using Padding =
+      std::conditional_t<Config::PackingLevel == 0 && PADLEN != 999, char[PADLEN], empty>;
     TMC_NO_UNIQUE_ADDRESS Padding pad;
 
     // Attempts to install Cons as a waiting consumer.
@@ -124,9 +121,8 @@ class qu_spsc_unbounded {
     consumer_base* set_data_ready_or_get_waiting_consumer() noexcept
       requires(ConsumerCanSuspend)
     {
-      void* prev = flags.exchange(
-        reinterpret_cast<void*>(DATA_BIT), std::memory_order_acq_rel
-      );
+      void* prev =
+        flags.exchange(reinterpret_cast<void*>(DATA_BIT), std::memory_order_acq_rel);
       return static_cast<consumer_base*>(prev);
     }
 
@@ -140,9 +136,8 @@ class qu_spsc_unbounded {
     // waiting, its consumer_base pointer is returned so the caller can wake it.
     // Used only by close() to mark the cutoff slot.
     consumer_base* set_closed_or_get_waiting_consumer() noexcept {
-      void* prev = flags.exchange(
-        reinterpret_cast<void*>(CLOSED_BIT), std::memory_order_acq_rel
-      );
+      void* prev =
+        flags.exchange(reinterpret_cast<void*>(CLOSED_BIT), std::memory_order_acq_rel);
       if (reinterpret_cast<uintptr_t>(prev) < 4) {
         return nullptr;
       }
@@ -152,11 +147,6 @@ class qu_spsc_unbounded {
     bool is_data_waiting() noexcept {
       void* f = flags.load(std::memory_order_acquire);
       return DATA_BIT == reinterpret_cast<uintptr_t>(f);
-    }
-
-    bool is_closed_sentinel() noexcept {
-      void* f = flags.load(std::memory_order_acquire);
-      return CLOSED_BIT == reinterpret_cast<uintptr_t>(f);
     }
 
     // Returns the raw flags value: DATA_BIT, CLOSED_BIT, or 0 (meaning empty).
@@ -189,7 +179,7 @@ class qu_spsc_unbounded {
 
   char pad0[TMC_CACHE_LINE_SIZE];
   // Producer hot fields
-  std::atomic<size_t> write_offset;
+  size_t write_offset; // accessed only by producer
   std::atomic<data_block*> write_block;
   // Cold close-related fields: only written once by close() itself. No
   // `closed_ready` handshake is required (unlike qu_mpsc) because the closer
@@ -198,15 +188,14 @@ class qu_spsc_unbounded {
   std::atomic<bool> closed;
   std::atomic<size_t> write_closed_at;
   char pad1[TMC_CACHE_LINE_SIZE - sizeof(size_t)];
-  // Read and written only by consumer
+  // Consumer hot fields - all accessed only by consumer
   size_t read_offset;
   data_block* head_block; // aka read_block
   data_block* tail_block;
   char pad2[TMC_CACHE_LINE_SIZE - sizeof(void*)];
 
   struct empty {};
-  using EmbeddedBlock =
-    std::conditional_t<Config::EmbedFirstBlock, data_block, empty>;
+  using EmbeddedBlock = std::conditional_t<Config::EmbedFirstBlock, data_block, empty>;
   TMC_NO_UNIQUE_ADDRESS EmbeddedBlock embedded_block;
 
 public:
@@ -248,8 +237,8 @@ public:
     try_pull_zc_scope& operator=(const try_pull_zc_scope&) = delete;
 
     try_pull_zc_scope(try_pull_zc_scope&& Other) noexcept
-        : queue{Other.queue}, elem{Other.elem}, block{Other.block},
-          idx{Other.idx}, err{Other.err} {
+        : queue{Other.queue}, elem{Other.elem}, block{Other.block}, idx{Other.idx},
+          err{Other.err} {
       Other.elem = nullptr;
       Other.err = tmc::qu_spsc_unbounded_err::EMPTY;
     }
@@ -322,15 +311,13 @@ public:
 
   public:
     /// Constructs an empty scope. Evaluates to false when converted to bool.
-    pull_zc_scope() noexcept
-        : queue{nullptr}, elem{nullptr}, block{nullptr}, idx{0} {}
+    pull_zc_scope() noexcept : queue{nullptr}, elem{nullptr}, block{nullptr}, idx{0} {}
 
     pull_zc_scope(const pull_zc_scope&) = delete;
     pull_zc_scope& operator=(const pull_zc_scope&) = delete;
 
     pull_zc_scope(pull_zc_scope&& Other) noexcept
-        : queue{Other.queue}, elem{Other.elem}, block{Other.block},
-          idx{Other.idx} {
+        : queue{Other.queue}, elem{Other.elem}, block{Other.block}, idx{Other.idx} {
       Other.elem = nullptr;
     }
 
@@ -386,7 +373,7 @@ public:
     head_block = block;
     write_block.store(block, std::memory_order_relaxed);
     tail_block = block;
-    write_offset.store(0, std::memory_order_relaxed);
+    write_offset = 0;
     closed.store(false, std::memory_order_relaxed);
     write_closed_at.store(0, std::memory_order_relaxed);
     read_offset = 0;
@@ -428,14 +415,11 @@ private:
       }
       // Actually unlink the blocks from the head of the queue.
       // They stay linked to each other.
-      unlinked[unlinkedCount - 1]->next.store(
-        nullptr, std::memory_order_release
-      );
+      unlinked[unlinkedCount - 1]->next.store(nullptr, std::memory_order_release);
 
       while (true) {
         // Update their offsets to the end of the queue.
-        size_t boff =
-          tailBlock->offset.load(std::memory_order_relaxed) + BlockSize;
+        size_t boff = tailBlock->offset.load(std::memory_order_relaxed) + BlockSize;
         for (size_t i = 0; i < unlinkedCount; ++i) {
           unlinked[i]->offset.store(boff, std::memory_order_relaxed);
           boff += BlockSize;
@@ -443,8 +427,7 @@ private:
 
         // Re-link the tail of the queue to the head of the unlinked blocks.
         if (tailBlock->next.compare_exchange_strong(
-              next, unlinked[0], std::memory_order_acq_rel,
-              std::memory_order_acquire
+              next, unlinked[0], std::memory_order_acq_rel, std::memory_order_acquire
             )) {
           break;
         }
@@ -471,8 +454,7 @@ private:
       if (next == nullptr) {
         data_block* newBlock = new data_block(offset + BlockSize);
         if (Block->next.compare_exchange_strong(
-              next, newBlock, std::memory_order_acq_rel,
-              std::memory_order_acquire
+              next, newBlock, std::memory_order_acq_rel, std::memory_order_acquire
             )) {
           next = newBlock;
         } else {
@@ -505,8 +487,7 @@ private:
         if (next == nullptr) {
           data_block* newBlock = new data_block(offset + BlockSize);
           if (block->next.compare_exchange_strong(
-                next, newBlock, std::memory_order_acq_rel,
-                std::memory_order_acquire
+                next, newBlock, std::memory_order_acq_rel, std::memory_order_acquire
               )) {
             next = newBlock;
           } else {
@@ -529,12 +510,16 @@ private:
 
   void try_reclaim_blocks(data_block* NewHead) noexcept {
     data_block* oldHead = head_block;
-    size_t newHeadOffset = read_offset & ~BlockSizeMask;
-    assert(NewHead->offset.load(std::memory_order_relaxed) == newHeadOffset);
-    size_t oldOff = oldHead->offset.load(std::memory_order_relaxed);
-    if (!circular_less_than(oldOff, newHeadOffset)) {
-      return;
-    }
+    // The consumer's head block can never be circularly ahead of the block it
+    // is now reading from. It either lags (the normal case, with blocks to
+    // reclaim) or, on the very first block, equals it (oldHead == NewHead, so
+    // reclaim_blocks is a no-op).
+    assert(
+      oldHead == NewHead || circular_less_than(
+                              oldHead->offset.load(std::memory_order_relaxed),
+                              NewHead->offset.load(std::memory_order_relaxed)
+                            )
+    );
 
     head_block = NewHead;
     reclaim_blocks(oldHead, NewHead);
@@ -545,7 +530,7 @@ private:
     // In SPSC mode, write_offset is the committed write offset. The producer
     // takes the next index from it, advances its block cursor before making a
     // block-start element visible, and publishes write_offset after writing.
-    Idx = write_offset.load(std::memory_order_relaxed);
+    Idx = write_offset;
     data_block* block = find_write_block(Idx);
     element* elem = &block->values[Idx & BlockSizeMask];
     return elem;
@@ -555,9 +540,7 @@ private:
     Idx = read_offset;
     Block = head_block;
 
-    assert(
-      circular_less_than(Block->offset.load(std::memory_order_relaxed), 1 + Idx)
-    );
+    assert(circular_less_than(Block->offset.load(std::memory_order_relaxed), 1 + Idx));
 
     Block = find_block(Block, Idx);
     return &Block->values[Idx & BlockSizeMask];
@@ -576,8 +559,7 @@ private:
   }
 
   template <typename... Args>
-  consumer_base*
-  write_element(element* Elem, Args&&... ConstructArgs) noexcept {
+  consumer_base* write_element(element* Elem, Args&&... ConstructArgs) noexcept {
     Elem->data.emplace(static_cast<Args&&>(ConstructArgs)...);
     if constexpr (ConsumerCanSuspend) {
       return Elem->set_data_ready_or_get_waiting_consumer();
@@ -589,18 +571,17 @@ private:
 
   // StartIdx and EndIdx will be initialized by this function.
   // Count must be non-zero (enforced by the caller).
-  data_block* get_write_ticket_bulk(
-    size_t Count, size_t& StartIdx, size_t& EndIdx
-  ) noexcept {
+  data_block*
+  get_write_ticket_bulk(size_t Count, size_t& StartIdx, size_t& EndIdx) noexcept {
     // In SPSC mode, write_offset is published after all elements in the bulk
     // operation have been written.
-    StartIdx = write_offset.load(std::memory_order_relaxed);
+    StartIdx = write_offset;
     EndIdx = StartIdx + Count;
     data_block* block = write_block.load(std::memory_order_relaxed);
 
-    assert(circular_less_than(
-      block->offset.load(std::memory_order_relaxed), 1 + StartIdx
-    ));
+    assert(
+      circular_less_than(block->offset.load(std::memory_order_relaxed), 1 + StartIdx)
+    );
 
     // Ensure all blocks for the operation are allocated and available.
     data_block* startBlock = find_block(block, StartIdx);
@@ -628,9 +609,8 @@ public:
     size_t idx;
     element* elem = get_write_ticket(idx);
 
-    consumer_base* cons =
-      write_element(elem, static_cast<Args&&>(ConstructArgs)...);
-    write_offset.store(idx + 1, std::memory_order_release);
+    consumer_base* cons = write_element(elem, static_cast<Args&&>(ConstructArgs)...);
+    write_offset = idx + 1;
     if (cons != nullptr) {
       tmc::detail::post_checked(
         cons->continuation_executor, std::move(cons->continuation), cons->prio
@@ -665,7 +645,7 @@ public:
 
     size_t idx = startIdx;
     consumer_base* cons = nullptr;
-    while (idx < endIdx) {
+    while (idx != endIdx) {
       element* elem = &block->values[idx & BlockSizeMask];
 
       TMC_DISABLE_WARNING_PESSIMIZING_MOVE_BEGIN
@@ -681,13 +661,13 @@ public:
       if ((idx & BlockSizeMask) == 0) {
         block = block->next.load(std::memory_order_acquire);
         // all blocks should have been preallocated for [startIdx, endIdx)
-        assert(block != nullptr || idx >= endIdx);
-        if (idx < endIdx) {
+        assert(block != nullptr || !circular_less_than(idx, endIdx));
+        if (circular_less_than(idx, endIdx)) {
           write_block.store(block, std::memory_order_relaxed);
         }
       }
     }
-    write_offset.store(endIdx, std::memory_order_release);
+    write_offset = endIdx;
     if (cons != nullptr) {
       tmc::detail::post_checked(
         cons->continuation_executor, std::move(cons->continuation), cons->prio
@@ -753,7 +733,7 @@ private:
     //
     // No `closed_ready` handshake is required (unlike qu_mpsc), because no
     // other producer is racing with the closer to learn the cutoff.
-    size_t woff = write_offset.load(std::memory_order_relaxed);
+    size_t woff = write_offset;
     write_closed_at.store(woff, std::memory_order_release);
 
     // Publish the CLOSED sentinel at slot woff. This races with the consumer's
@@ -808,6 +788,9 @@ public:
   }
 
   /// Returns true if the queue appears to be empty.
+  /// A closed-and-drained queue is considered non-empty, and this will return
+  /// false so that the consumer will call `try_pull()` / `pull()` and observe
+  /// the CLOSED status.
   /// This is an unsynchronized read (like `try_pull()`), so it is only a hint.
   /// Only safe to call from the single consumer.
   bool empty() {
@@ -815,8 +798,8 @@ public:
     data_block* block = find_block(head_block, Idx);
     element* elem = &block->values[Idx & BlockSizeMask];
 
-    bool isEmpty = !elem->is_data_waiting();
-    return isEmpty;
+    uintptr_t f = elem->poll();
+    return f != DATA_BIT && f != CLOSED_BIT;
   }
 
   /// Returns a `pull_zc_scope` when awaited.
@@ -855,6 +838,15 @@ public:
           );
           base.elem = nullptr;
         }
+        // If prev == DATA_BIT, the producer published data between
+        // await_ready's poll and the exchange above. Unlike the CLOSED case,
+        // the flags are left holding our consumer_base*, which dangles once
+        // this coroutine frame is destroyed. This is benign in the current
+        // implementation: we consume this slot without suspending, so
+        // read_offset advances past it, and nothing reads the flags of an
+        // already-consumed slot before reset_values() clears it when the
+        // block is recycled. If any future change inspects the flags of
+        // consumed slots, this case must restore DATA_BIT instead.
         return prev == 0;
       }
 
@@ -878,7 +870,9 @@ public:
   /// value was dequeued, or false if the queue was closed and drained.
   ///
   /// This scope must be released before the next call to `try_pull()` or
-  /// `pull()`. It must also be released before the queue is destroyed.
+  /// `pull()`. It must also be released before the queue is destroyed. The
+  /// safest way to accomplish this is to tie its scope to the loop:
+  /// `while (auto data = co_await q.pull()) { process(data.value()); }`
   ///
   /// May suspend until a value is available, or until close() is called.
   [[nodiscard(
@@ -906,7 +900,9 @@ public:
   /// value was dequeued, or false if the queue was empty or closed.
   ///
   /// This scope must be released before the next call to `try_pull()` or
-  /// `pull()`. It must also be released before the queue is destroyed.
+  /// `pull()`. It must also be released before the queue is destroyed. The
+  /// safest way to accomplish this is to tie its scope to the loop:
+  /// `while (auto data = q.try_pull()) { process(data.value()); }`
   try_pull_zc_scope try_pull() {
     size_t Idx;
     data_block* block;

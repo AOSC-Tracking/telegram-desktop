@@ -47,6 +47,12 @@ inline macro(multirow) {
   if (!tp.isArrayMode()) throw ex_parse("Command \\multirow must used in array environment!");
   int n = 0;
   valueof(args[1], n);
+  // Bound the row span: matrix layout later computes abs(n) and r + n, so
+  // INT_MIN (abs is undefined) and huge magnitudes (overflow) must be
+  // rejected. Real multirow spans are small.
+  constexpr int kMaxArrayRowSpan = 1000;
+  if (n < -kMaxArrayRowSpan || n > kMaxArrayRowSpan)
+    throw ex_parse("Bad row span in multirow!");
   tp.addAtom(sptrOf<MultiRowAtom>(n, args[2], Formula(tp, args[3])._root));
   return nullptr;
 }
@@ -229,6 +235,12 @@ inline macro(binom) {
 inline macro(above) {
   auto num = tp.popFormulaAtom();
   auto[unit, value] = tp.getLength();
+  // A bare \above with no dimension leaves the parser at end-of-input, where
+  // getLength() returns UnitType::none (= -1). Building the FractionAtom with
+  // that unit later indexes the unit-conversion table at -1 (out of bounds)
+  // while measuring the fraction rule, so reject the missing argument here
+  // instead of rendering a broken fraction.
+  if (unit == UnitType::none) throw ex_parse("Missing dimension for \\above!");
   auto den = Formula(tp, tp.getOverArgument(), false)._root;
   if (num == nullptr || den == nullptr)
     throw ex_parse("Both numerator and denominator of a fraction can't be empty!");
@@ -542,11 +554,19 @@ inline macro(matrixATATenv) {
   return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::matrix);
 }
 
+// Upper bound on the column span of \multicolumn / \hdotsfor. ArrayFormula::
+// addCol(n) pushes n placeholder cells, so an unbounded user count (e.g.
+// \multicolumn{99999999}{c}{x}) would allocate gigabytes and stall. Real
+// tables never approach this.
+constexpr int kMaxArrayColumnSpan = 1000;
+
 inline macro(multicolumn) {
   if (!tp.isArrayMode())
     throw ex_parse("Command 'multicolumn' only available in array mode!");
   int n = 0;
   valueof(args[1], n);
+  if (n <= 0 || n > kMaxArrayColumnSpan)
+    throw ex_parse("Bad column span in multicolumn!");
   const std::string x = wide2utf8(args[2]);
   tp.addAtom(sptrOf<MulticolumnAtom>(n, x, Formula(tp, args[3])._root));
   ((ArrayFormula*) tp._formula)->addCol(n);
@@ -558,6 +578,8 @@ inline macro(hdotsfor) {
     throw ex_parse("Command 'hdotsfor' only available in array mode!");
   int n = 0;
   valueof(args[1], n);
+  if (n <= 0 || n > kMaxArrayColumnSpan)
+    throw ex_parse("Bad column span in hdotsfor!");
   float f = 1.f;
   if (!args[2].empty()) valueof(args[2], f);
   tp.addAtom(sptrOf<HdotsforAtom>(n, f));
@@ -1427,6 +1449,9 @@ inline macro(insertBreakMark) {
 
 inline sptr<Atom> _limits_type(TeXParser& tp, Args& args, LimitsType type) {
   auto atom = tp.popLastAtom();
+  // \limits / \nolimits with no preceding atom (e.g. a bare "\limits" or one
+  // right after a group boundary): nothing to attach the limits mode to.
+  if (atom == nullptr) return nullptr;
   auto copy = atom->clone();
   copy->_limitsType = type;
   return copy;

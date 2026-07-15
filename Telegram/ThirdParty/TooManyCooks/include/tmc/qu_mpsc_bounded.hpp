@@ -374,7 +374,7 @@ private:
   // reservation is past the close cutoff (caller must bail). Otherwise
   // returns the picked slot.
   //
-  // Producers use seq_cst fetch_add on `write_offset` to pick a physical slot.
+  // Producers use fetch_add on `write_offset` to pick a physical slot.
   // Multiple producers whose reservations hash to the same slot are serialized
   // by an intrusive Treiber chain on the slot's `flags` word. When the consumer
   // drains a slot, it wakes producers in FIFO order by reversing that input
@@ -391,8 +391,15 @@ private:
   // 2 producer. This behavior is as-if the only racing operation was FAA, and
   // producer B won that race.
   element* get_write_ticket() noexcept {
-    size_t idx = write_offset.fetch_add(1, std::memory_order_seq_cst);
-    if (closed.load(std::memory_order_acquire)) [[unlikely]] {
+    // Release is not required: this FAA publishes nothing (this producer has
+    // done no writes prior to the FAA). Producer data is published later by the
+    // flags CAS.
+    //
+    // Acquire is required: it pairs with the closer's release fetch_add (see
+    // close_get_waiting_consumer) so that we see `closed == true` promptly when
+    // our ticket is after the cutoff.
+    size_t idx = write_offset.fetch_add(1, std::memory_order_acquire);
+    if (closed.load(std::memory_order_relaxed)) [[unlikely]] {
       // Spin until the closer has published write_closed_at.
       while (!closed_ready.load(std::memory_order_acquire)) {
         TMC_CPU_PAUSE();
@@ -604,14 +611,29 @@ private:
       return nullptr;
     }
 
-    // We are the unique closer. The release store of `closed` above is
-    // sequenced-before the following seq_cst fetch_add; any producer whose
-    // own seq_cst fetch_add on write_offset is mod-order after ours will
-    // synchronize-with us via the RMW chain and see `closed == true` on
-    // its subsequent acquire load.
-    size_t cutoff = write_offset.fetch_add(1, std::memory_order_seq_cst);
+    // We are the unique closer.
+    // Acquire is not required: Producers don't write any data before
+    // incrementing write_offset.
+    //
+    // Release is required: it pairs with producers' FAA on write_offset, so
+    // that producers after cutoff see the closed flag.
+    size_t cutoff = write_offset.fetch_add(1, std::memory_order_release);
     write_closed_at.store(cutoff, std::memory_order_release);
     closed_ready.store(true, std::memory_order_release);
+
+    // No-op RMW (must not be a plain load): inserts this close into the
+    // modification order of the cutoff slot's flags. If the slot still holds
+    // a pre-cutoff round (DATA, PROD, or a consumer armed below the cutoff),
+    // the consumer must drain that round before reaching the cutoff index,
+    // and its drain/handoff RMW on this word is modification-ordered after
+    // this one - so it reads from the release sequence headed here and
+    // inherits visibility of `closed`. Its next load of `closed` is then
+    // guaranteed to return true. Without this, a consumer reaching the cutoff
+    // index could miss `closed` (no happens-before edge) and either suspend
+    // with nothing left to wake it (pull) or spuriously report EMPTY
+    // (try_pull).
+    element* elem = &values[cutoff % capacity];
+    uintptr_t cur = elem->flags.fetch_or(0, std::memory_order_acq_rel);
 
     if constexpr (!ConsumerCanSuspend) {
       return nullptr;
@@ -619,10 +641,9 @@ private:
 
     // Mark the cutoff slot closed, or wake a consumer already armed at the
     // cutoff. Earlier-round consumers/producers at this physical slot are left
-    // alone; they will publish/drain normally, and the consumer will observe
-    // the closed cutoff on a later pull.
-    element* elem = &values[cutoff % capacity];
-    uintptr_t cur = elem->flags.load(std::memory_order_acquire);
+    // alone; they will publish/drain normally, and the consumer is guaranteed
+    // to observe the closed cutoff on a later pull via the RMW above, even
+    // though no sentinel is placed here.
     while (true) {
       if ((cur & (DATA_BIT | PROD_BIT)) != 0) {
         return nullptr;
@@ -690,11 +711,30 @@ public:
   }
 
   /// Returns true if the queue appears to be empty.
+  /// A closed-and-drained queue is considered non-empty, and this will return
+  /// false so that the consumer will call `try_pull()` / `pull()` and observe
+  /// the CLOSED status.
   /// This is an unsynchronized read (like `try_pull()`), so it is only a hint.
   /// Only safe to call from the single consumer.
   bool empty() {
-    element* elem = &values[read_offset % capacity];
-    return (elem->flags.load(std::memory_order_acquire) & DATA_BIT) == 0;
+    size_t idx = read_offset;
+    element* elem = &values[idx % capacity];
+    if ((elem->flags.load(std::memory_order_acquire) & DATA_BIT) != 0) {
+      return false;
+    }
+    // Mirror try_pull()'s CLOSED detection: once the consumer has reached the
+    // close cutoff, the queue is closed and drained (which for the purposes of
+    // this function is considered non-empty).
+    if (closed.load(std::memory_order_acquire)) {
+      while (!closed_ready.load(std::memory_order_acquire)) {
+        TMC_CPU_PAUSE();
+      }
+      size_t cutoff = write_closed_at.load(std::memory_order_acquire);
+      if (!circular_less_than(idx, cutoff)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /// Await to dequeue. Returns a `pull_zc_scope` which provides a scoped
@@ -706,7 +746,9 @@ public:
   /// value was dequeued, or false if the queue was closed and drained.
   ///
   /// This scope must be released before the next call to `try_pull()` or
-  /// `pull()`. It must also be released before the queue is destroyed.
+  /// `pull()`. It must also be released before the queue is destroyed. The
+  /// safest way to accomplish this is to tie its scope to the loop:
+  /// `while (auto data = co_await q.pull()) { process(data.value()); }`
   ///
   /// May suspend until a value is available, or until `close()` is called.
   [[nodiscard(
@@ -734,7 +776,9 @@ public:
   /// value was dequeued, or false if the queue was empty or closed.
   ///
   /// This scope must be released before the next call to `try_pull()` or
-  /// `pull()`. It must also be released before the queue is destroyed.
+  /// `pull()`. It must also be released before the queue is destroyed. The
+  /// safest way to accomplish this is to tie its scope to the loop:
+  /// `while (auto data = q.try_pull()) { process(data.value()); }`
   try_pull_zc_scope try_pull() {
     while (true) {
       size_t idx = read_offset;
@@ -743,7 +787,7 @@ public:
       if ((f & DATA_BIT) != 0) {
         return try_pull_zc_scope(this, elem, idx);
       }
-      if (closed.load(std::memory_order_acquire)) {
+      if (closed.load(std::memory_order_relaxed)) {
         while (!closed_ready.load(std::memory_order_acquire)) {
           TMC_CPU_PAUSE();
         }
@@ -930,7 +974,7 @@ public:
           if ((f & DATA_BIT) != 0) {
             return true;
           }
-          if (queue.closed.load(std::memory_order_acquire)) {
+          if (queue.closed.load(std::memory_order_relaxed)) {
             while (!queue.closed_ready.load(std::memory_order_acquire)) {
               TMC_CPU_PAUSE();
             }

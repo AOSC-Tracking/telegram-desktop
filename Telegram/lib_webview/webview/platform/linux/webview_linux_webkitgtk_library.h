@@ -10,6 +10,8 @@
 
 #include <gio/gio.h>
 
+#define GDK_CURRENT_TIME 0L 
+
 #define GTK_TYPE_CONTAINER (gtk_container_get_type ())
 #define GTK_CONTAINER(obj) (G_TYPE_CHECK_INSTANCE_CAST ((obj), GTK_TYPE_CONTAINER, GtkContainer))
 
@@ -28,6 +30,7 @@
 
 #define GTK_TYPE_PLUG (gtk_plug_get_type ())
 #define GTK_PLUG(obj) (G_TYPE_CHECK_INSTANCE_CAST ((obj), GTK_TYPE_PLUG, GtkPlug))
+#define GTK_IS_PLUG(obj) (G_TYPE_CHECK_INSTANCE_TYPE ((obj), GTK_TYPE_PLUG))
 
 #define GTK_TYPE_STYLE_PROVIDER (gtk_style_provider_get_type ())
 #define GTK_STYLE_PROVIDER(o) (G_TYPE_CHECK_INSTANCE_CAST ((o), GTK_TYPE_STYLE_PROVIDER, GtkStyleProvider))
@@ -93,6 +96,7 @@ typedef GdkToplevel GdkWaylandToplevel;
 typedef struct _GdkToplevelSize GdkToplevelSize;
 typedef struct _GtkEventController GtkEventController;
 typedef struct _GtkGesture GtkGesture;
+typedef struct _GtkUriLauncher GtkUriLauncher;
 typedef unsigned int GdkModifierType;
 typedef void (*GdkWaylandToplevelExported)(
 	GdkToplevel *toplevel,
@@ -356,6 +360,22 @@ inline void (*gtk_window_get_size)(
 	GtkWindow *window,
 	gint *width,
 	gint *height);
+inline void (*gtk_show_uri)(
+	GtkWindow *parent,
+	const char *uri,
+	guint32 timestamp);
+inline gboolean (*gtk_show_uri_on_window)(
+	GtkWindow *parent,
+	const char *uri,
+	guint32 timestamp,
+	GError **error);
+inline GtkUriLauncher *(*gtk_uri_launcher_new)(const char *uri);
+inline void (*gtk_uri_launcher_launch)(
+	GtkUriLauncher *self,
+	GtkWindow *parent,
+	GCancellable *cancellable,
+	GAsyncReadyCallback callback,
+	gpointer user_data);
 
 // returns Window that is a typedef to unsigned long,
 // but we avoid to include Xlib.h here
@@ -411,6 +431,10 @@ inline gboolean (*webkit_web_view_is_loading)(WebKitWebView *web_view);
 inline void (*webkit_web_view_load_uri)(
 	WebKitWebView *web_view,
 	const gchar *uri);
+inline void (*webkit_web_view_load_html)(
+	WebKitWebView *web_view,
+	const gchar *content,
+	const gchar *base_uri);
 inline void (*webkit_web_view_reload_bypass_cache)(WebKitWebView *web_view);
 inline WebKitUserScript *(*webkit_user_script_new)(
 	const gchar *source,
@@ -474,7 +498,7 @@ enum class Platform {
 };
 
 [[nodiscard]] ResolveResult Resolve(
-	const Platform &platform,
+	Platform platform,
 	WindowMode mode);
 
 } // namespace Webview::WebKitGTK::Library

@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <coroutine>
 #include <cstddef>
 
 namespace tmc {
@@ -23,13 +24,8 @@ void waiter_list_node::suspend(
   auto& parentList = Parent->waiters;
   auto& parentValue = Parent->value;
 
-  // Configure this awaiter
-  waiter.continuation = Outer;
-  waiter.continuation_executor = tmc::detail::this_thread::executor();
-  waiter.continuation_priority = tmc::detail::this_thread::this_task().prio;
-
-  // Add this awaiter to the waiter list
-  Parent->waiters.add_waiter(*this);
+  // Configure this awaiter and add it to the waiter list
+  parentList.configure_and_add_waiter(*this, Outer);
 
   // Release the operation by increasing the waiter count
   size_t add = TMC_ONE_BIT << tmc::detail::WAITERS_OFFSET;
@@ -47,9 +43,8 @@ void waiter_list_waiter::resume() noexcept {
   );
 }
 
-std::coroutine_handle<> waiter_list_waiter::try_symmetric_transfer(
-  std::coroutine_handle<> Outer
-) noexcept {
+std::coroutine_handle<>
+waiter_list_waiter::try_symmetric_transfer(std::coroutine_handle<> Outer) noexcept {
   if (tmc::detail::this_thread::exec_prio_is(
         continuation_executor, continuation_priority
       )) {
@@ -83,12 +78,50 @@ reverse_chain(tmc::detail::waiter_list_node* curr) noexcept {
 }
 } // namespace
 
-void waiter_list::add_waiter(tmc::detail::waiter_list_node& w) noexcept {
+std::coroutine_handle<> try_symmetric_transfer2_waiter(
+  waiter_list_waiter* ToWake, std::coroutine_handle<> Continuation, tmc::ex_any* Executor,
+  size_t Priority
+) noexcept {
+  if (ToWake != nullptr) {
+    std::coroutine_handle<> toContinuation = ToWake->continuation;
+    tmc::ex_any* toExecutor = ToWake->continuation_executor;
+    size_t toPriority = ToWake->continuation_priority;
+    // If we can transfer to primary, then do so, and post backup.
+    if (tmc::detail::this_thread::exec_prio_is(toExecutor, toPriority)) {
+      if (Continuation != nullptr) {
+        tmc::detail::post_checked(Executor, std::move(Continuation), Priority);
+      }
+      return toContinuation;
+    }
+
+    // Transfer to primary disallowed
+    tmc::detail::post_checked(toExecutor, std::move(toContinuation), toPriority);
+  }
+
+  if (Continuation != nullptr) {
+    // Try to transfer to backup
+    if (tmc::detail::this_thread::exec_prio_is(Executor, Priority)) {
+      return Continuation;
+    }
+
+    // Transfer to backup disallowed
+    tmc::detail::post_checked(Executor, std::move(Continuation), Priority);
+  }
+  return std::noop_coroutine();
+}
+
+void waiter_list::configure_and_add_waiter(
+  tmc::detail::waiter_list_node& Node, std::coroutine_handle<> Outer
+) noexcept {
+  Node.waiter.continuation = Outer;
+  Node.waiter.continuation_executor = tmc::detail::this_thread::executor();
+  Node.waiter.continuation_priority = tmc::detail::this_thread::this_task().prio;
+
   auto h = input.load(std::memory_order_acquire);
   do {
-    w.next = h;
+    Node.next = h;
   } while (!input.compare_exchange_strong(
-    h, &w, std::memory_order_acq_rel, std::memory_order_acquire
+    h, &Node, std::memory_order_acq_rel, std::memory_order_acquire
   ));
 }
 
@@ -260,9 +293,7 @@ bool try_acquire(std::atomic<size_t>& Value) noexcept {
 } // namespace detail
 
 bool aw_acquire::await_ready() noexcept {
-  return tmc::detail::try_acquire(
-    parent.load(std::memory_order_relaxed)->value
-  );
+  return tmc::detail::try_acquire(parent.load(std::memory_order_relaxed)->value);
 }
 
 void aw_acquire::await_suspend(std::coroutine_handle<> Outer) noexcept {

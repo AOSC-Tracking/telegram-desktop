@@ -105,7 +105,7 @@ enum class ElasticScrollMovement {
 	Returning,
 };
 
-class ElasticScroll final : public RpWidget {
+class ElasticScroll : public RpWidget {
 public:
 	ElasticScroll(
 		QWidget *parent,
@@ -166,6 +166,7 @@ public:
 	void scrollToWidget(not_null<QWidget*> widget);
 	void scrollToY(int toTop, int toBottom = -1);
 	void scrollTo(int toFrom, int toTill = -1);
+	[[nodiscard]] int computeScrollToY(int toTop, int toBottom = -1);
 	void disableScroll(bool dis);
 	void innerResized();
 
@@ -176,6 +177,21 @@ public:
 		_customTouchProcess = std::move(process);
 	}
 
+	// Receives wheel input on the axis this scroll doesn't handle:
+	// without lockWheelDirection() every event where that axis dominates,
+	// with it whole gestures locked to that axis.
+	void setCrossAxisWheelProcess(Fn<bool(QPoint)> process) {
+		_crossAxisWheelProcess = std::move(process);
+	}
+
+	// Locks each phased wheel gesture to the axis chosen at its start:
+	// cross-axis gestures go whole to the cross-axis process (or are
+	// discarded) and never scroll this area; NoScrollPhase (classic
+	// wheel) events keep per-event routing.
+	void lockWheelDirection() {
+		_wheelDirectionLocked = true;
+	}
+
 	enum class OverscrollType : uchar {
 		None,
 		Virtual,
@@ -184,6 +200,26 @@ public:
 	void setOverscrollTypes(OverscrollType from, OverscrollType till);
 	void setOverscrollDefaults(int from, int till, bool shift = false);
 	void setOverscrollBg(QColor bg);
+	void setContentBottomInset(int inset);
+
+	// Decides, while scrolling heads toward an edge, whether the elastic
+	// overscroll (bounce) is allowed for that edge. Predicates return true
+	// when that edge is a genuine boundary (fully loaded) and the bounce
+	// is wanted; a null predicate means always allowed. Predicates are
+	// cheap, so they are re-evaluated on each event that would grow the
+	// overscroll; a disallowed edge just drops the accumulated overscroll,
+	// the same way an edge with OverscrollType::None does.
+	void setOverscrollEdges(Fn<bool()> allowTop, Fn<bool()> allowBottom);
+
+	// Called synchronously when a user scroll gesture (wheel, trackpad,
+	// touch or Down/PageDown key) pushes past the bottom edge, before
+	// any overscroll accumulates. The callback may synchronously append
+	// content below, growing the inner widget at once, and return true;
+	// the remaining delta of the same gesture then continues into the
+	// new content instead of bouncing. Returning false (or a null
+	// callback) keeps the normal edge behavior. Scrollbar drags and
+	// programmatic scrolls never fire it.
+	void setBottomContentRequest(Fn<bool()> request);
 
 	[[nodiscard]] rpl::producer<> scrolls() const;
 	[[nodiscard]] rpl::producer<> innerResizes() const;
@@ -200,6 +236,7 @@ public:
 	[[nodiscard]] rpl::producer<bool> touchMaybePressing() const;
 
 	void setBarTopInset(int inset);
+	void setBarBottomInset(int inset);
 
 private:
 	bool eventHook(QEvent *e) override;
@@ -211,6 +248,12 @@ private:
 	void enterEventHook(QEnterEvent *e) override;
 	void leaveEventHook(QEvent *e) override;
 	bool handleWheelEvent(not_null<QWheelEvent*> e, bool touch = false);
+	bool handleScrollEvent(
+		Qt::ScrollPhase phase,
+		int delta,
+		bool ignore = false,
+		bool touch = false);
+	bool requestBottomContent(int delta);
 	void handleTouchEvent(QTouchEvent *e);
 
 	void updateState();
@@ -248,7 +291,12 @@ private:
 	const style::ScrollArea &_st;
 	std::unique_ptr<ElasticScrollBar> _bar;
 	int _barTopInset = 0;
+	int _barBottomInset = 0;
+	int _contentBottomInset = 0;
 	ScrollState _state;
+
+	QPointer<QScroller> _scroller;
+	QPoint _wheelPos;
 
 	base::Timer _touchTimer;
 	base::Timer _touchScrollTimer;
@@ -275,14 +323,21 @@ private:
 	bool _disabled : 1 = false;
 	bool _dirtyState : 1 = false;
 	bool _overscrollReturning : 1 = false;
+	bool _wheelDirectionLocked : 1 = false;
+	bool _insideBottomContentRequest : 1 = false;
 
 	Fn<bool(not_null<QWheelEvent*>)> _customWheelProcess;
 	Fn<bool(not_null<QTouchEvent*>)> _customTouchProcess;
+	Fn<bool(QPoint)> _crossAxisWheelProcess;
+	ScrollDirectionLock _wheelDirectionLock;
 	int _overscroll = 0;
 	int _overscrollDefaultFrom = 0;
 	int _overscrollDefaultTill = 0;
 	OverscrollType _overscrollTypeFrom = OverscrollType::Real;
 	OverscrollType _overscrollTypeTill = OverscrollType::Real;
+	Fn<bool()> _overscrollAllowFrom;
+	Fn<bool()> _overscrollAllowTill;
+	Fn<bool()> _bottomContentRequest;
 	std::optional<QColor> _overscrollBg;
 	Ui::Animations::Simple _overscrollReturnAnimation;
 	rpl::variable<Position> _position;

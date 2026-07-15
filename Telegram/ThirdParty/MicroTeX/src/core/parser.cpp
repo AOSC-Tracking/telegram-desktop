@@ -12,6 +12,30 @@
 using namespace std;
 using namespace tex;
 
+namespace {
+// Guard against stack overflow from pathologically nested input (deep braces,
+// scripts, \frac/\sqrt nesting). All recursive parsing funnels through
+// TeXParser::parse(): brace groups via getArgument(), scripts via
+// getScripts(), and sub-formulas (\frac, \sqrt, ...) via nested Formula
+// construction. So one depth limit here covers every case and also bounds the
+// depth of the atom tree that createBox() later recurses over. Real formulas
+// nest a few dozen levels at most; the harness overflowed the stack around
+// 1000, so 250 leaves a wide margin while never rejecting legitimate input.
+// thread_local because formulas may be parsed on worker threads concurrently.
+constexpr int kMaxParseDepth = 250;
+thread_local int gParseDepth = 0;
+
+struct ParseDepthGuard {
+  ParseDepthGuard() {
+    if (++gParseDepth > kMaxParseDepth) {
+      --gParseDepth;
+      throw ex_parse("Formula nesting is too deep!");
+    }
+  }
+  ~ParseDepthGuard() { --gParseDepth; }
+};
+}  // namespace
+
 const wchar_t TeXParser::ESCAPE = '\\';
 const wchar_t TeXParser::L_GROUP = '{';
 const wchar_t TeXParser::R_GROUP = '}';
@@ -84,6 +108,7 @@ void TeXParser::init(
   _line = _col = 0;
   _group = 0;
   _atIsLetter = 0;
+  _expansions = 0;
   _insertion = _arrayMode = _isMathMode = false;
   _isPartial = _hideUnknownChar = true;
 
@@ -112,6 +137,7 @@ void TeXParser::reset(const wstring& latex) {
   _line = 0;
   _col = 0;
   _group = 0;
+  _expansions = 0;
   _insertion = false;
   _atIsLetter = 0;
   _arrayMode = false;
@@ -516,6 +542,13 @@ sptr<Atom> TeXParser::processCommands(const wstring& cmd, MacroInfo* mac) {
   args[0] = cmd;
 
   if (NewCommandMacro::isMacro(cmd)) {
+    // Same self-reference guard as inflateNewCmd: insert() rewinds the parse
+    // position to the replacement, so a macro that expands to itself would
+    // loop here forever once preprocess() has given up on it.
+    static constexpr int kMaxExpansions = 10000;
+    if (++_expansions > kMaxExpansions) {
+      throw ex_parse("Too many macro expansions!");
+    }
     // The last value in "args" is the replacement string
     auto ret = mac->invoke(*this, args);
     insert(_spos, _pos, args.back());
@@ -716,6 +749,14 @@ void TeXParser::preprocessNewCmd(wstring& cmd, Args& args, int& pos) {
 }
 
 void TeXParser::inflateNewCmd(wstring& cmd, Args& args, int& pos) {
+  // A self-referential macro (e.g. \newcommand{\x}{\x}\x) re-inserts its own
+  // name and rewinds, so preprocess() would inflate it forever. Bound the
+  // total number of inflations per preprocess pass; real formulas use only a
+  // handful. In partial mode this is swallowed like any other parse error.
+  static constexpr int kMaxExpansions = 10000;
+  if (++_expansions > kMaxExpansions) {
+    throw ex_parse("Too many macro expansions!");
+  }
   // The macro must exists
   auto mac = MacroInfo::get(cmd);
   getOptsArgs(mac->_argc, mac->_posOpts, args);
@@ -806,6 +847,7 @@ void TeXParser::preprocess() {
 }
 
 void TeXParser::parse() {
+  ParseDepthGuard depthGuard;
   if (_len == 0) {
     if (_formula->_root == nullptr && !_arrayMode)
       _formula->add(sptrOf<EmptyAtom>());
@@ -842,7 +884,10 @@ void TeXParser::parse() {
         if (!_isMathMode) {  // we are in mbox
           TexStyle style = TexStyle::text;
           bool doubleDollar = false;
-          if (_latex[_pos] == DOLLAR) {
+          // Bounds-check: a trailing $ in text mode (e.g. \text{$$}) leaves
+          // _pos at _len here, and getDollarGroup can push it one past _len,
+          // so an unguarded _latex[_pos] reads out of range.
+          if (_pos < _len && _latex[_pos] == DOLLAR) {
             style = TexStyle::display;
             doubleDollar = true;
             _pos++;
@@ -854,7 +899,7 @@ void TeXParser::parse() {
           );
           _formula->add(atom);
           if (doubleDollar) {
-            if (_latex[_pos] == DOLLAR) _pos++;
+            if (_pos < _len && _latex[_pos] == DOLLAR) _pos++;
           }
         }
       }

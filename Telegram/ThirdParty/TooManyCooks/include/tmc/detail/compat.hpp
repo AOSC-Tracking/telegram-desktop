@@ -42,7 +42,7 @@
 
 #ifdef __has_cpp_attribute
 
-#if __has_cpp_attribute(clang::coro_await_elidable_argument) &&                \
+#if __has_cpp_attribute(clang::coro_await_elidable) &&                                   \
   __has_cpp_attribute(clang::coro_await_elidable_argument)
 #define TMC_CORO_AWAIT_ELIDABLE [[clang::coro_await_elidable]]
 #define TMC_CORO_AWAIT_ELIDABLE_ARGUMENT [[clang::coro_await_elidable_argument]]
@@ -62,8 +62,8 @@
 #define TMC_SIZED_DEALLOCATION 0
 #endif
 
-#if defined(__x86_64__) || defined(_M_AMD64) || defined(i386) ||               \
-  defined(__i386__) || defined(__i386) || defined(_M_IX86)
+#if defined(__x86_64__) || defined(_M_AMD64) || defined(i386) || defined(__i386__) ||    \
+  defined(__i386) || defined(_M_IX86)
 #ifdef _MSC_VER
 #include <intrin.h>
 #else
@@ -71,40 +71,45 @@
 #endif
 #define TMC_CPU_X86
 #define TMC_CPU_PAUSE _mm_pause
-static inline size_t TMC_CPU_TIMESTAMP() noexcept {
-  return static_cast<size_t>(__rdtsc());
-}
-// Assume a 3.5GHz CPU if we can't get the value (on x86).
-// Yes, this is hacky. Getting the real RDTSC freq requires
-// waiting for another time source (system timer) and then dividing by
-// that duration. This takes real time and would have to be done on
-// startup. Using a 3.5GHz default means that slower processors will appear to
-// be running faster, and vice versa. For the current usage of this (the
-// clustering threshold in tmc::channel) this seems like reasonable behavior
-// anyway.
-static inline const size_t TMC_CPU_FREQ = 3500000000;
-#elif defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64) ||              \
-  defined(__aarch64__) || defined(__ARM_ACLE)
+#elif defined(__arm__) || defined(_M_ARM) || defined(_M_ARM64) || defined(__aarch64__)
+#if defined(__aarch64__) || defined(_M_ARM64) ||                                         \
+  (defined(__ARM_ARCH_PROFILE) && __ARM_ARCH_PROFILE == 'A') ||                          \
+  (defined(__ARM_ARCH_PROFILE) && __ARM_ARCH_PROFILE == 'R')
 #define TMC_CPU_ARM
+#endif
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
 static inline void TMC_CPU_PAUSE() noexcept {
-  // Clang defines __yield intrinsic, but GCC doesn't, so we use asm
+  // Clang defines __yield intrinsic, but GCC doesn't, so we use asm where we
+  // know the ARM yield instruction is available.
+#if defined(__aarch64__) || defined(_M_ARM64) || (defined(__ARM_ARCH) && __ARM_ARCH >= 7)
+#if defined(_MSC_VER)
+  __yield();
+#else
   asm volatile("yield");
+#endif
+#endif
 }
-// Read the ARM "Virtual Counter" register.
-// This ticks at a frequency independent of the processor frequency.
-// https://developer.arm.com/documentation/ddi0406/cb/System-Level-Architecture/The-Generic-Timer/About-the-Generic-Timer/The-virtual-counter?lang=en
-static inline size_t TMC_CPU_TIMESTAMP() noexcept {
-  size_t count;
-  asm volatile("mrs %0, cntvct_el0; " : "=r"(count)::"memory");
-  return count;
+#elif defined(__loongarch__) && defined(__LP64__)
+// Use some barrier instructions to generate a delay, as there's
+// no instruction dedicated for the delay in spinlock :(.
+static inline void TMC_CPU_PAUSE() noexcept {
+  for (int i = 0; i < 32; i++)
+    asm volatile("ibar 0");
 }
-// Read the ARM "Virtual Counter" frequency.
-static inline size_t TMC_ARM_CPU_FREQ() noexcept {
-  size_t freq;
-  asm volatile("mrs %0, cntfrq_el0; isb; " : "=r"(freq)::"memory");
-  return freq;
+#elif defined(__riscv)
+#define TMC_CPU_RISCV
+static inline void TMC_CPU_PAUSE() noexcept {
+#if defined(__riscv_zihintpause)
+  asm volatile("pause" ::: "memory");
+#else
+  asm volatile("nop" ::: "memory");
+#endif
 }
-static inline const size_t TMC_CPU_FREQ = TMC_ARM_CPU_FREQ();
+#else
+// Fallback for unknown architectures
+static inline void TMC_CPU_PAUSE() noexcept {}
 #endif
 
 // clang-format tries to collapse the pragmas into one line...

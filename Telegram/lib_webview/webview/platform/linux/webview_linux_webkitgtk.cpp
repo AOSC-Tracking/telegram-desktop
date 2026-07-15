@@ -11,6 +11,7 @@
 #include "webview/platform/linux/webview_linux_http_server.h"
 #include "webview/webview_data_stream.h"
 #include "base/platform/base_platform_info.h"
+#include "base/platform/linux/base_linux_xdg_activation_token.h"
 #include "base/debug_log.h"
 #include "base/integration.h"
 #include "base/unique_qptr.h"
@@ -85,7 +86,7 @@ inline auto MethodError() {
 }
 
 inline std::string SocketPathToDBusAddress(const std::string &socketPath) {
-	return "unix:path=" + socketPath;
+	return "unix:path=" + Gio::dbus_address_escape_value(socketPath);
 }
 
 enum class ShellControlAction {
@@ -482,6 +483,7 @@ public:
 
 	void navigate(std::string url) override;
 	void navigateToData(std::string id) override;
+	void loadHtml(std::string html, std::string baseUrl) override;
 	void reload() override;
 
 	void init(std::string js) override;
@@ -574,7 +576,7 @@ private:
 	Platform _platform = Platform::Any;
 	Ui::GL::Backend _glBackend;
 	::base::unique_qptr<QWidget> _widget;
-	QPointer<Compositor> _compositor;
+	::base::unique_qptr<Compositor> _compositor;
 	std::optional<HttpServer> _dataServer;
 
 	GtkWidget *_window = nullptr;
@@ -616,17 +618,13 @@ Instance::Instance(bool remoting, WindowMode mode)
 : _remoting(remoting)
 , _mode(mode) {
 	if (_remoting) {
-		if (_mode == WindowMode::External) {
-			_platform = Platform::Any;
-		} else {
-			_platform = ::Platform::IsX11()
-				? Platform::X11
+		_platform = ::Platform::IsX11()
+			? Platform::X11
 #ifdef DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
-				: Platform::Wayland;
+			: Platform::Wayland;
 #else // DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
-				: Platform::Any;
+			: Platform::Any;
 #endif // !DESKTOP_APP_WEBVIEW_WAYLAND_COMPOSITOR
-		}
 		_glBackend = Ui::GL::ChooseBackendDefault(Ui::GL::CheckCapabilities());
 		startProcess();
 	}
@@ -767,34 +765,26 @@ bool Instance::create(Config config) {
 			return false;
 		}
 
-		const auto createPlaceholder = [&](bool forwardResize) {
+		if (_mode == WindowMode::External) {
 			_widget = ::base::make_unique_q<QWidget>(config.parent);
-			if (forwardResize) {
-				::base::install_event_filter(_widget, [=](
-						not_null<QEvent*> e) {
-					if (e->type() == QEvent::Resize) {
-						const auto size = static_cast<QResizeEvent*>(
-							e.get()
-						)->size();
-						resize(size.width(), size.height());
-					}
-					return ::base::EventFilterResult::Continue;
-				});
-			}
-			if (_mode != WindowMode::External) {
-				_widget->show();
-			}
-		};
+			return true;
+		}
 
 		switch (_platform) {
 		case Platform::Any:
-			createPlaceholder(_mode != WindowMode::External);
+			_widget = ::base::make_unique_q<QWidget>(config.parent);
+			::base::install_event_filter(_widget, [=](
+					not_null<QEvent*> e) {
+				if (e->type() == QEvent::Resize) {
+					const auto size = static_cast<QResizeEvent*>(
+						e.get()
+					)->size();
+					resize(size.width(), size.height());
+				}
+				return ::base::EventFilterResult::Continue;
+			});
 			break;
 		case Platform::X11:
-			if (_mode == WindowMode::External) {
-				createPlaceholder(false);
-				break;
-			}
 			const auto window = QPointer(QWindow::fromWinId(WId(winId())));
 			::base::install_event_filter(window, [=](
 					not_null<QEvent*> e) {
@@ -957,8 +947,7 @@ bool Instance::create(Config config) {
 		G_CALLBACK(+[](
 				Instance *instance,
 				WebKitWebProcessTerminationReason reason) {
-			LOG(("WebView Error: Web process terminated: %1.").arg(
-				int(reason)));
+			g_critical("Web process terminated: %d.", reason);
 			Gio::Application::get_default().quit();
 		}),
 		this);
@@ -970,7 +959,7 @@ bool Instance::create(Config config) {
 				GParamSpec *pspec) {
 			if (!webkit_web_view_get_is_web_process_responsive(
 					instance->_webview)) {
-				LOG(("WebView Error: Web process became unresponsive."));
+				g_critical("Web process became unresponsive.");
 				Gio::Application::get_default().quit();
 			}
 		}),
@@ -1142,7 +1131,7 @@ bool Instance::create(Config config) {
 	}
 	if (gtk_window_set_child) {
 		gtk_window_set_child(GTK_WINDOW(_window), GTK_WIDGET(_webview));
-	} else if (_platform == Platform::X11) {
+	} else if (gtk_plug_get_type && GTK_IS_PLUG(_window)) {
 		const auto x11SizeFix = gtk_scrolled_window_new(nullptr, nullptr);
 		if (gtk_scrolled_window_set_shadow_type) {
 			gtk_scrolled_window_set_shadow_type(
@@ -1409,10 +1398,36 @@ bool Instance::decidePolicy(
 
 GtkWidget *Instance::createAnother(WebKitNavigationAction *action) {
 	WebKitURIRequest *request = webkit_navigation_action_get_request(action);
-	const gchar *uri = webkit_uri_request_get_uri(request);
-	if (_master) {
-		_master.call_navigation_started(uri, true, nullptr);
+	const std::string uri = webkit_uri_request_get_uri(request);
+	if (!_master) {
+		return nullptr;
 	}
+	_master.call_navigation_started(uri, true, [=](
+			GObject::Object source_object,
+			Gio::AsyncResult res) {
+		const auto ret = _master.call_navigation_started_finish(res);
+		if (!ret || !std::get<1>(*ret)) {
+			return;
+		}
+		if (gtk_uri_launcher_new && gtk_uri_launcher_launch) {
+			const auto launcher = gtk_uri_launcher_new(uri.c_str());
+			gtk_uri_launcher_launch(
+				launcher,
+				GTK_WINDOW(_window),
+				nullptr,
+				nullptr,
+				nullptr);
+				g_object_unref(launcher);
+		} else if (gtk_show_uri_on_window) {
+			gtk_show_uri_on_window(
+				GTK_WINDOW(_window),
+				uri.c_str(),
+				GDK_CURRENT_TIME,
+				nullptr);
+		} else {
+			gtk_show_uri(GTK_WINDOW(_window), uri.c_str(), GDK_CURRENT_TIME);
+		}
+	});
 	return nullptr;
 }
 
@@ -1633,7 +1648,7 @@ ResolveResult Instance::resolve() {
 
 		const ::base::has_weak_ptr guard;
 		std::optional<ResolveResult> result;
-		_helper.call_resolve(int(_mode), crl::guard(&guard, [&](
+		_helper.call_resolve(crl::guard(&guard, [&](
 				GObject::Object source_object,
 				Gio::AsyncResult res) {
 			const auto reply = _helper.call_resolve_finish(res);
@@ -1678,6 +1693,19 @@ void Instance::navigate(std::string url) {
 void Instance::navigateToData(std::string id) {
 	startDataServer();
 	navigate(dataDomain() + id);
+}
+
+void Instance::loadHtml(std::string html, std::string baseUrl) {
+	if (_remoting) {
+		if (!_helper) {
+			return;
+		}
+
+		_helper.call_load_html(html, baseUrl, nullptr);
+		return;
+	}
+
+	webkit_web_view_load_html(_webview, html.c_str(), baseUrl.c_str());
 }
 
 void Instance::reload() {
@@ -2286,6 +2314,7 @@ void Instance::startProcess() {
 		Gio::SubprocessFlags::NONE_);
 
 	if (_platform == Platform::Wayland
+			&& _mode != WindowMode::External
 			&& _glBackend == Ui::GL::Backend::Raster) {
 		serviceLauncher.setenv("LIBGL_ALWAYS_SOFTWARE", "1", true);
 		serviceLauncher.setenv("GSK_RENDERER", "cairo", true);
@@ -2293,6 +2322,11 @@ void Instance::startProcess() {
 		serviceLauncher.setenv("GDK_DEBUG", "gl-disable", true);
 		serviceLauncher.setenv("GDK_GL", "disable", true);
 		serviceLauncher.setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", true);
+	} else if (_platform == Platform::Any || _mode == WindowMode::External) {
+		const auto token = ::base::Platform::XdgActivationToken().toStdString();
+		if (!token.empty()) {
+			serviceLauncher.setenv("XDG_ACTIVATION_TOKEN", token, true);
+		}
 	}
 
 	int pipefd[2] = { -1, -1 };
@@ -2334,8 +2368,10 @@ void Instance::startProcess() {
 		return;
 	}
 
-	if (_platform == Platform::Wayland && !_compositor) {
-		_compositor = new Compositor(
+	Gio::File::new_for_path(socketPath).delete_();
+
+	if (_platform == Platform::Wayland && _mode != WindowMode::External) {
+		_compositor.emplace(
 			QByteArray::fromStdString(
 				GLib::path_get_basename(socketPath + "-wayland")));
 	}
@@ -2434,14 +2470,12 @@ void Instance::startProcess() {
 }
 
 void Instance::stopProcess() {
+	if (_dbusServer) {
+		_dbusServer.stop();
+	}
 	if (_serviceProcess) {
 		_serviceProcess.send_signal(SIGTERM);
 	}
-	GLib::timeout_add_seconds_once(1, [compositor = _compositor] {
-		if (compositor) {
-			compositor->deleteLater();
-		}
-	});
 	_compositor = nullptr;
 }
 
@@ -2471,6 +2505,7 @@ void Instance::registerMasterMethodHandlers() {
 		_master.complete_get_start_data(
 			invocation,
 			int(_platform),
+			int(_mode),
 			_compositor ? _compositor->socketName().toStdString() : "",
 			[] {
 				if (auto app = Gio::Application::get_default()) {
@@ -2512,6 +2547,11 @@ void Instance::registerMasterMethodHandlers() {
 		if (newWindow) {
 			if (_navigationStartHandler
 					&& _navigationStartHandler(uri, true)) {
+				if (_platform == Platform::Any
+						|| _mode == WindowMode::External) {
+					_master.complete_navigation_started(invocation, true);
+					return true;
+				}
 				QDesktopServices::openUrl(QString::fromStdString(uri));
 			}
 			_master.complete_navigation_started(invocation, false);
@@ -2695,11 +2735,12 @@ int Instance::exec() {
 					return;
 				}
 				_platform = Platform(std::get<1>(*settings));
-				if (const auto waylandDisplay = std::get<2>(*settings)
+				_mode = WindowMode(std::get<2>(*settings));
+				if (const auto waylandDisplay = std::get<3>(*settings)
 						; !waylandDisplay.empty()) {
 					GLib::setenv("WAYLAND_DISPLAY", waylandDisplay, true);
 				}
-				if (const auto appId = std::get<3>(*settings)
+				if (const auto appId = std::get<4>(*settings)
 						; !appId.empty()) {
 					app.set_application_id(appId);
 				}
@@ -2754,19 +2795,12 @@ void Instance::registerHelperMethodHandlers() {
 			int marginBottom,
 			int initialWidth,
 			int initialHeight) {
-		const auto windowMode = (mode == int(WindowMode::External))
-			? WindowMode::External
-			: WindowMode::Embedded;
-		const auto frameStyle = (windowStyle == int(WindowStyle::Frameless))
-			? WindowStyle::Frameless
-			: WindowStyle::Default;
-		_mode = windowMode;
 		if (create({
 			.opaqueBg = QColor(r, g, b, a),
 			.userDataPath = path,
 			.debug = debug,
-			.mode = windowMode,
-			.windowStyle = frameStyle,
+			.mode = WindowMode(mode),
+			.windowStyle = WindowStyle(windowStyle),
 			.windowMargins = QMargins(
 				marginLeft,
 				marginTop,
@@ -2792,11 +2826,7 @@ void Instance::registerHelperMethodHandlers() {
 
 	_helper.signal_handle_resolve().connect([=](
 			Helper,
-			Gio::DBusMethodInvocation invocation,
-			int mode) {
-		_mode = (mode == int(WindowMode::External))
-			? WindowMode::External
-			: WindowMode::Embedded;
+			Gio::DBusMethodInvocation invocation) {
 		_helper.complete_resolve(invocation, int(resolve()));
 		return true;
 	});
@@ -2807,6 +2837,16 @@ void Instance::registerHelperMethodHandlers() {
 			const std::string &url) {
 		navigate(url);
 		_helper.complete_navigate(invocation);
+		return true;
+	});
+
+	_helper.signal_handle_load_html().connect([=](
+			Helper,
+			Gio::DBusMethodInvocation invocation,
+			const std::string &html,
+			const std::string &baseUrl) {
+		loadHtml(html, baseUrl);
+		_helper.complete_load_html(invocation);
 		return true;
 	});
 
@@ -2900,7 +2940,7 @@ Available Availability() {
 		return Available{
 			.error = Available::Error::NoWebKitGTK,
 			.details = "Please install WebKitGTK "
-			"(webkit2gtk-4.1/webkit2gtk-4.0) "
+			"(webkitgtk-6.0/webkit2gtk-4.1/webkit2gtk-4.0) "
 			"from your package manager.",
 		};
 	}

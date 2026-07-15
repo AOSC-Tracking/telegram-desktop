@@ -10,10 +10,10 @@
 
 namespace Webview::WebKitGTK::Library {
 
-ResolveResult Resolve(const Platform &platform, WindowMode mode) {
-	const auto allowGtk4 = (platform != Platform::X11)
-		|| (mode == WindowMode::External);
-	const auto lib = (allowGtk4
+ResolveResult Resolve(Platform platform, WindowMode mode) {
+	const auto gtkPlug = (platform == Platform::X11)
+		&& (mode != WindowMode::External);
+	const auto lib = (!gtkPlug
 			? base::Platform::LoadLibrary("libwebkitgtk-6.0.so.4", RTLD_NODELETE)
 			: nullptr)
 		?: base::Platform::LoadLibrary("libwebkit2gtk-4.1.so.0", RTLD_NODELETE)
@@ -44,7 +44,11 @@ ResolveResult Resolve(const Platform &platform, WindowMode mode) {
 		&& LOAD_LIBRARY_SYMBOL(lib, gtk_css_provider_new)
 		&& (LOAD_LIBRARY_SYMBOL(lib, gtk_css_provider_load_from_string)
 			|| LOAD_LIBRARY_SYMBOL(lib, gtk_css_provider_load_from_data))
-		&& (platform != Platform::X11
+		&& ((LOAD_LIBRARY_SYMBOL(lib, gtk_uri_launcher_new)
+				&& LOAD_LIBRARY_SYMBOL(lib, gtk_uri_launcher_launch))
+			|| LOAD_LIBRARY_SYMBOL(lib, gtk_show_uri_on_window)
+			|| LOAD_LIBRARY_SYMBOL(lib, gtk_show_uri))
+		&& (!gtkPlug
 			|| (LOAD_LIBRARY_SYMBOL(lib, gtk_plug_new)
 				&& LOAD_LIBRARY_SYMBOL(lib, gtk_plug_get_id)
 				&& LOAD_LIBRARY_SYMBOL(lib, gtk_plug_get_type)))
@@ -71,6 +75,7 @@ ResolveResult Resolve(const Platform &platform, WindowMode mode) {
 		&& LOAD_LIBRARY_SYMBOL(lib, webkit_settings_set_enable_developer_extras)
 		&& LOAD_LIBRARY_SYMBOL(lib, webkit_web_view_is_loading)
 		&& LOAD_LIBRARY_SYMBOL(lib, webkit_web_view_load_uri)
+		&& LOAD_LIBRARY_SYMBOL(lib, webkit_web_view_load_html)
 		&& LOAD_LIBRARY_SYMBOL(lib, webkit_web_view_reload_bypass_cache)
 		&& LOAD_LIBRARY_SYMBOL(lib, webkit_user_script_new)
 		&& LOAD_LIBRARY_SYMBOL(lib, webkit_user_content_manager_add_script)

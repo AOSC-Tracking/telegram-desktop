@@ -5,129 +5,46 @@
 
 #pragma once
 
-#include "tmc/detail/awaitable_customizer.hpp"
 #include "tmc/detail/compat.hpp"
 #include "tmc/detail/concepts_awaitable.hpp" // IWYU pragma: keep
 #include "tmc/detail/concepts_work_item.hpp"
 #include "tmc/detail/mixins.hpp"
-#include "tmc/detail/result_each.hpp"
 #include "tmc/detail/thread_locals.hpp"
+#include "tmc/detail/tuple_helpers.hpp"
 #include "tmc/ex_any.hpp"
 #include "tmc/work_item.hpp"
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <coroutine>
 #include <tuple>
 #include <type_traits>
-#include <variant>
 
 namespace tmc {
-namespace detail {
-// Replace void with std::monostate (void is not a valid tuple element type)
-template <typename T>
-using void_to_monostate =
-  std::conditional_t<std::is_void_v<T>, std::monostate, T>;
-
-// Get the last type of a parameter pack
-// In C++26 you can use pack indexing instead: T...[sizeof...(T) - 1]
-template <typename... T> struct last_type {
-  using type = typename decltype((std::type_identity<T>{}, ...))::type;
-};
-
-template <> struct last_type<> {
-  // workaround for empty tuples - the task object will be void / empty
-  using type = void;
-};
-
-template <typename... T> using last_type_t = typename last_type<T...>::type;
-
-// Create 2 instantiations of the Variadic, one where all of the types
-// satisfy the predicate, and one where none of the types satisfy the predicate.
-template <
-  template <class> class Predicate, template <class...> class Variadic,
-  class...>
-struct predicate_partition;
-
-// Definition for empty parameter pack
-template <template <class> class Predicate, template <class...> class Variadic>
-struct predicate_partition<Predicate, Variadic> {
-  using true_types = Variadic<>;
-  using false_types = Variadic<>;
-};
-
-template <
-  template <class> class Predicate, template <class...> class Variadic, class T,
-  class... Ts>
-struct predicate_partition<Predicate, Variadic, T, Ts...> {
-  template <class, class> struct Cons;
-  template <class Head, class... Tail> struct Cons<Head, Variadic<Tail...>> {
-    using type = Variadic<Head, Tail...>;
-  };
-
-  // Every type in the parameter pack satisfies the predicate
-  using true_types = typename std::conditional<
-    Predicate<T>::value,
-    typename Cons<
-      T, typename predicate_partition<Predicate, Variadic, Ts...>::true_types>::
-      type,
-    typename predicate_partition<Predicate, Variadic, Ts...>::true_types>::type;
-
-  // No type in the parameter pack satisfies the predicate
-  using false_types = typename std::conditional<
-    !Predicate<T>::value,
-    typename Cons<
-      T, typename predicate_partition<
-           Predicate, Variadic, Ts...>::false_types>::type,
-    typename predicate_partition<Predicate, Variadic, Ts...>::false_types>::
-    type;
-};
-
-// Partition the awaitables into two groups:
-// 1. The awaitables that are coroutines, which will be submitted in bulk /
-// symmetric transfer.
-// 2. The awaitables that are not coroutines, which will be initiated by
-// async_initiate.
-template <typename T> struct treat_as_coroutine {
-  static constexpr bool value =
-    tmc::detail::get_awaitable_traits<T>::mode == tmc::detail::TMC_TASK ||
-    tmc::detail::get_awaitable_traits<T>::mode == tmc::detail::COROUTINE ||
-    tmc::detail::get_awaitable_traits<T>::mode == tmc::detail::WRAPPER;
-};
-} // namespace detail
-
 /// The customizable task wrapper / awaitable type returned by
 /// `tmc::spawn_tuple()`.
 template <typename... Result> class aw_spawn_tuple;
 
-template <bool IsEach, typename... Awaitable> class aw_spawn_tuple_impl {
+template <typename... Awaitable> class aw_spawn_tuple_impl {
   static constexpr auto Count = sizeof...(Awaitable);
-
-  // When result_each() is called, tasks are synchronized via an atomic bitmask
-  // with only 63 (or 31, on 32-bit) slots for tasks. result_each() doesn't seem
-  // like a good fit for larger task groups anyway. If you really need more
-  // room, please open a GitHub issue explaining why...
-  static_assert(!IsEach || Count < TMC_PLATFORM_BITS);
 
   static constexpr size_t WorkItemCount =
     std::tuple_size_v<typename tmc::detail::predicate_partition<
       tmc::detail::treat_as_coroutine, std::tuple, Awaitable...>::true_types>;
 
-  // result_each does not symmetric transfer, so we store the
-  // count of consumed results here instead
-  std::conditional_t<IsEach, ptrdiff_t, std::coroutine_handle<>>
-    remaining_count_or_symmetric_task;
+  // If the last task is to be run immediately via symmetric transfer, it is
+  // stored here instead of being posted to the executor.
+  std::coroutine_handle<> symmetric_task;
   std::coroutine_handle<> continuation;
   tmc::ex_any* continuation_executor;
   // the atomic synchronization variable that coordinates between this and
   // awaitable_customizer (task's final_suspend)
-  std::conditional_t<IsEach, std::atomic<size_t>, std::atomic<ptrdiff_t>>
-    sync_flags_or_done_count;
+  std::atomic<ptrdiff_t> done_count;
 
   template <typename T>
-  using ResultStorage =
-    tmc::detail::result_storage_t<tmc::detail::void_to_monostate<
-      typename tmc::detail::get_awaitable_traits<T>::result_type>>;
+  using ResultStorage = tmc::detail::result_storage_t<tmc::detail::void_to_monostate<
+    typename tmc::detail::get_awaitable_traits<T>::result_type>>;
   using ResultTuple = std::tuple<ResultStorage<Awaitable>...>;
   ResultTuple result;
 
@@ -137,26 +54,15 @@ template <bool IsEach, typename... Awaitable> class aw_spawn_tuple_impl {
 
   // coroutines are prepared and stored in an array, then submitted in bulk
   template <typename T>
-  TMC_FORCE_INLINE inline void prepare_task(
-    T&& Task, ResultStorage<T>* TaskResult, size_t Idx,
-    [[maybe_unused]] size_t ContinuationPrio, work_item& Task_out
-  ) {
+  TMC_FORCE_INLINE inline void
+  prepare_task(T&& Task, ResultStorage<T>* TaskResult, work_item& Task_out) {
     tmc::detail::get_awaitable_traits<T>::set_continuation(Task, &continuation);
     tmc::detail::get_awaitable_traits<T>::set_continuation_executor(
       Task, &continuation_executor
     );
-    tmc::detail::get_awaitable_traits<T>::set_done_count(
-      Task, &sync_flags_or_done_count
-    );
-    if constexpr (IsEach) {
-      tmc::detail::get_awaitable_traits<T>::set_flags(
-        Task, tmc::detail::task_flags::EACH |
-                (Idx << tmc::detail::task_flags::TASKNUM_LOW_OFF) |
-                ContinuationPrio
-      );
-    }
-    if constexpr (!std::is_void_v<typename tmc::detail::get_awaitable_traits<
-                    T>::result_type>) {
+    tmc::detail::get_awaitable_traits<T>::set_done_count(Task, &done_count);
+    if constexpr (!std::is_void_v<
+                    typename tmc::detail::get_awaitable_traits<T>::result_type>) {
       tmc::detail::get_awaitable_traits<T>::set_result_ptr(Task, TaskResult);
     }
 
@@ -168,54 +74,27 @@ template <bool IsEach, typename... Awaitable> class aw_spawn_tuple_impl {
 
   // awaitables are submitted individually
   template <typename T>
-  TMC_FORCE_INLINE inline void prepare_awaitable(
-    T&& Task, ResultStorage<T>* TaskResult, size_t Idx,
-    [[maybe_unused]] size_t ContinuationPrio
-  ) {
+  TMC_FORCE_INLINE inline void prepare_awaitable(T&& Task, ResultStorage<T>* TaskResult) {
     tmc::detail::get_awaitable_traits<T>::set_continuation(Task, &continuation);
     tmc::detail::get_awaitable_traits<T>::set_continuation_executor(
       Task, &continuation_executor
     );
-    tmc::detail::get_awaitable_traits<T>::set_done_count(
-      Task, &sync_flags_or_done_count
-    );
-    if constexpr (IsEach) {
-      tmc::detail::get_awaitable_traits<T>::set_flags(
-        Task, tmc::detail::task_flags::EACH |
-                (Idx << tmc::detail::task_flags::TASKNUM_LOW_OFF) |
-                ContinuationPrio
-      );
-    }
-    if constexpr (!std::is_void_v<typename tmc::detail::get_awaitable_traits<
-                    T>::result_type>) {
+    tmc::detail::get_awaitable_traits<T>::set_done_count(Task, &done_count);
+    if constexpr (!std::is_void_v<
+                    typename tmc::detail::get_awaitable_traits<T>::result_type>) {
       tmc::detail::get_awaitable_traits<T>::set_result_ptr(Task, TaskResult);
     }
   }
 
   void set_done_count(size_t NumTasks) {
-    if constexpr (IsEach) {
-      remaining_count_or_symmetric_task = static_cast<ptrdiff_t>(NumTasks);
-      sync_flags_or_done_count.store(
-        tmc::detail::task_flags::EACH, std::memory_order_release
-      );
-    } else {
-      sync_flags_or_done_count.store(
-        static_cast<ptrdiff_t>(NumTasks), std::memory_order_release
-      );
-    }
+    done_count.store(static_cast<ptrdiff_t>(NumTasks), std::memory_order_release);
   }
 
   aw_spawn_tuple_impl(
-    AwaitableTuple&& Tasks, tmc::ex_any* Executor,
-    tmc::ex_any* ContinuationExecutor, size_t Prio, bool DoSymmetricTransfer
+    AwaitableTuple&& Tasks, tmc::ex_any* Executor, tmc::ex_any* ContinuationExecutor,
+    size_t Prio, bool DoSymmetricTransfer
   )
-      : continuation_executor{ContinuationExecutor} {
-    if constexpr (!IsEach) {
-      remaining_count_or_symmetric_task = nullptr;
-    }
-
-    size_t continuationPriority = tmc::detail::this_thread::this_task().prio;
-
+      : symmetric_task{nullptr}, continuation_executor{ContinuationExecutor} {
     std::array<work_item, WorkItemCount> taskArr;
 
     // Prepare each task as if I loops from [0..Count),
@@ -226,18 +105,16 @@ template <bool IsEach, typename... Awaitable> class aw_spawn_tuple_impl {
          constexpr auto mode = tmc::detail::get_awaitable_traits<
            std::tuple_element_t<I, AwaitableTuple>>::mode;
          static_assert(
-           mode != tmc::detail::UNKNOWN,
-           "This doesn't appear to be an awaitable."
+           mode != tmc::detail::UNKNOWN, "This doesn't appear to be an awaitable."
          );
          if constexpr (mode == tmc::detail::ASYNC_INITIATE) {
-           prepare_awaitable(
-             std::get<I>(std::move(Tasks)), &std::get<I>(result), I,
-             continuationPriority
-           );
+           // The std::move is a bit misleading here - this actually forwards the
+           // awaitable from within the tuple with its original value category.
+           prepare_awaitable(std::get<I>(std::move(Tasks)), &std::get<I>(result));
          } else {
            prepare_task(
              tmc::detail::into_known<false>(std::get<I>(std::move(Tasks))),
-             &std::get<I>(result), I, continuationPriority, taskArr[taskIdx]
+             &std::get<I>(result), taskArr[taskIdx]
            );
            ++taskIdx;
          }
@@ -249,13 +126,10 @@ template <bool IsEach, typename... Awaitable> class aw_spawn_tuple_impl {
     if constexpr (WorkItemCount != 0) {
       auto doneCount = Count;
       auto postCount = WorkItemCount;
-      if constexpr (!IsEach) {
-        if (DoSymmetricTransfer) {
-          remaining_count_or_symmetric_task =
-            TMC_WORK_ITEM_AS_STD_CORO(taskArr[WorkItemCount - 1]);
-          --doneCount;
-          --postCount;
-        }
+      if (DoSymmetricTransfer) {
+        symmetric_task = TMC_WORK_ITEM_AS_STD_CORO(taskArr[WorkItemCount - 1]);
+        --doneCount;
+        --postCount;
       }
       set_done_count(doneCount);
       tmc::detail::post_bulk_checked(Executor, taskArr.data(), postCount, Prio);
@@ -268,8 +142,9 @@ template <bool IsEach, typename... Awaitable> class aw_spawn_tuple_impl {
       (([&]() {
          if constexpr (!tmc::detail::treat_as_coroutine<
                          std::tuple_element_t<I, AwaitableTuple>>::value) {
-           tmc::detail::get_awaitable_traits<
-             std::tuple_element_t<I, AwaitableTuple>>::
+           // The std::move is a bit misleading here - this actually forwards the
+           // awaitable from within the tuple with its original value category.
+           tmc::detail::get_awaitable_traits<std::tuple_element_t<I, AwaitableTuple>>::
              async_initiate(std::get<I>(std::move(Tasks)), Executor, Prio);
          }
        }()),
@@ -278,37 +153,28 @@ template <bool IsEach, typename... Awaitable> class aw_spawn_tuple_impl {
   }
 
 public:
-  /*** SUPPORTS REGULAR AWAIT ***/
   /// Always suspends.
-  inline bool await_ready() const noexcept
-    requires(!IsEach)
-  {
+  inline bool await_ready() const noexcept {
     // Always suspends, due to the possibility to resume on another executor.
     return false;
   }
 
   /// Suspends the outer coroutine, submits the wrapped task to the
   /// executor, and waits for it to complete.
-  inline std::coroutine_handle<>
-  await_suspend(std::coroutine_handle<> Outer) noexcept
-    requires(!IsEach)
-  {
+  inline std::coroutine_handle<> await_suspend(std::coroutine_handle<> Outer) noexcept {
 #ifndef NDEBUG
-    assert(
-      sync_flags_or_done_count.load() >= 0 && "You may only co_await this once."
-    );
+    assert(done_count.load() >= 0 && "You may only co_await this once.");
 #endif
     continuation = Outer;
     std::coroutine_handle<> next;
-    if (remaining_count_or_symmetric_task != nullptr) {
+    if (symmetric_task != nullptr) {
       // symmetric transfer to the last task IF it should run immediately
-      next = remaining_count_or_symmetric_task;
+      next = symmetric_task;
     } else {
       // This logic is necessary because we submitted all child tasks before the
       // parent suspended. Allowing parent to be resumed before it suspends
       // would be UB. Therefore we need to block the resumption until here.
-      auto remaining =
-        sync_flags_or_done_count.fetch_sub(1, std::memory_order_acq_rel);
+      auto remaining = done_count.fetch_sub(1, std::memory_order_acq_rel);
       // No symmetric transfer - all tasks were already posted.
       // Suspend if remaining > 0 (task is still running)
       if (remaining > 0) {
@@ -335,74 +201,14 @@ public:
   /// void, its slot is represented by a std::monostate. If the awaitable would
   /// return a non-default-constructible type, that result will be wrapped in a
   /// std::optional.
-  TMC_AWAIT_RESUME inline ResultTuple&& await_resume() noexcept
-    requires(!IsEach)
-  {
+  TMC_AWAIT_RESUME inline ResultTuple&& await_resume() noexcept {
     return std::move(result);
   }
-  /*** END REGULAR AWAIT ***/
-
-  /*** SUPPORTS EACH() ***/
-  /// Always suspends.
-  inline bool await_ready() const noexcept
-    requires(IsEach)
-  {
-    return tmc::detail::result_each_await_ready();
-  }
-
-  /// Suspends the outer coroutine, submits the wrapped task to the
-  /// executor, and waits for it to complete.
-  inline bool await_suspend(std::coroutine_handle<> Outer) noexcept
-    requires(IsEach)
-  {
-    return tmc::detail::result_each_await_suspend(
-      remaining_count_or_symmetric_task, Outer, continuation,
-      continuation_executor, sync_flags_or_done_count
-    );
-  }
-
-  /// Returns the value provided by the wrapped tasks.
-  /// Each task has a slot in the tuple. If the task would return void, its
-  /// slot is represented by a std::monostate.
-  TMC_AWAIT_RESUME inline size_t await_resume() noexcept
-    requires(IsEach)
-  {
-    return tmc::detail::result_each_await_resume(
-      remaining_count_or_symmetric_task, sync_flags_or_done_count
-    );
-  }
-
-  /// Provides a sentinel value that can be compared against the value returned
-  /// from co_await.
-  inline size_t end() noexcept
-    requires(IsEach)
-  {
-    return 64;
-  }
-
-  // Gets the ready result at the given index.
-  template <size_t I>
-  inline std::tuple_element_t<I, ResultTuple>& get() noexcept
-    requires(IsEach)
-  {
-    return std::get<I>(result);
-  }
-  /*** END EACH() ***/
 
   // This must be awaited and all child tasks completed before destruction.
 #ifndef NDEBUG
   ~aw_spawn_tuple_impl() noexcept {
-    if constexpr (IsEach) {
-      assert(
-        remaining_count_or_symmetric_task == 0 &&
-        "You must submit or co_await this."
-      );
-    } else {
-      assert(
-        sync_flags_or_done_count.load() < 0 &&
-        "You must submit or co_await this."
-      );
-    }
+    assert(done_count.load() < 0 && "You must submit or co_await this.");
   }
 #endif
 
@@ -416,11 +222,7 @@ public:
 
 template <typename... Result>
 using aw_spawn_tuple_fork =
-  tmc::detail::rvalue_only_awaitable<aw_spawn_tuple_impl<false, Result...>>;
-
-template <typename... Result>
-using aw_spawn_tuple_each =
-  tmc::detail::lvalue_only_awaitable<aw_spawn_tuple_impl<true, Result...>>;
+  tmc::detail::rvalue_only_awaitable<aw_spawn_tuple_impl<Result...>>;
 
 template <typename... Awaitable>
 class [[nodiscard(
@@ -465,9 +267,8 @@ public:
   }
 
   /// Initiates all of the wrapped tasks and waits for them to complete.
-  aw_spawn_tuple_impl<false, Awaitable...> operator co_await() && noexcept {
-    bool doSymmetricTransfer =
-      tmc::detail::this_thread::exec_prio_is(executor, prio);
+  aw_spawn_tuple_impl<Awaitable...> operator co_await() && noexcept {
+    bool doSymmetricTransfer = tmc::detail::this_thread::exec_prio_is(executor, prio);
 #ifndef NDEBUG
     if constexpr (Count != 0) {
       // Ensure that this was not previously moved-from
@@ -475,9 +276,8 @@ public:
     }
     is_empty = true;
 #endif
-    return aw_spawn_tuple_impl<false, Awaitable...>(
-      std::move(wrapped), executor, continuation_executor, prio,
-      doSymmetricTransfer
+    return aw_spawn_tuple_impl<Awaitable...>(
+      std::move(wrapped), executor, continuation_executor, prio, doSymmetricTransfer
     );
   }
 
@@ -494,8 +294,7 @@ public:
   aw_spawn_tuple& operator=(const aw_spawn_tuple&) = delete;
   aw_spawn_tuple(aw_spawn_tuple&& Other)
       : wrapped(std::move(Other.wrapped)), executor(std::move(Other.executor)),
-        continuation_executor(std::move(Other.continuation_executor)),
-        prio(Other.prio) {
+        continuation_executor(std::move(Other.continuation_executor)), prio(Other.prio) {
 #if !defined(NDEBUG)
     is_empty = Other.is_empty;
     Other.is_empty = true;
@@ -530,8 +329,9 @@ public:
          if constexpr (tmc::detail::get_awaitable_traits<
                          std::tuple_element_t<I, AwaitableTuple>>::mode ==
                        tmc::detail::ASYNC_INITIATE) {
-           tmc::detail::get_awaitable_traits<
-             std::tuple_element_t<I, AwaitableTuple>>::
+           // The std::move is a bit misleading here - this actually forwards the
+           // awaitable from within the tuple with its original value category.
+           tmc::detail::get_awaitable_traits<std::tuple_element_t<I, AwaitableTuple>>::
              async_initiate(std::get<I>(std::move(wrapped)), executor, prio);
          } else {
            taskArr[taskIdx] = tmc::detail::into_initiate(
@@ -550,9 +350,7 @@ public:
     }
     is_empty = true;
 #endif
-    tmc::detail::post_bulk_checked(
-      executor, taskArr.data(), WorkItemCount, prio
-    );
+    tmc::detail::post_bulk_checked(executor, taskArr.data(), WorkItemCount, prio);
   }
 
   /// Submits the tasks to the executor immediately, without suspending the
@@ -571,28 +369,6 @@ public:
     is_empty = true;
 #endif
     return aw_spawn_tuple_fork<Awaitable...>(
-      std::move(wrapped), executor, continuation_executor, prio, false
-    );
-  }
-
-  /// Rather than waiting for all results at once, each result will be made
-  /// available immediately as it becomes ready. Each time this is co_awaited,
-  /// it will return the index of a single ready result. The result indexes
-  /// correspond to the indexes of the originally submitted tasks, and the
-  /// values can be accessed using `.get<index>()`. Results may become ready
-  /// in any order, but when awaited repeatedly, each index from
-  /// `[0..task_count)` will be returned exactly once. You must await this
-  /// repeatedly until all results have been consumed, at which point the index
-  /// returned will be equal to the value of `end()`.
-  inline aw_spawn_tuple_each<Awaitable...> result_each() && {
-#ifndef NDEBUG
-    if constexpr (Count != 0) {
-      // Ensure that this was not previously moved-from
-      assert(!is_empty && "You may only submit or co_await this once.");
-    }
-    is_empty = true;
-#endif
-    return aw_spawn_tuple_each<Awaitable...>(
       std::move(wrapped), executor, continuation_executor, prio, false
     );
   }
@@ -621,23 +397,21 @@ spawn_tuple(TMC_CORO_AWAIT_ELIDABLE_ARGUMENT Awaitable&&... Awaitables) {
 ///
 /// Does not support non-awaitable types (such as regular functors).
 template <typename... Awaitable>
-aw_spawn_tuple<Awaitable...> spawn_tuple(
-  TMC_CORO_AWAIT_ELIDABLE_ARGUMENT std::tuple<Awaitable...>&& Awaitables
-) {
+aw_spawn_tuple<Awaitable...>
+spawn_tuple(TMC_CORO_AWAIT_ELIDABLE_ARGUMENT std::tuple<Awaitable...>&& Awaitables) {
   return aw_spawn_tuple<Awaitable...>(
     static_cast<std::tuple<Awaitable...>&&>(Awaitables)
   );
 }
 
 namespace detail {
-template <typename... Awaitables>
-struct awaitable_traits<aw_spawn_tuple<Awaitables...>> {
+template <typename... Awaitables> struct awaitable_traits<aw_spawn_tuple<Awaitables...>> {
   static constexpr configure_mode mode = WRAPPER;
 
   using result_type = std::tuple<tmc::detail::void_to_monostate<
     typename tmc::detail::get_awaitable_traits<Awaitables>::result_type>...>;
   using self_type = aw_spawn_tuple<Awaitables...>;
-  using awaiter_type = aw_spawn_tuple_impl<false, Awaitables...>;
+  using awaiter_type = aw_spawn_tuple_impl<Awaitables...>;
 
   static awaiter_type get_awaiter(self_type&& Awaitable) noexcept {
     return static_cast<self_type&&>(Awaitable).operator co_await();
@@ -650,8 +424,7 @@ struct awaitable_traits<aw_spawn_tuple<Awaitables...>> {
 /// which will return the real awaitable (that you can await later to join the
 /// forked task).
 template <typename... Awaitable>
-class TMC_CORO_AWAIT_ELIDABLE aw_fork_tuple_clang
-    : tmc::detail::AwaitTagNoGroupAsIs {
+class TMC_CORO_AWAIT_ELIDABLE aw_fork_tuple_clang : tmc::detail::AwaitTagNoGroupAsIs {
   using AwaitableTuple = std::tuple<Awaitable...>;
   AwaitableTuple wrapped;
 
@@ -666,12 +439,8 @@ public:
   inline void await_suspend(std::coroutine_handle<>) noexcept {}
 
   /// Returns the value provided by the wrapped function.
-  TMC_AWAIT_RESUME inline aw_spawn_tuple_fork<Awaitable...>
-  await_resume() noexcept {
-    return tmc::spawn_tuple<Awaitable...>(
-             static_cast<AwaitableTuple&&>(wrapped)
-    )
-      .fork();
+  TMC_AWAIT_RESUME inline aw_spawn_tuple_fork<Awaitable...> await_resume() noexcept {
+    return tmc::spawn_tuple<Awaitable...>(static_cast<AwaitableTuple&&>(wrapped)).fork();
   }
 };
 
@@ -691,9 +460,7 @@ public:
 /// auto result_tuple = co_await std::move(forked_task_tuple);
 /// ```
 template <typename... Awaitable>
-[[nodiscard(
-  "You must co_await fork_tuple_clang() immediately for HALO to be possible."
-)]]
+[[nodiscard("You must co_await fork_tuple_clang() immediately for HALO to be possible.")]]
 aw_fork_tuple_clang<tmc::detail::forward_awaitable<Awaitable>...>
 fork_tuple_clang(TMC_CORO_AWAIT_ELIDABLE_ARGUMENT Awaitable&&... Awaitables) {
   return aw_fork_tuple_clang<tmc::detail::forward_awaitable<Awaitable>...>(

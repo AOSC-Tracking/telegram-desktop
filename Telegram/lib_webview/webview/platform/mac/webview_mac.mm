@@ -28,8 +28,8 @@
 
 namespace {
 
-constexpr auto kDataUrlScheme = std::string_view("desktop-app-resource");
-constexpr auto kFullDomain = std::string_view("desktop-app-resource://domain/");
+constexpr auto kDataUrlScheme = std::string_view("desktopappresource");
+constexpr auto kFullDomain = std::string_view("desktopappresource://domain/");
 constexpr auto kPartsCacheLimit = 32 * 1024 * 1024;
 constexpr auto kUuidSize = 16;
 
@@ -341,6 +341,7 @@ public:
 
 	void navigate(std::string url) override;
 	void navigateToData(std::string id) override;
+	void loadHtml(std::string html, std::string baseUrl) override;
 	void reload() override;
 
 	void init(std::string js) override;
@@ -846,6 +847,13 @@ void Instance::navigateToData(std::string id) {
 	full.append(_dataDomain);
 	full.append(id);
 	navigate(full);
+}
+
+void Instance::loadHtml(std::string html, std::string baseUrl) {
+	NSString *string = [NSString stringWithUTF8String:html.c_str()];
+	NSString *base = [NSString stringWithUTF8String:baseUrl.c_str()];
+	NSURL *native = [NSURL URLWithString:base];
+	[_webview loadHTMLString:string baseURL:native];
 }
 
 void Instance::reload() {
