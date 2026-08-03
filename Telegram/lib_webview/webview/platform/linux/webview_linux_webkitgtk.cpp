@@ -79,6 +79,16 @@ void (* const SetGraphicsApi)(QSGRendererInterface::GraphicsApi) =
 
 std::string SocketPath;
 
+[[nodiscard]] bool AllowThirdPartyCookies(WebKitCookieManager *manager) {
+	if (!manager || !webkit_cookie_manager_set_accept_policy) {
+		return false;
+	}
+	webkit_cookie_manager_set_accept_policy(
+		manager,
+		WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS);
+	return true;
+}
+
 inline auto MethodError() {
 	return GLib::Error::new_literal(
 		Gio::DBusErrorNS_::quark(),
@@ -534,6 +544,7 @@ private:
 	void evalNow(std::string js);
 	void scheduleQueuedEvals();
 	bool authenticate(WebKitAuthenticationRequest *request);
+	bool permissionRequest(WebKitPermissionRequest *request);
 
 	std::string dataDomain();
 	void dataRequest(
@@ -735,6 +746,7 @@ bool Instance::create(Config config) {
 		const auto shellMessageToken = _shellMessageToken;
 		const auto margins = config.windowMargins;
 		const auto initialSize = config.initialSize;
+		const auto allowThirdPartyCookies = config.allowThirdPartyCookies;
 		_helper.call_create(
 			debug,
 			r,
@@ -751,6 +763,7 @@ bool Instance::create(Config config) {
 			margins.bottom(),
 			initialSize.width(),
 			initialSize.height(),
+			allowThirdPartyCookies,
 			crl::guard(&guard, [&](
 					GObject::Object source_object,
 					Gio::AsyncResult res) {
@@ -880,6 +893,16 @@ bool Instance::create(Config config) {
 		WebKitNetworkSession *session = webkit_network_session_new(
 			baseData.c_str(),
 			baseCache.c_str());
+		if (config.allowThirdPartyCookies) {
+			const auto manager = webkit_network_session_get_cookie_manager
+				? webkit_network_session_get_cookie_manager(session)
+				: nullptr;
+			if (!AllowThirdPartyCookies(manager)) {
+				g_critical("Cookie policy API is unavailable.");
+				g_object_unref(session);
+				return false;
+			}
+		}
 		_webview = WEBKIT_WEB_VIEW(g_object_new(
 			WEBKIT_TYPE_WEB_VIEW,
 			"network-session",
@@ -891,6 +914,16 @@ bool Instance::create(Config config) {
 			"base-cache-directory", baseCache.c_str(),
 			"base-data-directory", baseData.c_str(),
 			nullptr);
+		if (config.allowThirdPartyCookies) {
+			const auto manager = webkit_website_data_manager_get_cookie_manager
+				? webkit_website_data_manager_get_cookie_manager(data)
+				: nullptr;
+			if (!AllowThirdPartyCookies(manager)) {
+				g_critical("Cookie policy API is unavailable.");
+				g_object_unref(data);
+				return false;
+			}
+		}
 		WebKitWebContext *context
 			= webkit_web_context_new_with_website_data_manager(data);
 		g_object_unref(data);
@@ -1041,6 +1074,15 @@ bool Instance::create(Config config) {
 			Instance *instance,
 			WebKitAuthenticationRequest *request) -> gboolean {
 			return instance->authenticate(request);
+		}),
+		this);
+	g_signal_connect_swapped(
+		_webview,
+		"permission-request",
+		G_CALLBACK(+[](
+			Instance *instance,
+			WebKitPermissionRequest *request) -> gboolean {
+			return instance->permissionRequest(request);
 		}),
 		this);
 	if (gtk_widget_add_controller
@@ -1482,6 +1524,21 @@ bool Instance::authenticate(WebKitAuthenticationRequest *request) {
 	webkit_authentication_request_authenticate(request, credential);
 	webkit_credential_free(credential);
 	return true;
+}
+
+bool Instance::permissionRequest(WebKitPermissionRequest *request) {
+	// navigator.clipboard.read/readText() asks for this one. Never let the
+	// page read the clipboard on its own, the embedder is expected to expose
+	// its own method for that, gated on a real user interaction.
+	//
+	// WebKitGTK denies unhandled requests by default, we make it explicit.
+	if (webkit_clipboard_permission_request_get_type
+		&& webkit_permission_request_deny
+		&& WEBKIT_IS_CLIPBOARD_PERMISSION_REQUEST(request)) {
+		webkit_permission_request_deny(request);
+		return true;
+	}
+	return false;
 }
 
 // https://bugs.webkit.org/show_bug.cgi?id=146351
@@ -2768,11 +2825,13 @@ void Instance::registerHelperMethodHandlers() {
 			int marginTop,
 			int marginBottom,
 			int initialWidth,
-			int initialHeight) {
+			int initialHeight,
+			bool allowThirdPartyCookies) {
 		if (create({
 			.opaqueBg = QColor(r, g, b, a),
 			.userDataPath = path,
 			.debug = debug,
+			.allowThirdPartyCookies = allowThirdPartyCookies,
 			.mode = WindowMode(mode),
 			.windowStyle = WindowStyle(windowStyle),
 			.windowMargins = QMargins(

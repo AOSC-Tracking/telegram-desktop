@@ -4,6 +4,8 @@
 #include "core/core.h"
 #include "utils/utils.h"
 
+#include <cmath>
+
 using namespace std;
 using namespace tex;
 
@@ -48,9 +50,12 @@ sptr<Box> DelimiterFactory::create(const string& symbol, Environment& env, float
         }*/
     return sptrOf<CharBox>(c);
   } else if (tf.isExtensionChar(c)) {
+    Extension* ext = tf.getExtension(c, style);
+    // No extension recipe after all, fall through to the tallest char.
+    if (ext == nullptr) return sptrOf<CharBox>(c);
+
     // construct vertical box
     auto* vBox = new VBox();
-    Extension* ext = tf.getExtension(c, style);
 
     // insert top part
     if (ext->hasTop()) {
@@ -69,18 +74,30 @@ sptr<Box> DelimiterFactory::create(const string& symbol, Environment& env, float
     }
 
     // insert repeatable part until tall enough
-    c = ext->getRepeat();
-    auto rep = sptrOf<CharBox>(c);
-    while (vBox->_height + vBox->_depth <= minHeight) {
-      if (ext->hasTop() && ext->hasBottom()) {
-        vBox->add(1, rep);
-        if (ext->hasMiddle()) {
-          vBox->add(vBox->size() - 1, rep);
+    if (ext->hasRepeat()) {
+      c = ext->getRepeat();
+      auto rep = sptrOf<CharBox>(c);
+      // Each add() grows the box by exactly the repeat's height plus depth,
+      // so a repeat that measures zero would keep the loop going forever.
+      // The piece count is capped as well: minHeight is derived from the
+      // enclosed content and from the global math sizes, so an absurd or
+      // non-finite value must not turn this into an unbounded allocation
+      // loop on whatever thread is laying the formula out.
+      const int maxPieces = 4096;
+      int pieces = 0;
+      if (rep->_height + rep->_depth > 0) {
+        while (vBox->_height + vBox->_depth <= minHeight && pieces++ < maxPieces) {
+          if (ext->hasTop() && ext->hasBottom()) {
+            vBox->add(1, rep);
+            if (ext->hasMiddle()) {
+              vBox->add(vBox->size() - 1, rep);
+            }
+          } else if (ext->hasBottom()) {
+            vBox->add(0, rep);
+          } else {
+            vBox->add(rep);
+          }
         }
-      } else if (ext->hasBottom()) {
-        vBox->add(0, rep);
-      } else {
-        vBox->add(rep);
       }
     }
     delete ext;
@@ -88,6 +105,34 @@ sptr<Box> DelimiterFactory::create(const string& symbol, Environment& env, float
   }
   // no extensions, so return the tallest possible character
   return sptrOf<CharBox>(c);
+}
+
+namespace {
+
+/**
+ * An arrow shaft is built by repeating one glyph until it spans the requested
+ * width, so both the width and the per-piece step come straight from the
+ * formula: an out-of-range length parses to infinity, \scalebox multiplies a
+ * box width by an arbitrary factor, and a font could in principle make the
+ * kern wider than the glyph it follows. Any of those turns the repeat loop
+ * into an unbounded allocation loop on whatever thread lays the formula out,
+ * so the shaft is limited to a piece count no real formula reaches, and the
+ * requested width is shrunk to what those pieces cover -- that also keeps the
+ * scale factor of the trailing partial glyph sane.
+ */
+constexpr int kMaxArrowPieces = 4096;
+
+float boundedArrowWidth(float width, float base, float piece) {
+  if (!std::isfinite(base) || !std::isfinite(piece) || piece <= 0.f) {
+    return base;
+  }
+  const float bounded = base + piece * kMaxArrowPieces;
+  if (!std::isfinite(bounded)) {
+    return base;
+  }
+  return (width < bounded) ? width : bounded;
+}
+
 }
 
 sptr<Atom> XLeftRightArrowFactory::MINUS;
@@ -117,12 +162,15 @@ sptr<Box> XLeftRightArrowFactory::create(Environment& env, float width) {
 
   float mwidth = minu->_width + kern->_width;
   swidth += 2 * kern->_width;
+  width = boundedArrowWidth(width, swidth, mwidth);
 
   auto* hb = new HBox();
   float w = 0.f;
-  for (w = 0; w < width - swidth - mwidth; w += mwidth) {
-    hb->add(minu);
-    hb->add(kern);
+  if (mwidth > 0.f) {
+    for (w = 0; w < width - swidth - mwidth; w += mwidth) {
+      hb->add(minu);
+      hb->add(kern);
+    }
   }
 
   hb->add(sptrOf<ScaleBox>(minu, (width - swidth - w) / minu->_width, 1.f));
@@ -156,11 +204,15 @@ sptr<Box> XLeftRightArrowFactory::create(bool left, Environment& env, float widt
   sptr<Box> kern = SpaceAtom(UnitType::mu, -4.f, 0, 0).createBox(env);
   float mwidth = minu->_width + kern->_width;
   swidth += kern->_width;
+  width = boundedArrowWidth(width, swidth, mwidth);
+
   auto* hb = new HBox();
   float w = 0.f;
-  for (w = 0; w < width - swidth - mwidth; w += mwidth) {
-    hb->add(minu);
-    hb->add(kern);
+  if (mwidth > 0.f) {
+    for (w = 0; w < width - swidth - mwidth; w += mwidth) {
+      hb->add(minu);
+      hb->add(kern);
+    }
   }
 
   float sf = (width - swidth - w) / minu->_width;

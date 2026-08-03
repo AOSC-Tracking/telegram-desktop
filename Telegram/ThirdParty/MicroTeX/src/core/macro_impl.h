@@ -63,6 +63,15 @@ inline macro(longdiv) {
   long divisor = 0;
   valueof(args[2], divisor);
   if (divisor == 0) throw ex_parse("Divisor must not be 0.");
+  // LongDivAtom divides these and then multiplies each quotient digit back by
+  // the divisor. At full `long` range that overflows -- and LONG_MIN / -1
+  // raises SIGFPE outright on x86 -- so keep both operands small enough that
+  // every intermediate stays representable. Ten digits is already far more
+  // than a rendered long division can show.
+  constexpr long kMaxLongDivOperand = 1000000000L;
+  if (dividend > kMaxLongDivOperand || dividend < -kMaxLongDivOperand
+      || divisor > kMaxLongDivOperand || divisor < -kMaxLongDivOperand)
+    throw ex_parse("Operands are too large for longdiv!");
   return sptrOf<LongDivAtom>(divisor, dividend);
 }
 
@@ -710,6 +719,8 @@ inline macro(makeatother) {
 inline macro(newenvironment) {
   int opt = 0;
   if (!args[4].empty()) valueof(args[4], opt);
+  if (!isValidMacroArgc(opt + 1))
+    throw ex_parse("Bad number of arguments in newenvironment!");
 
   NewEnvironmentMacro::addNewEnvironment(args[1], args[2], args[3], opt);
   return nullptr;
@@ -718,6 +729,8 @@ inline macro(newenvironment) {
 inline macro(renewenvironment) {
   int opt = 0;
   if (!args[4].empty()) valueof(args[4], opt);
+  if (!isValidMacroArgc(opt + 1))
+    throw ex_parse("Bad number of arguments in renewenvironment!");
 
   NewEnvironmentMacro::addRenewEnvironment(args[1], args[2], args[3], opt);
   return nullptr;
@@ -1050,14 +1063,20 @@ inline macro(textitbf) {
 }
 
 inline macro(declaremathsizes) {
-  float a, b, c, d;
+  // Zero-initialised like every other valueof() target: these feed
+  // process-global settings, so an argument valueof() cannot parse must leave
+  // them alone rather than pass whatever happened to be on the stack.
+  // setMathSizes() rejects a zero first size, which makes that case a no-op.
+  float a = 0, b = 0, c = 0, d = 0;
   valueof(args[1], a), valueof(args[2], b), valueof(args[3], c), valueof(args[4], d);
   DefaultTeXFont::setMathSizes(a, b, c, c);
   return nullptr;
 }
 
 inline macro(magnification) {
-  float x;
+  // Zero is rejected by setMagnification(), so an unparseable argument
+  // leaves the global magnification untouched.
+  float x = 0;
   valueof(args[1], x);
   DefaultTeXFont::setMagnification(x);
   return nullptr;

@@ -65,6 +65,9 @@
 #define WEBKIT_TYPE_WEB_VIEW (webkit_web_view_get_type())
 #define WEBKIT_WEB_VIEW(obj) (G_TYPE_CHECK_INSTANCE_CAST((obj), WEBKIT_TYPE_WEB_VIEW, WebKitWebView))
 
+#define WEBKIT_TYPE_CLIPBOARD_PERMISSION_REQUEST (webkit_clipboard_permission_request_get_type())
+#define WEBKIT_IS_CLIPBOARD_PERMISSION_REQUEST(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), WEBKIT_TYPE_CLIPBOARD_PERMISSION_REQUEST))
+
 struct _GdkRGBA {
 	float red;
 	float green;
@@ -122,8 +125,10 @@ typedef struct _WebKitScriptDialog WebKitScriptDialog;
 typedef struct _WebKitWebsiteDataManager WebKitWebsiteDataManager;
 typedef struct _WebKitWebContext WebKitWebContext;
 typedef struct _WebKitNetworkSession WebKitNetworkSession;
+typedef struct _WebKitCookieManager WebKitCookieManager;
 typedef struct _WebKitAuthenticationRequest WebKitAuthenticationRequest;
 typedef struct _WebKitCredential WebKitCredential;
+typedef struct _WebKitPermissionRequest WebKitPermissionRequest;
 
 typedef enum {
 	GTK_WINDOW_TOPLEVEL,
@@ -201,6 +206,12 @@ typedef enum {
 	WEBKIT_CREDENTIAL_PERSISTENCE_FOR_SESSION,
 	WEBKIT_CREDENTIAL_PERSISTENCE_PERMANENT,
 } WebKitCredentialPersistence;
+
+typedef enum {
+	WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS,
+	WEBKIT_COOKIE_POLICY_ACCEPT_NEVER,
+	WEBKIT_COOKIE_POLICY_ACCEPT_NO_THIRD_PARTY,
+} WebKitCookieAcceptPolicy;
 
 namespace Webview::WebKitGTK::Library {
 
@@ -472,6 +483,13 @@ inline WebKitWebContext *(*webkit_web_context_new_with_website_data_manager)(
 inline WebKitNetworkSession *(*webkit_network_session_new)(
 	const char* data_directory,
 	const char* cache_directory);
+inline WebKitCookieManager *(*webkit_network_session_get_cookie_manager)(
+	WebKitNetworkSession *session);
+inline WebKitCookieManager *(*webkit_website_data_manager_get_cookie_manager)(
+	WebKitWebsiteDataManager *manager);
+inline void (*webkit_cookie_manager_set_accept_policy)(
+	WebKitCookieManager *cookie_manager,
+	WebKitCookieAcceptPolicy policy);
 inline void (*webkit_authentication_request_authenticate)(
 	WebKitAuthenticationRequest *request,
 	WebKitCredential *credential);
@@ -484,6 +502,9 @@ inline WebKitCredential *(*webkit_credential_new)(
 	const gchar *password,
 	WebKitCredentialPersistence persistence);
 inline void (*webkit_credential_free)(WebKitCredential *credential);
+inline GType (*webkit_clipboard_permission_request_get_type)(void);
+inline void (*webkit_permission_request_deny)(
+	WebKitPermissionRequest *request);
 
 enum class ResolveResult {
 	Success,
