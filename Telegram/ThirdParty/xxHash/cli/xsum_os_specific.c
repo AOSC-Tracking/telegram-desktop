@@ -69,12 +69,17 @@ static int XSUM_IS_CONSOLE(FILE* stdStream)
  || defined(__DJGPP__) \
  || defined(__MSYS__) \
  || defined(__HAIKU__)
+#  ifdef __OpenBSD__
+#    include <errno.h>       /* errno */
+#    include <string.h>      /* strerror */
+#    include "xsum_output.h" /* XSUM_log */
+#  endif
 #  include <unistd.h>   /* isatty */
 #  define XSUM_IS_CONSOLE(stdStream) isatty(fileno(stdStream))
 #elif defined(MSDOS) || defined(OS2)
 #  include <io.h>       /* _isatty */
 #  define XSUM_IS_CONSOLE(stdStream) _isatty(_fileno(stdStream))
-#elif defined(WIN32) || defined(_WIN32)
+#elif defined(_WIN32)
 #  include <io.h>      /* _isatty */
 #  include <windows.h> /* DeviceIoControl, HANDLE, FSCTL_SET_SPARSE */
 #  include <stdio.h>   /* FILE */
@@ -87,7 +92,7 @@ static __inline int XSUM_IS_CONSOLE(FILE* stdStream)
 #  define XSUM_IS_CONSOLE(stdStream) 0
 #endif
 
-#if defined(MSDOS) || defined(OS2) || defined(WIN32) || defined(_WIN32)
+#if defined(MSDOS) || defined(OS2) || defined(_WIN32)
 #  include <fcntl.h>   /* _O_BINARY */
 #  include <io.h>      /* _setmode, _fileno, _get_osfhandle */
 #  if !defined(__DJGPP__)
@@ -135,6 +140,16 @@ static int XSUM_stat(const char* infilename, XSUM_stat_t* statbuf)
 #ifndef XSUM_NO_MAIN
 int main(int argc, const char* argv[])
 {
+#ifdef __OpenBSD__
+    /*
+     * xxhsum(1) does not create or write files, permit reading only.
+     */
+    if (pledge("stdio rpath", NULL) == -1) {
+        XSUM_log("pledge: %s\n", strerror(errno));
+        return 1;
+    }
+#endif
+
     return XSUM_main(argc, argv);
 }
 #endif
@@ -143,6 +158,45 @@ int main(int argc, const char* argv[])
 #else
 #  include <windows.h>
 #  include <wchar.h>
+
+#  define XSUM_PATHCCH_DO_NOT_NORMALIZE_SEGMENTS     0x00000008UL
+#  define XSUM_PATHCCH_ENSURE_IS_EXTENDED_LENGTH_PATH 0x00000010UL
+#  define XSUM_LOAD_LIBRARY_SEARCH_SYSTEM32          0x00000800UL
+
+typedef HRESULT (WINAPI *XSUM_PathCchCombineExFn)(
+    wchar_t*, size_t, const wchar_t*, const wchar_t*, ULONG);
+
+typedef union {
+    FARPROC proc;
+    XSUM_PathCchCombineExFn combine;
+} XSUM_PathCchProc;
+
+typedef struct {
+    HMODULE module;
+    XSUM_PathCchCombineExFn combine;
+} XSUM_PathCch;
+
+/*
+ * PathCch is available since Windows 8, while the flags used below require
+ * Windows 10 version 1703. Resolve it at runtime so the executable retains
+ * its previous behavior on older versions of Windows.
+ */
+static XSUM_PathCch const* XSUM_getPathCch(void)
+{
+    static XSUM_PathCch api = { NULL, NULL };
+    static int initialized = 0;
+    if (!initialized) {
+        XSUM_PathCchProc proc;
+        api.module = LoadLibraryExW(L"api-ms-win-core-path-l1-1-0.dll", NULL,
+                                    XSUM_LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (api.module != NULL) {
+            proc.proc = GetProcAddress(api.module, "PathCchCombineEx");
+            api.combine = proc.combine;
+        }
+        initialized = 1;
+    }
+    return &api;
+}
 
 /*****************************************************************************
  *                       Unicode conversion tools
@@ -171,6 +225,7 @@ static wchar_t* XSUM_widenString(const char* str, int* lenOut)
  * Converts a UTF-16 string to UTF-8. Acts like strdup. The string must be freed afterwards.
  * This version allows keeping the output length.
  */
+#ifndef XSUM_NO_MAIN
 static char* XSUM_narrowString(const wchar_t *str, int *lenOut)
 {
     int len = WideCharToMultiByte(CP_UTF8, 0, str, -1, NULL, 0, NULL, NULL);
@@ -185,6 +240,94 @@ static char* XSUM_narrowString(const wchar_t *str, int *lenOut)
         return buf;
     }
 }
+#endif
+
+/*
+ * Converts a UTF-8 path to absolute extended-length path with "\\?\" prefix in UTF-16.
+ * Acts like strdup. The string must be freed afterwards.
+ *
+ * Note: The \\?\ prefix (prefix with question) designates a file-system-only path.
+ * Unlike the \\.\ prefix (prefix with dot), it does not provide access to DOS device names (e.g. COM1, NUL, CON, etc).
+ * Explicit \\.\ device paths are therefore left unchanged.
+ */
+static wchar_t* XSUM_widenStringAsExtendedLengthPath(const char* path)
+{
+    wchar_t* const wide_path = XSUM_widenString(path, NULL);  /* path in wchar_t */
+    wchar_t* separator;
+    int starts_with_extended_prefix;
+    int starts_with_device_prefix;
+    int starts_with_drive;
+    int starts_with_dos_absolute;
+    int starts_with_unc_absolute;
+
+    if (wide_path == NULL) return NULL;
+
+    /* Extended-length paths only accept backslashes as separators. */
+    for (separator = wide_path; *separator != L'\0'; ++separator) {
+        if (*separator == L'/') *separator = L'\\';
+    }
+
+    starts_with_extended_prefix = wcsncmp(wide_path, L"\\\\?\\", 4) == 0;
+    starts_with_device_prefix = wcsncmp(wide_path, L"\\\\.\\", 4) == 0;
+    starts_with_drive = ((wide_path[0] >= L'A' && wide_path[0] <= L'Z')
+                      || (wide_path[0] >= L'a' && wide_path[0] <= L'z'))
+        && wide_path[1] == L':';
+    starts_with_dos_absolute = starts_with_drive && wide_path[2] == L'\\';
+    starts_with_unc_absolute = wide_path[0] == L'\\' && wide_path[1] == L'\\';
+
+    /* Extended-length and device paths already have explicit semantics. */
+    if(starts_with_extended_prefix || starts_with_device_prefix) {
+        return wide_path;
+    } else {
+        XSUM_PathCch const* const pathcch = XSUM_getPathCch();
+        size_t const size_in_wchars  = 32768; /* 32767 wchar_t + NUL */
+        ULONG const path_flags = XSUM_PATHCCH_DO_NOT_NORMALIZE_SEGMENTS
+                               | XSUM_PATHCCH_ENSURE_IS_EXTENDED_LENGTH_PATH;
+        wchar_t* exl_path = NULL;
+
+        if(pathcch->combine != NULL) {
+            exl_path = (wchar_t*) malloc(size_in_wchars * sizeof(wchar_t));
+        }
+
+        /* exl_path : buffer for extended length path */
+        if(exl_path != NULL) {
+            HRESULT hr = E_FAIL;
+            wchar_t* base_path = NULL;
+            wchar_t const* path_tail = wide_path;
+            int can_combine = starts_with_unc_absolute || starts_with_dos_absolute;
+
+            if(!can_combine) {
+                base_path = (wchar_t*) malloc(size_in_wchars * sizeof(wchar_t));
+                if(base_path != NULL) {
+                    DWORD n;
+                    if(starts_with_drive) {
+                        wchar_t drive_path[3];
+                        drive_path[0] = wide_path[0];
+                        drive_path[1] = L':';
+                        drive_path[2] = L'\0';
+                        n = GetFullPathNameW(drive_path, (DWORD)size_in_wchars, base_path, NULL);
+                        path_tail += 2;
+                    } else {
+                        n = GetCurrentDirectoryW((DWORD)size_in_wchars, base_path);
+                    }
+                    can_combine = n != 0 && n < size_in_wchars;
+                }
+            }
+            if(can_combine) {
+                hr = pathcch->combine(exl_path, size_in_wchars,
+                                      base_path, path_tail, path_flags);
+            }
+            free(base_path);
+
+            if(SUCCEEDED(hr) && wcsncmp(exl_path, L"\\\\?\\", 4) == 0) {
+                free(wide_path);
+                return exl_path;
+            }
+            free(exl_path);
+        }
+        return wide_path;
+    }
+}
 
 
 
@@ -196,12 +339,16 @@ static char* XSUM_narrowString(const wchar_t *str, int *lenOut)
  *
  * fopen will only accept ANSI filenames, which means that we can't open Unicode filenames.
  *
- * In order to open a Unicode filename, we need to convert filenames to UTF-16 and use _wfopen.
+ * In order to open a Unicode filename and long path, we need to convert filenames to UTF-16,
+ * absolute path, UNC and use _wfopen.
+ *
+ * Note: The \\?\ prefix designates a file-system-only path.
+ * Unlike the \\.\ prefix, it does not provide access to DOS device names (e.g. COM1, NUL, CON, etc).
  */
 XSUM_API FILE* XSUM_fopen(const char* filename, const char* mode)
 {
     FILE* f = NULL;
-    wchar_t* const wide_filename = XSUM_widenString(filename, NULL);
+    wchar_t* const wide_filename = XSUM_widenStringAsExtendedLengthPath(filename);
     if (wide_filename != NULL) {
         wchar_t* const wide_mode = XSUM_widenString(mode, NULL);
         if (wide_mode != NULL) {
@@ -219,7 +366,7 @@ XSUM_API FILE* XSUM_fopen(const char* filename, const char* mode)
 static int XSUM_stat(const char* infilename, XSUM_stat_t* statbuf)
 {
     int r = -1;
-    wchar_t* const wide_filename = XSUM_widenString(infilename, NULL);
+    wchar_t* const wide_filename = XSUM_widenStringAsExtendedLengthPath(infilename);
     if (wide_filename != NULL) {
         r = _wstat64(wide_filename, statbuf);
         free(wide_filename);

@@ -156,6 +156,14 @@ QRectF ItemShape::shapeRect() const {
 	return result;
 }
 
+QRectF ItemShape::visibleRect() const {
+	const auto bounds = (_shape == ShapeType::Arrow)
+		? (arrowShaftPath().boundingRect()
+			| arrowHeadPath().boundingRect())
+		: shapePath().boundingRect();
+	return bounds + Margins(_strokeWidth / 2.);
+}
+
 float64 ItemShape::direction() const {
 	return flipped() ? -1. : 1.;
 }
@@ -358,6 +366,7 @@ void ItemShape::mousePressEvent(QGraphicsSceneMouseEvent *event) {
 	if ((event->button() == Qt::LeftButton)
 		&& overBendHandle(event->pos())) {
 		raiseToTop();
+		resetDragging();
 		_bendDragging = true;
 		setCursor(Qt::ClosedHandCursor);
 		return;
@@ -366,6 +375,9 @@ void ItemShape::mousePressEvent(QGraphicsSceneMouseEvent *event) {
 }
 
 void ItemShape::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
+	if (!dragThresholdPassed(event)) {
+		return;
+	}
 	if (_bendDragging) {
 		updateBend(event->pos());
 		return;

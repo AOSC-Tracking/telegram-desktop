@@ -2,7 +2,9 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([hunspell],[1.7.2],[https://github.com/hunspell/hunspell/issues],,[https://hunspell.github.io])
+# When bumping the package version below, also update -version-info in
+# src/hunspell/Makefile.am per the libtool rules. See RELEASING.md.
+AC_INIT([hunspell],[1.7.3],[https://github.com/hunspell/hunspell/issues],,[https://hunspell.github.io])
 AC_CONFIG_SRCDIR([config.h.in])
 AC_CONFIG_HEADERS([config.h])
 AC_CANONICAL_HOST
@@ -10,11 +12,21 @@ AC_USE_SYSTEM_EXTENSIONS
 AC_CONFIG_MACRO_DIRS([m4])
 AM_INIT_AUTOMAKE
 
-# the following 4 lines are used for pkg-check's .pc.in file
+# The major and minor parts form the .pc file library name. All three
+# parts are substituted into the public hunversion.h header.
 HUNSPELL_VERSION_MAJOR=`echo $VERSION | cut -d"." -f1`
 HUNSPELL_VERSION_MINOR=`echo $VERSION | cut -d"." -f2`
+HUNSPELL_VERSION_PATCH=`echo $VERSION | cut -d"." -f3`
+AS_IF([test "x$enable_static" = xyes], [PC_CFLAGS=-DHUNSPELL_STATIC])
 AC_SUBST(HUNSPELL_VERSION_MAJOR)
 AC_SUBST(HUNSPELL_VERSION_MINOR)
+AC_SUBST(HUNSPELL_VERSION_PATCH)
+AC_SUBST(PC_CFLAGS)
+
+# In-tree consumers need HUNSPELL_STATIC for static-only builds so the
+# public headers skip the dllimport/dllexport annotations on Windows.
+AS_IF([test "x$enable_shared" = xno], [HUNSPELL_STATIC_DEFINE=-DHUNSPELL_STATIC])
+AC_SUBST(HUNSPELL_STATIC_DEFINE)
 
 # Checks for programs.
 AC_PROG_CXX
@@ -22,7 +34,7 @@ AC_PROG_CC
 LT_INIT
 AC_PROG_AWK
 
-AX_CXX_COMPILE_STDCXX_11([noext], [optional])
+AX_CXX_COMPILE_STDCXX([14], [noext], [mandatory])
 
 # Checks for libraries.
 AM_ICONV
@@ -37,11 +49,12 @@ gl_VISIBILITY
 # Checks for library functions.
 
 dnl internationalization macros
-AM_GNU_GETTEXT_VERSION(0.18)
+AM_GNU_GETTEXT_VERSION(0.20)
 AM_GNU_GETTEXT([external])
 
 AC_ARG_WITH(warnings,[  --with-warnings         compile with warning messages],[
 	AC_DEFINE(HUNSPELL_WARNING_ON,1,"Define if you need warning messages")
+	CPPFLAGS="$CPPFLAGS -DHUNSPELL_WARNING_ON"
 ])
 
 CURSESLIB=""
@@ -54,11 +67,23 @@ AC_ARG_WITH(
 AS_IF([test "x$with_ui" != xno], [
 	AC_CHECK_LIB([ncursesw],[tparm],[
 		CURSESLIB=-lncursesw
+        AC_CHECK_LIB([tinfow],[tgetent], [
+            CURSESLIB="$CURSESLIB -ltinfow"
+        ])
 	],[AC_CHECK_LIB([curses],[tparm],[
 		CURSESLIB=-lcurses
+        AC_CHECK_LIB([tinfo],[tgetent], [
+            CURSESLIB="$CURSESLIB -ltinfo"
+        ])
 	],[AC_CHECK_LIB([ncurses],[tparm],[
 		CURSESLIB=-lncurses
-	])])])
+        AC_CHECK_LIB([tinfo],[tgetent], [
+            CURSESLIB="$CURSESLIB -ltinfo"
+        ])
+	],
+    [-ltinfo])],
+    [-ltinfo])],
+    [-ltinfow])
    if test "$CURSESLIB" != "" ; then
 	echo Compiling with curses user interface.
 	AC_CHECK_HEADERS([curses.h])
@@ -80,13 +105,15 @@ AC_ARG_WITH(
 )
 READLINELIB=""
 AS_IF([test "x$with_readline" != xno],
-	[AC_CHECK_LIB([tinfo],[tgetent], [
+	[AC_CHECK_LIB([tinfow],[tgetent], [
+		TERMLIB=-ltinfow
+    ],[AC_CHECK_LIB([tinfo],[tgetent], [
 		TERMLIB=-ltinfo
-        ],[AC_CHECK_LIB([curses],[tparm],[
+    ],[AC_CHECK_LIB([curses],[tparm],[
 		TERMLIB=-lncurses
 	],[AC_CHECK_LIB([termcap],[tgetent],[
 		TERMLIB=-ltermcap
-	])])])
+	])])])])
 	LDSAVE=$LDFLAGS
 	LDFLAGS="$LDFLAGS $TERMLIB"
 	AC_CHECK_LIB([readline],[readline],[
@@ -109,6 +136,7 @@ AC_CONFIG_FILES([
 	src/Makefile
 	src/hunspell/Makefile
 	src/hunspell/hunvisapi.h
+	src/hunspell/hunversion.h
 	src/parsers/Makefile
 	src/tools/Makefile
 	tests/Makefile

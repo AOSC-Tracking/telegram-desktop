@@ -308,6 +308,12 @@ public:
   /** Define a color with given name */
   static void defineColor(const std::string& name, color c);
 
+  /**
+   * Restore the built-in palette, so that a \definecolor in one formula
+   * cannot change what a color name means in every formula after it.
+   */
+  static void resetColors();
+
   __decl_clone(ColorAtom)
 };
 
@@ -376,7 +382,15 @@ public:
   }
 
   sptr<Atom> getBase() {
-    _atom->_limitsType = _limitsType;
+    // Copy on every call rather than memoizing into _atom: the TypedAtom can
+    // be an entry of the predefined-formula cache (\lim, \mathop output),
+    // shared process-wide, and writing the adjusted atom back into it
+    // mutated that cache at render time.
+    if (_atom != nullptr && _atom->_limitsType != _limitsType) {
+      auto copy = privateCopy(_atom);
+      copy->_limitsType = _limitsType;
+      return copy;
+    }
     return _atom;
   }
 

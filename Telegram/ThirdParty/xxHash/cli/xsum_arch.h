@@ -79,7 +79,7 @@
 #endif
 
 /* makes the next part easier */
-#if (defined(__x86_64__) || defined(_M_AMD64) || defined(_M_X64)) && !defined(_M_ARM64EC)
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(_M_ARM64EC)
 #   define XSUM_ARCH_X64 1
 #   define XSUM_ARCH_X86 "x86_64"
 #elif defined(__i386__) || defined(_M_IX86) || defined(_M_IX86_FP)
@@ -89,14 +89,15 @@
 /* Try to detect the architecture. */
 #if defined(XSUM_ARCH_X86)
 #  if defined(XXHSUM_DISPATCH)
-#    define XSUM_ARCH XSUM_ARCH_X86 " autoVec"
+     const char* XSUM_autox86(void);
+#    define XSUM_ARCH XSUM_autox86()
 #  elif defined(__AVX512F__)
 #    define XSUM_ARCH XSUM_ARCH_X86 " + AVX512"
 #  elif defined(__AVX2__)
 #    define XSUM_ARCH XSUM_ARCH_X86 " + AVX2"
 #  elif defined(__AVX__)
 #    define XSUM_ARCH XSUM_ARCH_X86 " + AVX"
-#  elif defined(_M_X64) || defined(_M_AMD64) || defined(__x86_64__) \
+#  elif defined(_M_X64) || defined(__x86_64__) \
       || defined(__SSE2__) || (defined(_M_IX86_FP) && _M_IX86_FP == 2)
 #     define XSUM_ARCH XSUM_ARCH_X86 " + SSE2"
 #  else
@@ -160,6 +161,16 @@
 #    define XSUM_ARCH "wasm/asmjs + simd128"
 #  else
 #    define XSUM_ARCH "wasm/asmjs"
+#  endif
+#elif defined(__riscv)
+#    define XSUM_ARCH "riscv"
+#elif defined(__loongarch_lp64)
+#  if defined(__loongarch_asx)
+#    define XSUM_ARCH "loongarch64 + lasx"
+#  elif defined(__loongarch_sx)
+#    define XSUM_ARCH "loongarch64 + lsx"
+#  else
+#    define XSUM_ARCH "loongarch64"
 #  endif
 #else
 #  define XSUM_ARCH "unknown"

@@ -19,6 +19,10 @@ void CharBox::addItalicCorrectionToWidth() {
 }
 
 void CharBox::draw(Graphics2D& g2, float x, float y) {
+  // A zero size factor (\DeclareMathSizes with a zero component) makes the
+  // un-scale below divide by zero into inf, and 0 * inf poisons the painter
+  // transform with NaN. Nothing is visible at such a size anyway.
+  if (!(_size > 0)) return;
   g2.translate(x, y);
   const Font* font = FontInfo::getFont(_cf->fontId);
   if (_size != 1) g2.scale(_size, _size);
@@ -49,6 +53,10 @@ void TextRenderingBox::setFont(const string& name) {
   _font = Font::_create(name, PLAIN, 10);
 }
 
+void TextRenderingBox::resetFont() {
+  _font = Font::_create("Serif", PLAIN, 10);
+}
+
 void TextRenderingBox::init(
   const wstring& str, int type, float size, const sptr<Font>& f, bool kerning
 ) {
@@ -62,6 +70,9 @@ void TextRenderingBox::init(
 }
 
 void TextRenderingBox::draw(Graphics2D& g2, float x, float y) {
+  // Same as CharBox::draw: 10 / _size below is inf (and the painter
+  // transform NaN) for a zero size factor, and nothing is drawn anyway.
+  if (!(_size > 0)) return;
   g2.translate(x, y);
   g2.scale(0.1f * _size, 0.1f * _size);
   _layout->draw(g2, 0, 0);

@@ -1,10 +1,13 @@
 #include "latex.h"
 
+#include "atom/atom_basic.h"
+#include "atom/atom_impl.h"
 #include "atom/atom_matrix.h"
 #include "atom/atom_row.h"
 #include "core/core.h"
 #include "core/formula.h"
 #include "core/macro.h"
+#include "core/parser.h"
 #include "fonts/fonts.h"
 #if CLATEX_CXX17 && !defined(__APPLE__)
 #include <filesystem>
@@ -55,10 +58,13 @@ string LaTeX::queryResourceLocation(string& custom_path) {
   // to potential paths.
   char* home = getenv("HOME");
   if (home != NULL && strcmp(home, "") != 0) {
-    char* userdata_fallback;
-    asprintf(&userdata_fallback, "%s/.local/share/clatexmath/", home);
-    paths.push(string(userdata_fallback));
-    delete userdata_fallback;
+    char* userdata_fallback = nullptr;
+    // asprintf returns malloc'd memory (delete would be a mismatched-free)
+    // and leaves the pointer undefined on failure.
+    if (asprintf(&userdata_fallback, "%s/.local/share/clatexmath/", home) >= 0) {
+      paths.push(string(userdata_fallback));
+      free(userdata_fallback);
+    }
   }
   paths.push("/usr/share/clatexmath/");
   paths.push("/usr/local/share/clatexmath/");
@@ -163,14 +169,20 @@ void LaTeX::setDebug(bool debug) {
 TeXRender* LaTeX::parse(const wstring& latex, int width, float textSize, float lineSpace, color fg) {
   // Untrusted input: roll back any global state a previous formula mutated
   // (user macros, \newcolumntype column types, \arrayrulecolor line color,
-  // \breakEverywhere, \DeclareMathSizes / \magnification sizes) so definitions
-  // can't leak between formulas. A formula's own definitions still apply
-  // within itself (they are made during this parse, after this reset).
+  // \definecolor palette entries, \cornersize oval radius, \externalfont text
+  // font, \breakEverywhere, \DeclareMathSizes / \magnification sizes) so
+  // definitions can't leak between formulas. A formula's own definitions
+  // still apply within itself (they are made during this parse, after this
+  // reset).
   NewCommandMacro::_reset();
   MatrixAtom::resetState();
+  ColorAtom::resetColors();
+  OvalAtom::resetState();
+  TextRenderingBox::resetFont();
   RowAtom::_breakEveywhere = false;
   DefaultTeXFont::resetMathSizes();
   resetBoxBudget();
+  resetExpansionWork();
 
   bool lined = true;
   if (startswith(latex, L"$$") || startswith(latex, L"\\[")) {

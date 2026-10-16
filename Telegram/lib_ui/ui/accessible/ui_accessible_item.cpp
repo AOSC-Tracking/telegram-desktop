@@ -7,8 +7,37 @@
 #include "ui/accessible/ui_accessible_item.h"
 
 #include "ui/rp_widget.h"
+#include "base/algorithm.h"
+
+#include <crl/crl_on_main.h>
 
 namespace Ui::Accessible {
+namespace {
+
+[[nodiscard]] std::vector<QAccessible::Id> &Retired() {
+	static auto result = std::vector<QAccessible::Id>();
+	return result;
+}
+
+} // namespace
+
+void Retire(QAccessible::Id id) {
+	if (!id) {
+		return;
+	}
+	auto &list = Retired();
+	const auto schedule = list.empty();
+	list.push_back(id);
+	if (schedule) {
+		crl::on_main([] {
+			// Deleting an item destroys the ids of its sub-items, which
+			// retires them in turn, so take the list before walking it.
+			for (const auto id : base::take(Retired())) {
+				QAccessible::deleteAccessibleInterface(id);
+			}
+		});
+	}
+}
 
 Item::Item(not_null<RpWidget*> parent, int index)
 : _parent(parent)
@@ -62,7 +91,10 @@ QWindow *Item::window() const {
 
 QAccessible::Role Item::role() const {
 	const auto parent = _parent.get();
-	return parent
+	const auto index = parent ? currentIndex() : -1;
+	return (index >= 0)
+		? parent->accessibilityChildRoleAt(index)
+		: parent
 		? parent->accessibilityChildRole()
 		: QAccessible::Role();
 }
@@ -204,6 +236,11 @@ QStringList Item::actionNames() const {
 	if (childState.selectable) {
 		names.append(QAccessibleActionInterface::toggleAction());
 	}
+	// An expandable item opens something of its own: the Windows bridge
+	// expands and collapses it through the showMenu action.
+	if (childState.expandable) {
+		names.append(QAccessibleActionInterface::showMenuAction());
+	}
 	return names;
 }
 
@@ -212,17 +249,20 @@ void Item::doAction(const QString &actionName) {
 	if (!parent) {
 		return;
 	}
-	// Dispatch by stable identity, not index: the owner resolves it to the
-	// current row on the main thread, so a stale action either hits the right
-	// row (if it just moved) or fails safely (if it is gone). We forward the
-	// identity without touching widget state here, because the Windows UIA
-	// bridge invokes actions on a background thread.
+	// Dispatch by stable identity, not index: the cached index can already
+	// name a different row by the time the action arrives, so the owner
+	// resolves the identity to the current row instead. A stale action then
+	// either hits the right row (if it just moved) or fails safely (if it is
+	// gone). Qt reports ProviderOptions_UseComThreading from an STA, so this
+	// runs on the main thread - but re-entrantly, while it pumps messages.
 	const auto identity = _identity;
 	if (actionName == QAccessibleActionInterface::setFocusAction()
 		|| actionName == QAccessibleActionInterface::toggleAction()) {
 		parent->accessibilityChildSetFocus(identity);
 	} else if (actionName == QAccessibleActionInterface::pressAction()) {
 		parent->accessibilityChildActivate(identity);
+	} else if (actionName == QAccessibleActionInterface::showMenuAction()) {
+		parent->accessibilityChildShowMenu(identity);
 	}
 }
 

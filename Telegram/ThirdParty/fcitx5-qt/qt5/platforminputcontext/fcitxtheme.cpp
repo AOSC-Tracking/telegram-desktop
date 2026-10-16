@@ -7,12 +7,66 @@
 #include "fcitxtheme.h"
 #include "font.h"
 #include <QDebug>
+#include <QFileInfo>
 #include <QMargins>
 #include <QPixmap>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QtMath>
+#include <algorithm>
 
 namespace fcitx {
+
+namespace {
+
+bool isSystemThemeName(const QString &themeName) {
+
+    return themeName == "default" || themeName == "default-dark";
+}
+
+bool isThemeName(const QString &themeName) {
+    const QFileInfo themeFile(themeName);
+    return !themeName.isEmpty() && themeName != "." && themeName != ".." &&
+           themeFile.isRelative() && themeFile.fileName() == themeName;
+}
+
+QString pathForTheme(const QString &themeName, const QString &fileName) {
+    return QStringLiteral("fcitx5/themes/%1/%2").arg(themeName, fileName);
+}
+
+QString locateThemeFile(const QString &themeName, const QString &fileName) {
+    QString path = pathForTheme(themeName, fileName);
+    if (isSystemThemeName(themeName)) {
+        QStringList paths = QStandardPaths::standardLocations(
+            QStandardPaths::GenericDataLocation);
+        if (!paths.isEmpty()) {
+            paths.takeFirst();
+        }
+        for (const auto &p : paths) {
+            auto file = p + "/" + path;
+            if (QFileInfo(file).isFile()) {
+                return file;
+            }
+        }
+        return {};
+    }
+
+    return QStandardPaths::locate(QStandardPaths::GenericDataLocation, path);
+}
+
+QString locateThemeConfig(const QString &themeName) {
+    return locateThemeFile(themeName, "theme.conf");
+}
+
+QString userThemeConfigPath(const QString &themeName) {
+    if (isSystemThemeName(themeName)) {
+        return {};
+    }
+    QString path = pathForTheme(themeName, "theme.conf");
+    return QStandardPaths::writableLocation(
+               QStandardPaths::GenericDataLocation) +
+           "/" + path;
+}
 
 bool readBool(const QSettings &settings, const QString &name,
               bool defaultValue) {
@@ -39,7 +93,7 @@ QColor readColor(const QSettings &settings, const QString &name,
         } else if (colorString.size() == 9) {
             // Qt accept "#AARRGGBB"
             auto newColorString =
-                QString("#%1%2")
+                QStringLiteral("#%1%2")
                     .arg(colorString.mid(7, 2), colorString.mid(1, 6))
                     .toUpper();
             color = QColor(newColorString);
@@ -48,20 +102,18 @@ QColor readColor(const QSettings &settings, const QString &name,
     return color;
 }
 
+} // namespace
+
 void BackgroundImage::load(const QString &name, QSettings &settings) {
     settings.allKeys();
     image_ = QPixmap();
     overlay_ = QPixmap();
     if (auto image = settings.value("Image").toString(); !image.isEmpty()) {
-        auto file = QStandardPaths::locate(
-            QStandardPaths::GenericDataLocation,
-            QString("fcitx5/themes/%1/%2").arg(name, image));
+        auto file = locateThemeFile(name, image);
         image_.load(file);
     }
     if (auto image = settings.value("Overlay").toString(); !image.isEmpty()) {
-        auto file = QStandardPaths::locate(
-            QStandardPaths::GenericDataLocation,
-            QString("fcitx5/themes/%1/%2").arg(name, image));
+        auto file = locateThemeFile(name, image);
         overlay_.load(file);
     }
 
@@ -128,9 +180,7 @@ void ActionImage::load(const QString &name, QSettings &settings) {
     image_ = QPixmap();
     valid_ = false;
     if (auto image = settings.value("Image").toString(); !image.isEmpty()) {
-        auto file = QStandardPaths::locate(
-            QStandardPaths::GenericDataLocation,
-            QString("fcitx5/themes/%1/%2").arg(name, image));
+        auto file = locateThemeFile(name, image);
         image_.load(file);
         valid_ = !image_.isNull();
     }
@@ -177,6 +227,9 @@ void FcitxTheme::configChanged() {
     wheelForPaging_ =
         settings.value("WheelForPaging", "True").toString() == "True";
     theme_ = settings.value("Theme", "default").toString();
+    if (!isThemeName(theme_)) {
+        theme_ = "default";
+    }
 
     themeChanged();
 }
@@ -185,22 +238,17 @@ void FcitxTheme::themeChanged() {
     if (!themeConfigPath_.isEmpty()) {
         watcher_->removePath(themeConfigPath_);
     }
-    auto themeConfig = QString("/fcitx5/themes/%1/theme.conf").arg(theme_);
-    themeConfigPath_ =
-        QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-            .append(themeConfig);
-    auto file = QStandardPaths::locate(QStandardPaths::GenericDataLocation,
-                                       themeConfig);
-    if (file.isEmpty()) {
-        file = QStandardPaths::locate(QStandardPaths::GenericDataLocation,
-                                      "fcitx5/themes/default/theme.conf");
-        themeConfigPath_ = QStandardPaths::writableLocation(
-                               QStandardPaths::GenericDataLocation)
-                               .append("fcitx5/themes/default/theme.conf");
+    themeConfigPath_ = userThemeConfigPath(theme_);
+    auto file = locateThemeConfig(theme_);
+    if (file.isEmpty() && theme_ != "default") {
+        themeConfigPath_ = userThemeConfigPath("default");
+        file = locateThemeConfig("default");
         theme_ = "default";
     }
 
-    watcher_->addPath(themeConfigPath_);
+    if (!themeConfigPath_.isEmpty()) {
+        watcher_->addPath(themeConfigPath_);
+    }
 
     // We can not locate default theme.
     if (file.isEmpty()) {
@@ -299,88 +347,91 @@ void fcitx::FcitxTheme::paint(QPainter *painter,
      * 1 2 3
      */
 
-    if (marginLeft && marginBottom) {
+    // Align the 9-patch tile boundaries to integer device pixels so that
+    // adjacent tiles share exact edges. Otherwise, with a fractional device
+    // pixel ratio, the bilinear filter blends the shared edge against the
+    // transparent background, producing visible dark seams between tiles.
+    const qreal dpr = painter->device()->devicePixelRatioF();
+    const int deviceX = qFloor(region.x() * dpr);
+    const int deviceY = qFloor(region.y() * dpr);
+    const int deviceW = qRound(region.width() * dpr);
+    const int deviceH = qRound(region.height() * dpr);
+    const int deviceTop = qRound(marginTop * dpr);
+    const int deviceBottom = qRound(marginBottom * dpr);
+    const int deviceLeft = qRound(marginLeft * dpr);
+    const int deviceRight = qRound(marginRight * dpr);
+    const int centerW = std::max(0, deviceW - deviceLeft - deviceRight);
+    const int centerH = std::max(0, deviceH - deviceTop - deviceBottom);
+
+    auto drawPart = [&](QRect deviceTarget, const QRect &source) {
+        if (deviceTarget.width() <= 0 || deviceTarget.height() <= 0) {
+            return;
+        }
+        QRectF logicalTarget(deviceTarget.x() / dpr, deviceTarget.y() / dpr,
+                             deviceTarget.width() / dpr,
+                             deviceTarget.height() / dpr);
+        painter->drawPixmap(logicalTarget, image.image_, source);
+    };
+
+    if (deviceLeft && deviceBottom) {
         /* part 1 */
-        painter->drawPixmap(
-            QRect(0, region.height() - marginBottom, marginLeft, marginBottom)
-                .translated(region.topLeft()),
-            image.image_,
-            QRect(0, marginTop + resizeHeight, marginLeft, marginBottom));
+        drawPart(QRect(deviceX, deviceY + deviceH - deviceBottom, deviceLeft,
+                       deviceBottom),
+                 QRect(0, marginTop + resizeHeight, marginLeft, marginBottom));
     }
 
-    if (marginRight && marginBottom) {
+    if (deviceRight && deviceBottom) {
         /* part 3 */
-        painter->drawPixmap(
-            QRect(region.width() - marginRight, region.height() - marginBottom,
-                  marginRight, marginBottom)
-                .translated(region.topLeft()),
-            image.image_,
-            QRect(marginLeft + resizeWidth, marginTop + resizeHeight,
-                  marginRight, marginBottom));
+        drawPart(QRect(deviceX + deviceW - deviceRight,
+                       deviceY + deviceH - deviceBottom, deviceRight,
+                       deviceBottom),
+                 QRect(marginLeft + resizeWidth, marginTop + resizeHeight,
+                       marginRight, marginBottom));
     }
 
-    if (marginLeft && marginTop) {
+    if (deviceLeft && deviceTop) {
         /* part 7 */
-        painter->drawPixmap(
-            QRect(0, 0, marginLeft, marginTop).translated(region.topLeft()),
-            image.image_, QRect(0, 0, marginLeft, marginTop));
+        drawPart(QRect(deviceX, deviceY, deviceLeft, deviceTop),
+                 QRect(0, 0, marginLeft, marginTop));
     }
 
-    if (marginRight && marginTop) {
+    if (deviceRight && deviceTop) {
         /* part 9 */
-        painter->drawPixmap(
-            QRect(region.width() - marginRight, 0, marginRight, marginTop)
-                .translated(region.topLeft()),
-            image.image_,
-            QRect(marginLeft + resizeWidth, 0, marginRight, marginTop));
+        drawPart(QRect(deviceX + deviceW - deviceRight, deviceY, deviceRight,
+                       deviceTop),
+                 QRect(marginLeft + resizeWidth, 0, marginRight, marginTop));
     }
 
     /* part 2 & 8 */
-    if (marginTop) {
-        painter->drawPixmap(
-            QRect(marginLeft, 0, region.width() - marginLeft - marginRight,
-                  marginTop)
-                .translated(region.topLeft()),
-            image.image_, QRect(marginLeft, 0, resizeWidth, marginTop));
+    if (deviceTop && centerW > 0) {
+        drawPart(QRect(deviceX + deviceLeft, deviceY, centerW, deviceTop),
+                 QRect(marginLeft, 0, resizeWidth, marginTop));
     }
 
-    if (marginBottom) {
-        painter->drawPixmap(QRect(marginLeft, region.height() - marginBottom,
-                                  region.width() - marginLeft - marginRight,
-                                  marginBottom)
-                                .translated(region.topLeft()),
-                            image.image_,
-                            QRect(marginLeft, marginTop + resizeHeight,
-                                  resizeWidth, marginBottom));
+    if (deviceBottom && centerW > 0) {
+        drawPart(QRect(deviceX + deviceLeft, deviceY + deviceH - deviceBottom,
+                       centerW, deviceBottom),
+                 QRect(marginLeft, marginTop + resizeHeight, resizeWidth,
+                       marginBottom));
     }
 
     /* part 4 & 6 */
-    if (marginLeft) {
-        painter->drawPixmap(QRect(0, marginTop, marginLeft,
-                                  region.height() - marginTop - marginBottom)
-                                .translated(region.topLeft()),
-                            image.image_,
-                            QRect(0, marginTop, marginLeft, resizeHeight));
+    if (deviceLeft && centerH > 0) {
+        drawPart(QRect(deviceX, deviceY + deviceTop, deviceLeft, centerH),
+                 QRect(0, marginTop, marginLeft, resizeHeight));
     }
 
-    if (marginRight) {
-        painter->drawPixmap(QRect(region.width() - marginRight, marginTop,
-                                  marginRight,
-                                  region.height() - marginTop - marginBottom)
-                                .translated(region.topLeft()),
-                            image.image_,
-                            QRect(marginLeft + resizeWidth, marginTop,
-                                  marginRight, resizeHeight));
+    if (deviceRight && centerH > 0) {
+        drawPart(QRect(deviceX + deviceW - deviceRight, deviceY + deviceTop,
+                       deviceRight, centerH),
+                 QRect(marginLeft + resizeWidth, marginTop, marginRight,
+                       resizeHeight));
     }
 
     /* part 5 */
-    {
-        painter->drawPixmap(
-            QRect(marginLeft, marginTop,
-                  region.width() - marginLeft - marginRight,
-                  region.height() - marginTop - marginBottom)
-                .translated(region.topLeft()),
-            image.image_,
+    if (centerW > 0 && centerH > 0) {
+        drawPart(
+            QRect(deviceX + deviceLeft, deviceY + deviceTop, centerW, centerH),
             QRect(marginLeft, marginTop, resizeWidth, resizeHeight));
     }
 

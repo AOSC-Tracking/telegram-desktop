@@ -50,7 +50,18 @@ struct cmark_parser {
   cmark_llist *syntax_extensions;
   cmark_llist *inline_syntax_extensions;
   cmark_ispunct_func backslash_ispunct;
+  /* Fork addition: optional host-owned abort flag, see
+   * cmark_parser_set_allocation_abort_flag() in cmark-gfm.h. */
+  int *allocation_abort_flag;
 };
+
+/* Fork addition: polls the host-owned abort flag. The parser checks
+ * this only at points where stopping early leaves every temporary on
+ * its normal cleanup path, so an aborted parse frees everything it
+ * allocated. */
+static CMARK_INLINE int cmark_parser_aborted(cmark_parser *parser) {
+  return parser->allocation_abort_flag && *parser->allocation_abort_flag;
+}
 
 #ifdef __cplusplus
 }

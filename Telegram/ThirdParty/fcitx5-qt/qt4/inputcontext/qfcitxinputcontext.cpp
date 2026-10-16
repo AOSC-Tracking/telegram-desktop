@@ -114,7 +114,8 @@ QFcitxInputContext::QFcitxInputContext()
     : watcher_(new FcitxQtWatcher(
           QDBusConnection::connectToBus(QDBusConnection::SessionBus, "fcitx"),
           this)),
-      cursorPos_(0), useSurroundingText_(false),
+      cursorPos_(0), useSurroundingText_(get_boolean_env(
+                         "FCITX_QT_ENABLE_SURROUNDING_TEXT", true)),
       syncMode_(get_boolean_env("FCITX_QT_USE_SYNC", false)), destroy_(false),
       xkbContext_(_xkb_context_new_helper()),
       xkbComposeTable_(xkbContext_ ? xkb_compose_table_new_from_locale(
@@ -201,12 +202,11 @@ void QFcitxInputContext::reset() {
 
 void QFcitxInputContext::update() {
     QWidget *window = qApp->focusWidget();
-    FcitxQtInputContextProxy *proxy = validICByWindow(window);
-    if (!proxy)
+    FcitxQtICData *dataPtr = icDataByWindow(window);
+    if (!dataPtr) {
         return;
-
-    FcitxQtICData &data = *static_cast<FcitxQtICData *>(
-        proxy->property("icData").value<void *>());
+    }
+    auto &data = *dataPtr;
 
     QWidget *input = qApp->focusWidget();
     if (!input)
@@ -240,16 +240,19 @@ void QFcitxInputContext::update() {
 
     bool setSurrounding = false;
     do {
-        if (!useSurroundingText_)
+        if (!useSurroundingText_) {
             break;
+        }
         if ((data.capability & FcitxCapabilityFlag_Password) ||
-            (data.capability & FcitxCapabilityFlag_Sensitive))
+            (data.capability & FcitxCapabilityFlag_Sensitive)) {
             break;
+        }
         QVariant var = input->inputMethodQuery(Qt::ImSurroundingText);
         QVariant var1 = input->inputMethodQuery(Qt::ImCursorPosition);
         QVariant var2 = input->inputMethodQuery(Qt::ImAnchorPosition);
-        if (!var.isValid() || !var1.isValid())
+        if (!var.isValid() || !var1.isValid()) {
             break;
+        }
         QString text = var.toString();
 /* we don't want to waste too much memory here */
 #define SURROUNDING_THRESHOLD 4096
@@ -278,26 +281,32 @@ void QFcitxInputContext::update() {
                 tempUCS4 = text.left(anchor).toUcs4();
 #endif
                 anchor = tempUCS4.size();
+                auto *proxy = data.validIC();
                 if (data.surroundingText != text) {
                     data.surroundingText = text;
-                    proxy->setSurroundingText(text, cursor, anchor);
+                    if (proxy) {
+                        proxy->setSurroundingText(text, cursor, anchor);
+                    }
                 } else {
                     if (data.surroundingAnchor != anchor ||
-                        data.surroundingCursor != cursor)
-                        proxy->setSurroundingTextPosition(cursor, anchor);
+                        data.surroundingCursor != cursor) {
+                        if (proxy) {
+                            proxy->setSurroundingTextPosition(cursor, anchor);
+                        }
+                    }
                 }
                 data.surroundingCursor = cursor;
                 data.surroundingAnchor = anchor;
                 setSurrounding = true;
             }
         }
-        if (!setSurrounding) {
-            data.surroundingAnchor = -1;
-            data.surroundingCursor = -1;
-            data.surroundingText = QString();
-            removeCapability(data, FcitxCapabilityFlag_SurroundingText);
-        }
-    } while (0);
+    } while (false);
+    if (!setSurrounding) {
+        data.surroundingAnchor = -1;
+        data.surroundingCursor = -1;
+        data.surroundingText = QString();
+        removeCapability(data, FcitxCapabilityFlag_SurroundingText);
+    }
 }
 
 void QFcitxInputContext::setFocusWidget(QWidget *object) {
@@ -388,19 +397,19 @@ void QFcitxInputContext::createInputContextFinished(const QByteArray &uuid) {
     flag |= FcitxCapabilityFlag_GetIMInfoOnFocus;
     flag |= FcitxCapabilityFlag_KeyEventOrderFix;
     flag |= FcitxCapabilityFlag_ReportKeyRepeat;
-    useSurroundingText_ =
-        get_boolean_env("FCITX_QT_ENABLE_SURROUNDING_TEXT", true);
-    if (useSurroundingText_)
-        flag |= FcitxCapabilityFlag_SurroundingText;
 
     addCapability(*data, flag, true);
+    if (data->capability & FcitxCapabilityFlag_SurroundingText) {
+        proxy->setSurroundingText(data->surroundingText,
+                                  data->surroundingCursor,
+                                  data->surroundingAnchor);
+    }
 }
 
 void QFcitxInputContext::updateCapability(const FcitxQtICData &data) {
-    if (!data.proxy || !data.proxy->isValid())
-        return;
-
-    QDBusPendingReply<void> result = data.proxy->setCapability(data.capability);
+    if (auto *proxy = data.validIC()) {
+        proxy->setCapability(data.capability);
+    }
 }
 
 void QFcitxInputContext::commitString(const QString &str) {
@@ -778,6 +787,14 @@ FcitxQtInputContextProxy *QFcitxInputContext::validIC() {
 }
 
 FcitxQtInputContextProxy *QFcitxInputContext::validICByWindow(QWidget *w) {
+    auto data = icDataByWindow(w);
+    if (!data) {
+        return nullptr;
+    }
+    return data->validIC();
+}
+
+FcitxQtICData *QFcitxInputContext::icDataByWindow(QWidget *w) {
     if (!w) {
         return nullptr;
     }
@@ -788,11 +805,7 @@ FcitxQtInputContextProxy *QFcitxInputContext::validICByWindow(QWidget *w) {
     auto iter = icMap_.find(w);
     if (iter == icMap_.end())
         return nullptr;
-    auto &data = iter->second;
-    if (!data.proxy || !data.proxy->isValid()) {
-        return nullptr;
-    }
-    return data.proxy;
+    return &iter->second;
 }
 
 bool QFcitxInputContext::processCompose(unsigned int keyval, unsigned int state,

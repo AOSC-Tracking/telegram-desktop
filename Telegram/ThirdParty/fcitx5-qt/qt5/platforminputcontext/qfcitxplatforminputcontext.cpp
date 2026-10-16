@@ -18,6 +18,7 @@
 #include <qpa/qplatformcursor.h>
 #include <qpa/qplatformnativeinterface.h>
 #include <qpa/qplatformscreen.h>
+#include <qpa/qplatformwindow.h>
 #include <qpa/qwindowsysteminterface.h>
 
 #include <cerrno>
@@ -226,8 +227,8 @@ bool FcitxQtICData::eventFilter(QObject * /*watched*/, QEvent *event) {
     return false;
 }
 
-FcitxCandidateWindow *FcitxQtICData::candidateWindow() {
-    if (!candidateWindow_) {
+FcitxCandidateWindow *FcitxQtICData::candidateWindow(bool create) {
+    if (!candidateWindow_ && create) {
         candidateWindow_ = new FcitxCandidateWindow(window(), context_);
         QObject::connect(
             candidateWindow_, &FcitxCandidateWindow::candidateSelected, proxy,
@@ -253,7 +254,8 @@ QFcitxPlatformInputContext::QFcitxPlatformInputContext()
           QDBusConnection::connectToBus(QDBusConnection::SessionBus, "fcitx"),
           this)),
       fcitx4Watcher_(new Fcitx4Watcher(watcher_->connection(), this)),
-      cursorPos_(0), useSurroundingText_(false),
+      cursorPos_(0), useSurroundingText_(get_boolean_env(
+                         "FCITX_QT_ENABLE_SURROUNDING_TEXT", true)),
       syncMode_(get_boolean_env("FCITX_QT_USE_SYNC", false)), destroy_(false),
       xkbContext_(_xkb_context_new_helper()),
       xkbComposeTable_(xkbContext_ ? xkb_compose_table_new_from_locale(
@@ -376,18 +378,21 @@ void QFcitxPlatformInputContext::reset() {
 
 void QFcitxPlatformInputContext::update(Qt::InputMethodQueries queries) {
     QWindow *window = focusWindowWrapper();
-    auto *proxy = validICByWindow(window);
-    if (!proxy) {
+    auto *dataPtr = icDataByWindow(window);
+    if (!dataPtr) {
         return;
     }
-
-    FcitxQtICData &data = *static_cast<FcitxQtICData *>(
-        proxy->property("icData").value<void *>());
+    auto &data = *dataPtr;
 
     QObject *input = focusObjectWrapper();
     if (!input) {
         return;
     }
+
+    // Limit the queries to the only ones we care about.
+    queries &=
+        (Qt::ImEnabled | Qt::ImHints | Qt::ImSurroundingText |
+         Qt::ImCursorPosition | Qt::ImAnchorPosition | Qt::ImCursorRectangle);
 
     QInputMethodQueryEvent query(queries);
     QGuiApplication::sendEvent(input, &query);
@@ -471,13 +476,18 @@ void QFcitxPlatformInputContext::update(Qt::InputMethodQueries queries) {
                 cursor = tempUCS4.size();
                 tempUCS4 = text.left(anchor).toUcs4();
                 anchor = tempUCS4.size();
+                auto *proxy = data.validIC();
                 if (data.surroundingText != text) {
                     data.surroundingText = text;
-                    proxy->setSurroundingText(text, cursor, anchor);
+                    if (proxy) {
+                        proxy->setSurroundingText(text, cursor, anchor);
+                    }
                 } else {
                     if (data.surroundingAnchor != anchor ||
                         data.surroundingCursor != cursor) {
-                        proxy->setSurroundingTextPosition(cursor, anchor);
+                        if (proxy) {
+                            proxy->setSurroundingTextPosition(cursor, anchor);
+                        }
                     }
                 }
                 data.surroundingCursor = cursor;
@@ -485,13 +495,13 @@ void QFcitxPlatformInputContext::update(Qt::InputMethodQueries queries) {
                 setSurrounding = true;
             }
         }
-        if (!setSurrounding) {
-            data.surroundingAnchor = -1;
-            data.surroundingCursor = -1;
-            data.surroundingText = QString();
-            removeCapability(data, FcitxCapabilityFlag_SurroundingText);
-        }
     } while (false);
+    if (!setSurrounding) {
+        data.surroundingAnchor = -1;
+        data.surroundingCursor = -1;
+        data.surroundingText = QString();
+        removeCapability(data, FcitxCapabilityFlag_SurroundingText);
+    }
 }
 
 void QFcitxPlatformInputContext::commit() {
@@ -543,17 +553,17 @@ void QFcitxPlatformInputContext::setFocusObject(QObject *object) {
 
     if (proxy) {
         proxy->focusIn();
-        // We need to delegate this otherwise it may cause self-recursion in
-        // certain application like libreoffice.
-        QTimer::singleShot(0, this,
-                           [this, window = QPointer<QWindow>(lastWindow_)]() {
-                               if (window != lastWindow_) {
-                                   return;
-                               }
-                               update(Qt::ImHints | Qt::ImEnabled);
-                               updateCursorRect();
-                           });
     }
+    // We need to delegate this otherwise it may cause self-recursion in
+    // certain application like libreoffice.
+    QTimer::singleShot(0, this,
+                       [this, window = QPointer<QWindow>(lastWindow_)]() {
+                           if (window != lastWindow_) {
+                               return;
+                           }
+                           update(Qt::ImHints | Qt::ImEnabled);
+                           updateCursorRect();
+                       });
 
     updateInputPanelVisible();
 }
@@ -587,19 +597,27 @@ void QFcitxPlatformInputContext::cursorRectChanged() {
         return;
     }
 
+    if (auto *candidateWindow = data.candidateWindow(/*create=*/false)) {
+        if (candidateWindow->isVisible()) {
+            candidateWindow->updatePosition();
+        }
+    }
+
     // not sure if this is necessary but anyway, qt's screen used to be buggy.
     if (!inputWindow->screen()) {
         return;
     }
 
     qreal scale = inputWindow->devicePixelRatio();
+    qreal platformScale = inputWindow->handle()->devicePixelRatio();
     if (data.capability & FcitxCapabilityFlag_RelativeRect) {
         auto margins = inputWindow->frameMargins();
         r.translate(margins.left(), margins.top());
         r = QRect(r.topLeft() * scale, r.size() * scale);
         if (data.rect != r) {
             data.rect = r;
-            proxy->setCursorRectV2(r.x(), r.y(), r.width(), r.height(), scale);
+            proxy->setCursorRectV2(r.x(), r.y(), r.width(), r.height(),
+                                   platformScale);
         }
         return;
     }
@@ -648,11 +666,6 @@ void QFcitxPlatformInputContext::createInputContextFinished(
     flag |= FcitxCapabilityFlag_GetIMInfoOnFocus;
     flag |= FcitxCapabilityFlag_KeyEventOrderFix;
     flag |= FcitxCapabilityFlag_ReportKeyRepeat;
-    useSurroundingText_ =
-        get_boolean_env("FCITX_QT_ENABLE_SURROUNDING_TEXT", true);
-    if (useSurroundingText_) {
-        flag |= FcitxCapabilityFlag_SurroundingText;
-    }
 
     if (QGuiApplication::platformName().startsWith("wayland")) {
         flag |= FcitxCapabilityFlag_RelativeRect;
@@ -665,16 +678,19 @@ void QFcitxPlatformInputContext::createInputContextFinished(
 
     // Notify fcitx of the effective bits from 0bit to 40bit
     // (FcitxCapabilityFlag_Disable)
-    data->proxy->setSupportedCapability(0x1ffffffffffULL);
-
+    proxy->setSupportedCapability(0x1ffffffffffULL);
     addCapability(*data, flag, true);
+    if (data->capability & FcitxCapabilityFlag_SurroundingText) {
+        proxy->setSurroundingText(data->surroundingText,
+                                  data->surroundingCursor,
+                                  data->surroundingAnchor);
+    }
 }
 
 void QFcitxPlatformInputContext::updateCapability(const FcitxQtICData &data) {
-    if (!data.proxy || !data.proxy->isValid()) {
-        return;
+    if (auto *proxy = data.validIC()) {
+        proxy->setCapability(data.capability);
     }
-    data.proxy->setCapability(data.capability);
 }
 
 void QFcitxPlatformInputContext::commitString(const QString &str) {
@@ -772,9 +788,9 @@ void QFcitxPlatformInputContext::updateClientSideUI(
     auto *w = data->window();
     auto *window = focusWindowWrapper();
     if (window && w == window) {
-        data->candidateWindow()->updateClientSideUI(
-            preedit, cursorpos, auxUp, auxDown, candidates, candidateIndex,
-            layoutHint, hasPrev, hasNext);
+        data->candidateWindow(/*create=*/true)
+            ->updateClientSideUI(preedit, cursorpos, auxUp, auxDown, candidates,
+                                 candidateIndex, layoutHint, hasPrev, hasNext);
     }
 }
 
@@ -1177,7 +1193,7 @@ bool QFcitxPlatformInputContext::filterEventFallback(unsigned int keyval,
     return processCompose(keyval, state, isRelease);
 }
 
-HybridInputContext *QFcitxPlatformInputContext::validIC() const {
+HybridInputContext *QFcitxPlatformInputContext::validIC() {
     if (icMap_.empty()) {
         return nullptr;
     }
@@ -1185,8 +1201,15 @@ HybridInputContext *QFcitxPlatformInputContext::validIC() const {
     return validICByWindow(window);
 }
 
-HybridInputContext *
-QFcitxPlatformInputContext::validICByWindow(QWindow *w) const {
+HybridInputContext *QFcitxPlatformInputContext::validICByWindow(QWindow *w) {
+    auto *data = icDataByWindow(w);
+    if (!data) {
+        return nullptr;
+    }
+    return data->validIC();
+}
+
+FcitxQtICData *QFcitxPlatformInputContext::icDataByWindow(QWindow *w) {
     if (!w) {
         return nullptr;
     }
@@ -1198,11 +1221,7 @@ QFcitxPlatformInputContext::validICByWindow(QWindow *w) const {
     if (iter == icMap_.end()) {
         return nullptr;
     }
-    const auto &data = iter->second;
-    if (!data.proxy || !data.proxy->isValid()) {
-        return nullptr;
-    }
-    return data.proxy;
+    return &iter->second;
 }
 
 bool QFcitxPlatformInputContext::processCompose(unsigned int keyval,
@@ -1249,9 +1268,6 @@ QWindow *QFcitxPlatformInputContext::focusWindowWrapper() const {
             break;
         }
         QObject *realFocusObject = focusObjectWrapper();
-        if (qGuiApp->focusObject() == realFocusObject) {
-            break;
-        }
         auto *widget = qobject_cast<QWidget *>(realFocusObject);
         if (!widget) {
             break;

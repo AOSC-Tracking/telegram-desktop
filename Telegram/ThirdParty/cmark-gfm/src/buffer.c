@@ -32,7 +32,11 @@ void cmark_strbuf_init(cmark_mem *mem, cmark_strbuf *buf,
 }
 
 static CMARK_INLINE void S_strbuf_grow_by(cmark_strbuf *buf, bufsize_t add) {
-  cmark_strbuf_grow(buf, buf->size + add);
+  // Route sums that would overflow bufsize_t through the oversized-buffer
+  // limit in cmark_strbuf_grow instead of wrapping the grow target negative.
+  cmark_strbuf_grow(buf, (add < 0 || buf->size > INT32_MAX - add)
+                             ? INT32_MAX
+                             : buf->size + add);
 }
 
 void cmark_strbuf_grow(cmark_strbuf *buf, bufsize_t target_size) {

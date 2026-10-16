@@ -1,6 +1,6 @@
 bin_PROGRAMS=analyze chmorph hunspell munch unmunch hzip hunzip
 
-AM_CPPFLAGS=-I${top_builddir}/src/hunspell -I${top_srcdir}/src/hunspell -I${top_srcdir}/src/parsers
+AM_CPPFLAGS=-I${top_builddir}/src/hunspell -I${top_srcdir}/src/hunspell -I${top_srcdir}/src/parsers  -DDATADIR=\"$(datadir)\" $(HUNSPELL_STATIC_DEFINE)
 
 hzip_SOURCES=hzip.cxx
 hunzip_SOURCES=hunzip.cxx
@@ -23,6 +23,9 @@ analyze_LDADD = ../hunspell/libhunspell-1.7.la
 chmorph_SOURCES=chmorph.cxx
 chmorph_LDADD = ../parsers/libparsers.a ../hunspell/libhunspell-1.7.la
 
-noinst_PROGRAMS=example 
+noinst_PROGRAMS=example persdiccrash
+
+persdiccrash_SOURCES=persdiccrash.cxx
+persdiccrash_LDADD = ../hunspell/libhunspell-1.7.la
 
 dist_bin_SCRIPTS=makealias affixcompress wordforms ispellaff2myspell wordlist2hunspell

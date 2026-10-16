@@ -7,16 +7,17 @@
 #define _WIDGETSADDONS_FCITXQTCONFIGUIFACTORY_P_H_
 
 #include "fcitxqtconfiguifactory.h"
+#include <QMap>
 #include <QObject>
 #include <QPluginLoader>
-#include <qpluginloader.h>
+#include <QString>
 
 namespace fcitx {
 
 class FcitxQtConfigUIFactoryPrivate : public QObject {
     Q_OBJECT
 public:
-    FcitxQtConfigUIFactoryPrivate(FcitxQtConfigUIFactory *conn);
+    FcitxQtConfigUIFactoryPrivate(FcitxQtConfigUIFactory *factory);
     virtual ~FcitxQtConfigUIFactoryPrivate();
     FcitxQtConfigUIFactory *const q_ptr;
     Q_DECLARE_PUBLIC(FcitxQtConfigUIFactory);

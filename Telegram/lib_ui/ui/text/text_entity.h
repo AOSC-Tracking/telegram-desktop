@@ -43,6 +43,7 @@ enum class EntityType : uchar {
 	Colorized, // Senders in chat list, attachments in chat list, etc.
 	Phone,
 	BankCard,
+	TonAddress,
 
 	Bold,
 	Semibold,
@@ -117,6 +118,12 @@ public:
 	}
 	[[nodiscard]] QString data() const {
 		return _data;
+	}
+	[[nodiscard]] bool validForText(int textLength) const {
+		return _offset >= 0
+			&& _length > 0
+			&& _offset <= textLength
+			&& _length <= textLength - _offset;
 	}
 
 	void extendToLeft(int extent) {

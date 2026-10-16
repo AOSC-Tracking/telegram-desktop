@@ -3,8 +3,10 @@
 
 #include "../config.h"
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <climits>
+#include <cstdlib>
 #include <sstream>
 #include <string>
 #include <functional>
@@ -26,8 +28,10 @@ inline std::string tostring(T val) {
 template<>
 inline std::string tostring(wchar_t val) {
   char buf[16];
-  auto len = wctomb(buf, val);
-  return std::string(buf, len);
+  // -1 for a character the current locale cannot represent; feeding it to
+  // the string constructor as a length would ask for size_t(-1) bytes.
+  const auto len = wctomb(buf, val);
+  return (len > 0) ? std::string(buf, len) : std::string("?");
 }
 
 /** Convert a value to wide string */
@@ -60,39 +64,81 @@ inline bool str2int(const std::string& str, int& res, int radix) {
 
   if ((val == LONG_MAX || val == LONG_MIN) && errno == ERANGE)
     return false;
+  // On platforms where long is wider than int, a value like \char's
+  // "4294967295" would silently truncate in the cast below. Reject it as
+  // unparseable instead, so callers see the same "not a number" they get
+  // for any other out-of-range input.
+  if (val < INT_MIN || val > INT_MAX)
+    return false;
 
   res = static_cast<int>(val);
   return endptr == str.c_str() + str.size();
 }
 
+/**
+ * Character tests restricted to ASCII.
+ *
+ * The <cctype> functions are only defined for arguments representable as an
+ * unsigned char, plus EOF; anything else indexes the C library's
+ * classification table out of bounds. Both character types in this codebase
+ * can leave that domain: char is signed on x86, so a UTF-8 continuation byte
+ * arrives as a negative number, and a wchar_t taken straight from the formula
+ * reaches 0xFFFF. The three C libraries then disagree -- glibc reads past its
+ * table, Windows answers 0, macOS answers with the real Unicode class -- so
+ * the same formula classified characters differently on each platform.
+ *
+ * Restricting the tests to ASCII costs nothing where they are used: TeX
+ * command names are ASCII by construction (getCommand() accepts only
+ * [a-zA-Z@]), and so are unit suffixes, colour names and roman numerals.
+ */
+inline bool isAsciiAlpha(wchar_t c) {
+  return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z');
+}
+
+inline bool isAsciiDigit(wchar_t c) {
+  return c >= L'0' && c <= L'9';
+}
+
+inline bool isAsciiLower(wchar_t c) {
+  return c >= L'a' && c <= L'z';
+}
+
+inline wchar_t asciiToUpper(wchar_t c) {
+  return isAsciiLower(c) ? wchar_t(c - L'a' + L'A') : c;
+}
+
+inline bool isAsciiSpace(char c) {
+  return std::isspace(static_cast<unsigned char>(c)) != 0;
+}
+
 /** Transform a string to lowercase */
 inline std::string& tolower(std::string& src) {
-  std::transform(src.begin(), src.end(), src.begin(), ::tolower);
+  std::transform(src.begin(), src.end(), src.begin(), [](char c) {
+    return char(std::tolower(static_cast<unsigned char>(c)));
+  });
   return src;
 }
 
 inline std::wstring& tolower(std::wstring& src) {
-  std::transform(src.begin(), src.end(), src.begin(), ::tolower);
+  std::transform(src.begin(), src.end(), src.begin(), [](wchar_t c) {
+    return (c >= L'A' && c <= L'Z') ? wchar_t(c - L'A' + L'a') : c;
+  });
   return src;
 }
 
 /** Ignore left side whitespace in a string */
 inline std::string& ltrim(std::string& s) {
-#if CLATEX_CXX17
-  s.erase(s.begin(), std::find_if(s.begin(), s.end(), std::not_fn<int(int)>(isspace)));
-#else
-  s.erase(s.begin(), std::find_if(s.begin(), s.end(), std::not1(std::cref<int(int)>(isspace))));
-#endif
+  s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](char c) {
+    return !isAsciiSpace(c);
+  }));
   return s;
 }
 
 /** Ignore right side whitespace in a string */
 inline std::string& rtrim(std::string& s) {
-#if CLATEX_CXX17
-  s.erase(std::find_if(s.rbegin(), s.rend(), std::not_fn<int(int)>(isspace)).base(), s.end());
-#else
-  s.erase(std::find_if(s.rbegin(), s.rend(), std::not1(std::cref<int(int)>(isspace))).base(), s.end());
-#endif
+  s.erase(std::find_if(s.rbegin(), s.rend(), [](char c) {
+    return !isAsciiSpace(c);
+  }).base(), s.end());
   return s;
 }
 

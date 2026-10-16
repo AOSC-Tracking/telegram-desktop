@@ -14,12 +14,16 @@ class StrutBox : public Box {
 public:
   StrutBox() = delete;
 
-  explicit StrutBox(const sptr<Box>& box) noexcept {
+  // Not noexcept: the Box constructor accounts for the per-formula box budget
+  // and throws once a formula exceeds it. Declaring these noexcept turned that
+  // throw into std::terminate, so a formula large enough to hit the budget
+  // aborted the process instead of being rejected -- 200 nested \prescript or
+  // \undertilde groups was enough.
+  explicit StrutBox(const sptr<Box>& box) {
     copyMetrics(box);
-    _shift = _shift;
   }
 
-  StrutBox(float width, float height, float depth, float shift) noexcept {
+  StrutBox(float width, float height, float depth, float shift) {
     _width = width;
     _height = height;
     _depth = depth;
@@ -104,6 +108,10 @@ public:
   void draw(Graphics2D& g2, float x, float y) override;
 
   static void setFont(const std::string& name);
+
+  /** Restore the default font, so an \externalFont in one formula cannot
+      change what the \Text-family commands render with in later formulas. */
+  static void resetFont();
 
   static void _init_();
 

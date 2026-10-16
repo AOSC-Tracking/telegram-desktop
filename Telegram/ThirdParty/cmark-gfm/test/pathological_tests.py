@@ -73,8 +73,12 @@ pathological = {
                  (("[" * 50000) + "a" + ("]" * 50000),
                   re.compile("\[{50000}a\]{50000}")),
     "nested block quotes":
+                 # This fork caps new block quotes per line (see
+                 # MAX_BLOCK_QUOTE_DEPTH in src/blocks.c) well above the
+                 # nesting any host renders, so the excess markers render
+                 # as literal text instead of nesting 50000 quotes deep.
                  ((("> " * 50000) + "a"),
-                  re.compile("(<blockquote>\n){50000}")),
+                  re.compile("(<blockquote>\n){511}<p>&gt;")),
     "deeply nested lists":
                  ("".join(map(lambda x: ("  " * x + "* a\n"), range(0,1000))),
                   re.compile("<ul>\n(<li>a\n<ul>\n){999}<li>a</li>\n</ul>\n(</li>\n</ul>\n){999}")),

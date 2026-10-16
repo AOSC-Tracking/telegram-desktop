@@ -89,7 +89,19 @@ static cmark_node *open_tasklist_item(cmark_syntax_extension *self,
   cmark_parser_advance_offset(parser, (char *)input, 3, false);
 
   // Either an upper or lower case X means the task is completed.
-  parent_container->as.list.checked = (strstr((char*)input, "[x]") || strstr((char*)input, "[X]"));
+  // Look only inside the prefix scan_tasklist just matched: that prefix
+  // is spaces, a list marker, spaces and the "[ ]"/"[x]" token, so any
+  // "[x]"-shaped substring there is the marker itself. The item text may
+  // legitimately contain "[x]", which must not complete the task.
+  bool checked = false;
+  for (bufsize_t i = 0; i + 2 < matched; i++) {
+    if (input[i] == '[' && (input[i + 1] == 'x' || input[i + 1] == 'X') &&
+        input[i + 2] == ']') {
+      checked = true;
+      break;
+    }
+  }
+  parent_container->as.list.checked = checked;
 
   return NULL;
 }

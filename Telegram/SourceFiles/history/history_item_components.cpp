@@ -9,10 +9,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "api/api_text_entities.h"
 #include "base/qt/qt_key_modifiers.h"
+#include "base/algorithm.h"
 #include "base/options.h"
 #include "lang/lang_keys.h"
 #include "ui/effects/ripple_animation.h"
 #include "ui/effects/spoiler_mess.h"
+#include "ui/effects/voice_once_particles.h"
 #include "ui/image/image.h"
 #include "ui/toast/toast.h"
 #include "ui/text/format_values.h"
@@ -30,10 +32,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_message.h" // FromNameFg.
 #include "history/view/history_view_service_message.h"
 #include "history/view/media/history_view_document.h"
+#include "history/view/history_view_transcribe_button.h"
 #include "core/click_handler_types.h"
 #include "core/local_url_handlers.h"
 #include "core/ui_integration.h"
 #include "media/audio/media_audio.h"
+#include "media/player/media_player_float.h"
 #include "media/player/media_player_instance.h"
 #include "data/business/data_shortcut_messages.h"
 #include "data/components/scheduled_messages.h"
@@ -213,6 +217,9 @@ HiddenSenderInfo::HiddenSenderInfo(
 	Expects(!name.isEmpty());
 
 	const auto parts = name.trimmed().split(' ', Qt::SkipEmptyParts);
+	if (parts.isEmpty()) {
+		return;
+	}
 	firstName = parts[0];
 	for (const auto &part : parts.mid(1)) {
 		if (!lastName.isEmpty()) {
@@ -930,7 +937,7 @@ void ReplyKeyboard::resize(int width, int height) {
 		auto widthOfText = 0;
 		auto maxMinButtonWidth = 0;
 		for (const auto &button : row) {
-			widthOfText += qMax(button.text.maxWidth(), 1);
+			widthOfText += std::max(button.text.maxWidth(), 1);
 			int minButtonWidth = _st->minButtonWidth(button.iconType);
 			widthForText -= minButtonWidth;
 			accumulate_max(maxMinButtonWidth, minButtonWidth);
@@ -941,7 +948,7 @@ void ReplyKeyboard::resize(int width, int height) {
 
 		auto x = 0.;
 		for (auto &button : row) {
-			int buttonw = qMax(button.text.maxWidth(), 1);
+			int buttonw = std::max(button.text.maxWidth(), 1);
 			float64 textw = buttonw, minw = _st->minButtonWidth(button.iconType);
 			float64 w = textw;
 			if (exact) {
@@ -959,9 +966,9 @@ void ReplyKeyboard::resize(int width, int height) {
 			const auto rectw = static_cast<int>(std::floor(x + w)) - rectx;
 			button.rect = QRect(
 				rectx,
-				qRound(y),
+				int(base::SafeRound(y)),
 				rectw,
-				qRound(buttonHeight - _st->buttonSkip()));
+				int(base::SafeRound(buttonHeight - _st->buttonSkip())));
 			if (rtl()) {
 				button.rect.setX(
 					_width - button.rect.x() - button.rect.width());
@@ -981,7 +988,7 @@ bool ReplyKeyboard::isEnoughSpace(
 		auto s = int(row.size());
 		auto widthLeft = width - ((s - 1) * st.margin + s * 2 * st.padding);
 		for (const auto &button : row) {
-			widthLeft -= qMax(button.text.maxWidth(), 1);
+			widthLeft -= std::max(button.text.maxWidth(), 1);
 			if (widthLeft < 0) {
 				if (row.size() > 3) {
 					return false;
@@ -1011,7 +1018,7 @@ int ReplyKeyboard::naturalWidth() const {
 		for (const auto &button : row) {
 			accumulate_max(
 				rowMaxButtonWidth,
-				qMax(button.text.maxWidth(), 1) + maxMinButtonWidth);
+				std::max(button.text.maxWidth(), 1) + maxMinButtonWidth);
 		}
 
 		const auto rowSize = int(row.size());
@@ -1163,7 +1170,7 @@ void ReplyKeyboard::clickHandlerActiveChanged(
 ReplyKeyboard::ButtonCoords ReplyKeyboard::findButtonCoordsByClickHandler(
 		const ClickHandlerPtr &p) {
 	for (int i = 0, rows = _rows.size(); i != rows; ++i) {
-		auto &row = _rows[i];
+		const auto &row = _rows[i];
 		for (int j = 0, cols = row.size(); j != cols; ++j) {
 			if (row[j].link == p) {
 				return { i, j };
@@ -1258,9 +1265,7 @@ void ReplyKeyboard::Style::paintButton(
 		}
 	}
 	paintButtonIcon(p, st, rect, outerWidth, button.iconType);
-	if (button.type == HistoryMessageMarkupButton::Type::CallbackWithPassword
-		|| button.type == HistoryMessageMarkupButton::Type::Callback
-		|| button.type == HistoryMessageMarkupButton::Type::Game) {
+	if (HistoryMessageMarkupButton::LoadsOnActivate(button.type)) {
 		if (const auto data = button.link->getButton()) {
 			if (data->requestId) {
 				paintButtonLoading(
@@ -1526,6 +1531,12 @@ TextWithEntities ComposeTodoTasksList(
 	return ComposeTodoTasksList(names.size(), names);
 }
 
+QString HistoryServiceGramTransfer::commentText() const {
+	return commentEncrypted
+		? tr::lng_action_gram_transfer_encrypted_comment(tr::now)
+		: TextUtilities::SingleLine(comment);
+}
+
 HistoryDocumentCaptioned::HistoryDocumentCaptioned()
 : caption(st::msgFileMinWidth - rect::m::sum::h(st::msgPadding)) {
 }
@@ -1540,6 +1551,33 @@ HistoryDocumentVoicePlayback::HistoryDocumentVoicePlayback(
 }
 
 HistoryDocumentVoicePlayback::~HistoryDocumentVoicePlayback() = default;
+
+HistoryDocumentVoice &HistoryDocumentVoice::operator=(
+		HistoryDocumentVoice &&other) {
+	if (this == &other) {
+		return *this;
+	}
+	if (_seeking) {
+		stopSeeking();
+	}
+	playback = std::move(other.playback);
+	seekl = std::move(other.seekl);
+	lastDurationMs = base::take(other.lastDurationMs);
+	transcribe = std::move(other.transcribe);
+	transcribeText = std::move(other.transcribeText);
+	round = std::move(other.round);
+	once = std::move(other.once);
+	_seeking = base::take(other._seeking);
+	_seekingStart = base::take(other._seekingStart);
+	_seekingCurrent = base::take(other._seekingCurrent);
+	return *this;
+}
+
+HistoryDocumentVoice::~HistoryDocumentVoice() {
+	if (_seeking) {
+		stopSeeking();
+	}
+}
 
 void HistoryDocumentVoice::ensurePlayback(
 		const HistoryView::Document *that) const {
@@ -1574,7 +1612,8 @@ float64 HistoryDocumentVoice::seekingStart() const {
 }
 
 void HistoryDocumentVoice::setSeekingStart(float64 seekingStart) const {
-	_seekingStart = qRound(seekingStart * kFloatToIntMultiplier);
+	const auto value = seekingStart * kFloatToIntMultiplier;
+	_seekingStart = int(base::SafeRound(value));
 }
 
 float64 HistoryDocumentVoice::seekingCurrent() const {
@@ -1582,5 +1621,6 @@ float64 HistoryDocumentVoice::seekingCurrent() const {
 }
 
 void HistoryDocumentVoice::setSeekingCurrent(float64 seekingCurrent) {
-	_seekingCurrent = qRound(seekingCurrent * kFloatToIntMultiplier);
+	const auto value = seekingCurrent * kFloatToIntMultiplier;
+	_seekingCurrent = int(base::SafeRound(value));
 }

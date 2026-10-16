@@ -15,9 +15,11 @@
 #include <QInputDialog>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QtConcurrentRun>
 #include <fcitx-utils/i18n.h>
-#include <fcitx-utils/standardpath.h>
+#include <fcitx-utils/standardpaths.h>
+#include <filesystem>
 
 namespace fcitx {
 
@@ -228,10 +230,10 @@ void ListEditor::addFileTriggered() {
     }
 
     filename.append(".mb");
-    if (!StandardPath::global().safeSave(
-            StandardPath::Type::PkgData,
-            stringutils::joinPath(QUICK_PHRASE_CONFIG_DIR,
-                                  filename.toLocal8Bit().constData()),
+    if (!StandardPaths::global().safeSave(
+            StandardPathsType::PkgData,
+            std::filesystem::path(QUICK_PHRASE_CONFIG_DIR) /
+                filename.toStdString(),
             [](int) { return true; })) {
         QMessageBox::warning(
             this, _("File Operation Failed"),
@@ -250,10 +252,10 @@ void ListEditor::refreshListTriggered() { loadFileList(); }
 void ListEditor::removeFileTriggered() {
     QString filename = currentFile();
     QString curName = currentName();
-    auto fullname = stringutils::joinPath(
-        StandardPath::global().userDirectory(StandardPath::Type::PkgData),
-        filename.toLocal8Bit().constData());
-    QFile f(fullname.data());
+    auto fullname =
+        StandardPaths::global().userDirectory(StandardPathsType::PkgData) /
+        filename.toStdString();
+    QFile f(QString::fromStdString(fullname.string()));
     if (!f.exists()) {
         int ret = QMessageBox::question(
             this, _("Cannot remove system file"),

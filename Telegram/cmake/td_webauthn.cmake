@@ -13,8 +13,6 @@ PRIVATE
     webauthn/cable_core.cpp
     webauthn/cable_core.h
     webauthn/cable_scanner.h
-    webauthn/cable_tunnel.cpp
-    webauthn/cable_tunnel.h
 )
 
 target_include_directories(td_webauthn
@@ -38,7 +36,6 @@ if (WIN32)
     PRIVATE
         desktop-app::lib_base
         desktop-app::lib_crl
-        Bthprops.lib
     )
 elseif (APPLE)
     nice_target_sources(td_webauthn ${src_loc}

@@ -31,6 +31,11 @@ struct FcitxQtICData {
         : proxy(new FcitxQtInputContextProxy(watcher, watcher)) {}
     FcitxQtICData(const FcitxQtICData &that) = delete;
     ~FcitxQtICData() { delete proxy; }
+
+    FcitxQtInputContextProxy *validIC() const {
+        return proxy && proxy->isValid() ? proxy : nullptr;
+    }
+
     quint64 capability = 0;
     FcitxQtInputContextProxy *proxy;
     QRect rect;
@@ -147,6 +152,7 @@ private:
     void createICData(QWidget *w);
     FcitxQtInputContextProxy *validIC();
     FcitxQtInputContextProxy *validICByWindow(QWidget *window);
+    FcitxQtICData *icDataByWindow(QWidget *window);
     bool filterEventFallback(unsigned int keyval, unsigned int keycode,
                              unsigned int state, bool isRelaese);
 
@@ -155,8 +161,8 @@ private:
     QString commitPreedit_;
     FcitxQtFormattedPreeditList preeditList_;
     int cursorPos_;
-    bool useSurroundingText_;
-    bool syncMode_;
+    const bool useSurroundingText_;
+    const bool syncMode_;
     std::unordered_map<QWidget *, FcitxQtICData> icMap_;
     QPointer<QWidget> lastWindow_;
     bool destroy_;

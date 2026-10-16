@@ -40,9 +40,12 @@ class Session;
 namespace Ui {
 class VerticalLayout;
 class FlatLabel;
+class InputField;
+class SearchFieldController;
 class SettingsButton;
 class AbstractButton;
 class MediaSlider;
+class ToggleView;
 } // namespace Ui
 
 namespace Ui::Menu {
@@ -136,6 +139,9 @@ public:
 		close();
 	}
 	[[nodiscard]] virtual rpl::producer<QString> title() = 0;
+	[[nodiscard]] virtual rpl::producer<QString> titleBadge() {
+		return nullptr;
+	}
 	virtual void sectionSaveChanges(FnMut<void()> done) {
 		done();
 	}
@@ -277,6 +283,15 @@ void CreateRightLabel(
 	rpl::producer<QString> buttonText,
 	Ui::Text::MarkedContext context = {});
 
+struct SeparatedToggle {
+	not_null<Ui::SettingsButton*> button;
+	not_null<Ui::ToggleView*> checkView;
+};
+[[nodiscard]] SeparatedToggle AddSeparatedToggle(
+	not_null<Button*> button,
+	const style::SettingsButton &st,
+	bool checked);
+
 struct DividerWithLottieDescriptor {
 	QString lottie;
 	std::optional<anim::repeat> lottieRepeat;
@@ -294,6 +309,7 @@ void AddDividerTextWithLottie(
 struct LottieIcon {
 	object_ptr<Ui::RpWidget> widget;
 	Fn<void(anim::repeat repeat)> animate;
+	Fn<bool()> animating;
 };
 [[nodiscard]] LottieIcon CreateLottieIcon(
 	not_null<QWidget*> parent,
@@ -324,5 +340,21 @@ void AddPremiumStar(
 	not_null<Button*> button,
 	bool credits,
 	Fn<bool()> isPaused);
+
+struct SectionSearchRow {
+	std::unique_ptr<Ui::SearchFieldController> controller;
+	not_null<Ui::RpWidget*> row;
+	not_null<Ui::InputField*> field;
+};
+
+[[nodiscard]] SectionSearchRow CreateSectionSearchRow(
+	not_null<QWidget*> parent,
+	const QString &query = QString());
+
+[[nodiscard]] QStringList SearchWords(const QString &text);
+
+[[nodiscard]] bool MatchesWords(
+	const QStringList &terms,
+	const QStringList &words);
 
 } // namespace Settings

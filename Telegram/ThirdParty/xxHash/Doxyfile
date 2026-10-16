@@ -2,7 +2,7 @@
 DOXYFILE_ENCODING      = UTF-8
 
 PROJECT_NAME           = "xxHash"
-PROJECT_NUMBER         = "0.8.2"
+PROJECT_NUMBER         = "0.8.4"
 PROJECT_BRIEF          = "Extremely fast non-cryptographic hash function"
 OUTPUT_DIRECTORY       = doxygen
 OUTPUT_LANGUAGE        = English
@@ -38,6 +38,7 @@ EXPAND_ONLY_PREDEF     = YES
 # Predefine some macros to clean up the output.
 PREDEFINED             = "XXH_DOXYGEN=" \
                          "XXH_PUBLIC_API=" \
+                         "XXH_NOESCAPE=" \
                          "XXH_FORCE_INLINE=static inline" \
                          "XXH_NO_INLINE=static" \
                          "XXH_RESTRICT=restrict" \

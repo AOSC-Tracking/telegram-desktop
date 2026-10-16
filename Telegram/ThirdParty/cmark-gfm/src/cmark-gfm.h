@@ -579,6 +579,17 @@ cmark_parser *cmark_parser_new(int options);
 CMARK_GFM_EXPORT
 cmark_parser *cmark_parser_new_with_mem(int options, cmark_mem *mem);
 
+/** Fork addition: sets a host-owned abort flag the parser polls while
+ * parsing. A host that bounds parse memory through a custom cmark_mem
+ * raises this flag when its budget is exhausted; the parser then stops
+ * at its next checkpoint, chosen so that everything allocated so far is
+ * still released through normal cleanup paths. cmark_parser_finish()
+ * frees the partial tree and returns NULL for such a parse.
+ */
+CMARK_GFM_EXPORT
+void cmark_parser_set_allocation_abort_flag(cmark_parser *parser,
+                                            int *abort_flag);
+
 /** Frees memory allocated for a parser object.
  */
 CMARK_GFM_EXPORT

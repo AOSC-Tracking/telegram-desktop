@@ -6,6 +6,7 @@
 //
 #include "ui/widgets/tooltip.h"
 
+#include "ui/integration.h"
 #include "ui/ui_utility.h"
 #include "ui/painter.h"
 #include "ui/platform/ui_platform_utility.h"
@@ -86,7 +87,7 @@ void Tooltip::popup(const QPoint &m, const QString &text, const style::Tooltip *
 
 	_point = m;
 	_st = st;
-	_text = Text::String(_st->textStyle, text, kPlainTextOptions, _st->widthMax);
+	_text = Text::String(_st->textStyle, text, kPlainTextOptions, 1);
 	accessibilityNameChanged();
 
 	_useTransparency = Platform::TranslucentWindowsSupported();
@@ -146,16 +147,20 @@ void Tooltip::popup(const QPoint &m, const QString &text, const style::Tooltip *
 		// adjust tooltip position
 		const auto r = screen->availableGeometry();
 		if (r.x() + r.width() - _st->skip < p.x() + s.width() && p.x() + s.width() > m.x()) {
-			p.setX(qMax(r.x() + r.width() - int32(_st->skip) - s.width(), m.x() - s.width()));
+			p.setX(std::max(
+				r.x() + r.width() - int32(_st->skip) - s.width(),
+				m.x() - s.width()));
 		}
 		if (r.x() + _st->skip > p.x() && p.x() < m.x()) {
-			p.setX(qMin(m.x(), r.x() + int32(_st->skip)));
+			p.setX(std::min(m.x(), r.x() + int32(_st->skip)));
 		}
 		if (r.y() + r.height() - _st->skip < p.y() + s.height()) {
 			p.setY(m.y() - s.height() - _st->skip);
 		}
 		if (r.y() > p.x()) {
-			p.setY(qMin(m.y() + _st->shift.y(), r.y() + r.height() - s.height()));
+			p.setY(std::min(
+				m.y() + _st->shift.y(),
+				r.y() + r.height() - s.height()));
 		}
 	}
 
@@ -488,7 +493,7 @@ object_ptr<FlatLabel> MakeNiceTooltipLabel(
 		context);
 	const auto raw = result.data();
 	std::move(text) | rpl::on_next([=, &st] {
-		raw->resizeToWidth(qMin(maxWidth, raw->textMaxWidth()));
+		raw->resizeToWidth(std::min(maxWidth, raw->textMaxWidth()));
 		const auto desired = raw->textMaxWidth();
 		if (desired <= maxWidth) {
 			raw->resizeToWidth(desired);
@@ -527,6 +532,7 @@ object_ptr<RpWidget> MakeTooltipWithClose(
 	const auto button = CreateChild<IconButton>(
 		result.data(),
 		closeSt);
+	button->setAccessibleName(Integration::Instance().phraseButtonClose());
 	result->sizeValue(
 	) | rpl::on_next([=](QSize size) {
 		button->resize(button->width(), size.height());

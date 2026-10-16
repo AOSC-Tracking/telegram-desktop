@@ -21,7 +21,12 @@ cmark_iter *cmark_iter_new(cmark_node *root) {
   return iter;
 }
 
-void cmark_iter_free(cmark_iter *iter) { iter->mem->free(iter); }
+void cmark_iter_free(cmark_iter *iter) {
+  if (iter == NULL) {
+    return;
+  }
+  iter->mem->free(iter);
+}
 
 static bool S_is_leaf(cmark_node *node) {
   switch (node->type) {
@@ -39,6 +44,9 @@ static bool S_is_leaf(cmark_node *node) {
 }
 
 cmark_event_type cmark_iter_next(cmark_iter *iter) {
+  if (iter == NULL) {
+    return CMARK_EVENT_DONE;
+  }
   cmark_event_type ev_type = iter->next.ev_type;
   cmark_node *node = iter->next.node;
 
@@ -79,18 +87,25 @@ cmark_event_type cmark_iter_next(cmark_iter *iter) {
 
 void cmark_iter_reset(cmark_iter *iter, cmark_node *current,
                       cmark_event_type event_type) {
+  if (iter == NULL || current == NULL) {
+    return;
+  }
   iter->next.ev_type = event_type;
   iter->next.node = current;
   cmark_iter_next(iter);
 }
 
-cmark_node *cmark_iter_get_node(cmark_iter *iter) { return iter->cur.node; }
-
-cmark_event_type cmark_iter_get_event_type(cmark_iter *iter) {
-  return iter->cur.ev_type;
+cmark_node *cmark_iter_get_node(cmark_iter *iter) {
+  return iter ? iter->cur.node : NULL;
 }
 
-cmark_node *cmark_iter_get_root(cmark_iter *iter) { return iter->root; }
+cmark_event_type cmark_iter_get_event_type(cmark_iter *iter) {
+  return iter ? iter->cur.ev_type : CMARK_EVENT_NONE;
+}
+
+cmark_node *cmark_iter_get_root(cmark_iter *iter) {
+  return iter ? iter->root : NULL;
+}
 
 void cmark_consolidate_text_nodes(cmark_node *root) {
   if (root == NULL) {

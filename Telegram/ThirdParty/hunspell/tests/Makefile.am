@@ -2,10 +2,18 @@
 
 SUBDIRS = suggestiontest
 
+AM_CPPFLAGS = -I$(top_srcdir)/src/hunspell -I$(top_builddir)/src/hunspell $(HUNSPELL_STATIC_DEFINE)
+
+check_PROGRAMS = gh1032 gh1058
+gh1032_SOURCES = gh1032.cxx
+gh1032_LDADD = $(top_builddir)/src/hunspell/libhunspell-1.7.la
+gh1058_SOURCES = gh1058.cxx
+gh1058_LDADD = $(top_builddir)/src/hunspell/libhunspell-1.7.la
+
 TEST_EXTENSIONS = .dic
 AM_TESTS_ENVIRONMENT = export HUNSPELL=$(top_builddir)/src/tools/hunspell; \
                        export ANALYZE=$(top_builddir)/src/tools/analyze; \
-                       export LIBTOOL=$(top_builddir)/libtool;
+                       export LIBTOOL="$(LIBTOOL)";
 DIC_LOG_COMPILER = $(top_srcdir)/tests/test.sh
 
 TESTS =	\
@@ -117,6 +125,7 @@ morph.dic \
 fullstrip.dic \
 iconv.dic \
 iconv2.dic \
+iconv3.dic \
 oconv.dic \
 oconv2.dic \
 encoding.dic \
@@ -125,6 +134,7 @@ opentaal_forbiddenword1.dic \
 opentaal_forbiddenword2.dic \
 opentaal_keepcase.dic \
 arabic.dic \
+arabic_nsm.dic \
 2970240.dic \
 2970242.dic \
 breakoff.dic \
@@ -138,7 +148,35 @@ hu.dic \
 warn.dic \
 timelimit.dic \
 ignoresug.dic \
-limit-multiple-compounding.dic
+limit-multiple-compounding.dic \
+iconv_break_overflow.dic \
+gh1076.dic \
+pfxdot.dic \
+gh749.dic \
+gh1122.dic \
+gh353.dic \
+gh1032.test \
+gh1058.test \
+gh1002.dic \
+gh-hunzip-overflow.test \
+gh1086.test \
+gh1018.test \
+gh1044.test \
+gh646.test \
+gh910.test \
+ofz51432.test \
+ofz5627151457255424.test \
+gh1095.test \
+compound_wnum_overflow.test \
+gh1116.test \
+gh211.test \
+gh303.test \
+gh489.test \
+gh100.test \
+gh106.dic \
+gh1045.dic \
+gh1060.dic \
+abi-check.sh
 
 clean-local:
 	-rm -rf testSubDir
@@ -568,6 +606,9 @@ iconv.good \
 iconv2.aff \
 iconv2.dic \
 iconv2.good \
+iconv3.aff \
+iconv3.dic \
+iconv3.good \
 oconv.aff \
 oconv.dic \
 oconv.good \
@@ -605,6 +646,9 @@ opentaal_keepcase.wrong \
 arabic.aff \
 arabic.dic \
 arabic.wrong \
+arabic_nsm.aff \
+arabic_nsm.dic \
+arabic_nsm.good \
 2970240.aff \
 2970240.dic \
 2970240.good \
@@ -653,6 +697,7 @@ warn.good \
 timelimit.aff \
 timelimit.dic \
 timelimit.good \
+timelimit.sug \
 timelimit.wrong \
 ignoresug.aff \
 ignoresug.dic \
@@ -662,5 +707,98 @@ limit-multiple-compounding.aff \
 limit-multiple-compounding.dic \
 limit-multiple-compounding.good \
 limit-multiple-compounding.wrong \
-\
-utf8_nonbmp.test
+iconv_break_overflow.aff \
+iconv_break_overflow.dic \
+iconv_break_overflow.wrong \
+compound_wnum_overflow.aff \
+compound_wnum_overflow.dic \
+compound_wnum_overflow.test \
+gh1032.cxx \
+gh1032.aff \
+gh1032.dic \
+gh1032.test \
+gh1058.cxx \
+gh1058.aff \
+gh1058.dic \
+gh1058.test \
+gh1002.aff \
+gh1002.dic \
+gh1002.wrong \
+gh1002.sug \
+gh-hunzip-overflow.aff.hz \
+gh-hunzip-overflow.dic \
+gh-hunzip-overflow.test \
+gh1086.aff \
+gh1086.dic \
+gh1086.txt \
+gh1086.test \
+gh1018.aff \
+gh1018.dic \
+gh1018.test \
+gh1044.aff \
+gh1044.dic \
+gh1044.words \
+gh1044.test \
+gh646.aff \
+gh646.dic \
+gh646.txt \
+gh646.test \
+gh1076.aff \
+gh1076.dic \
+gh1076.good \
+gh1076.wrong \
+pfxdot.aff \
+pfxdot.dic \
+pfxdot.good \
+pfxdot.wrong \
+gh749.aff \
+gh749.dic \
+gh749.good \
+gh749.wrong \
+gh1122.aff \
+gh1122.dic \
+gh1122.good \
+gh1122.wrong \
+gh353.aff \
+gh353.dic \
+gh353.good \
+gh353.wrong \
+gh910.test \
+gh910.aff \
+gh910.dic \
+gh910.pers \
+gh910.txt \
+ofz51432.aff \
+ofz51432.dic \
+ofz51432.test \
+ofz5627151457255424.aff \
+ofz5627151457255424.dic \
+ofz5627151457255424.test \
+gh1095.aff \
+gh1095.dic \
+gh1095.test \
+gh1116.aff \
+gh1116.dic \
+gh1116.test \
+gh211.test \
+gh303.test \
+gh106.aff \
+gh106.dic \
+gh106.good \
+gh106.wrong \
+gh489.aff \
+gh489.dic \
+gh489.test \
+gh100.aff \
+gh100.dic \
+gh100.test \
+gh1045.aff \
+gh1045.dic \
+gh1045.good \
+gh1060.aff \
+gh1060.dic \
+gh1060.good \
+gh1060.wrong \
+utf8_nonbmp.test \
+abi-check.sh \
+abi-baseline.txt

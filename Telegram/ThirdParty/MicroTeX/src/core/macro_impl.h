@@ -95,6 +95,12 @@ inline macro(color) {
 }
 
 inline macro(newcolumntype) {
+  // Real column-type names are 1-2 characters. A long registered name makes
+  // parsePositions() probe every prefix of that length for every character
+  // of an array spec -- cubic in the spec length, which the step budget
+  // there cannot see because it counts loop turns, not probes.
+  if (args[1].length() > 16)
+    throw ex_parse("Column type name is too long!");
   MatrixAtom::defineColumnSpecifier(args[1], args[2]);
   return nullptr;
 }
@@ -245,10 +251,10 @@ inline macro(above) {
   auto num = tp.popFormulaAtom();
   auto[unit, value] = tp.getLength();
   // A bare \above with no dimension leaves the parser at end-of-input, where
-  // getLength() returns UnitType::none (= -1). Building the FractionAtom with
-  // that unit later indexes the unit-conversion table at -1 (out of bounds)
-  // while measuring the fraction rule, so reject the missing argument here
-  // instead of rendering a broken fraction.
+  // getLength() returns UnitType::none (= -1). A FractionAtom built with that
+  // unit names no conversion, so getFactor measures its rule as no thickness
+  // at all -- reject the missing argument here instead of silently rendering
+  // the fraction with no rule.
   if (unit == UnitType::none) throw ex_parse("Missing dimension for \\above!");
   auto den = Formula(tp, tp.getOverArgument(), false)._root;
   if (num == nullptr || den == nullptr)
@@ -548,19 +554,19 @@ inline macro(backslashcr) {
 }
 
 inline macro(smallmatrixATATenv) {
-  auto* arr = new ArrayFormula();
-  TeXParser parser(tp.isPartial(), args[1], arr, false);
+  auto arr = sptrOf<ArrayFormula>();
+  TeXParser parser(tp.isPartial(), args[1], arr.get(), false);
   parser.parse();
   arr->checkDimensions();
-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::smallMatrix);
+  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::smallMatrix);
 }
 
 inline macro(matrixATATenv) {
-  auto* arr = new ArrayFormula();
-  TeXParser parser(tp.isPartial(), args[1], arr, false);
+  auto arr = sptrOf<ArrayFormula>();
+  TeXParser parser(tp.isPartial(), args[1], arr.get(), false);
   parser.parse();
   arr->checkDimensions();
-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::matrix);
+  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::matrix);
 }
 
 // Upper bound on the column span of \multicolumn / \hdotsfor. ArrayFormula::
@@ -591,38 +597,44 @@ inline macro(hdotsfor) {
     throw ex_parse("Bad column span in hdotsfor!");
   float f = 1.f;
   if (!args[2].empty()) valueof(args[2], f);
+  // The optional coefficient scales the gap between the dots, so it ends up
+  // dividing the span width to decide how many dots fit. Every other length
+  // in a formula is cleared of non-finite values by SpaceAtom::getLength;
+  // this one is read straight off the argument, and infinity here made that
+  // count NaN, whose conversion to int is undefined.
+  if (!std::isfinite(f)) f = 1.f;
   tp.addAtom(sptrOf<HdotsforAtom>(n, f));
   ((ArrayFormula*) tp._formula)->addCol(n);
   return nullptr;
 }
 
 inline macro(arrayATATenv) {
-  auto* arr = new ArrayFormula();
-  TeXParser parser(tp.isPartial(), args[2], arr, false);
+  auto arr = sptrOf<ArrayFormula>();
+  TeXParser parser(tp.isPartial(), args[2], arr.get(), false);
   parser.parse();
   arr->checkDimensions();
-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), args[1], true);
+  return sptrOf<MatrixAtom>(tp.isPartial(), arr, args[1], true);
 }
 
 inline macro(alignATATenv) {
-  auto* arr = new ArrayFormula();
-  TeXParser parser(tp.isPartial(), args[1], arr, false);
+  auto arr = sptrOf<ArrayFormula>();
+  TeXParser parser(tp.isPartial(), args[1], arr.get(), false);
   parser.parse();
   arr->checkDimensions();
-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::align);
+  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::align);
 }
 
 inline macro(flalignATATenv) {
-  auto* arr = new ArrayFormula();
-  TeXParser parser(tp.isPartial(), args[1], arr, false);
+  auto arr = sptrOf<ArrayFormula>();
+  TeXParser parser(tp.isPartial(), args[1], arr.get(), false);
   parser.parse();
   arr->checkDimensions();
-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::flAlign);
+  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::flAlign);
 }
 
 inline macro(alignatATATenv) {
-  auto* arr = new ArrayFormula();
-  TeXParser par(tp.isPartial(), args[2], arr, false);
+  auto arr = sptrOf<ArrayFormula>();
+  TeXParser par(tp.isPartial(), args[2], arr.get(), false);
   par.parse();
   arr->checkDimensions();
   size_t n = 0;
@@ -631,20 +643,20 @@ inline macro(alignatATATenv) {
   // the layout only depends on the columns actually present.
   if (arr->cols() > 2 * n) throw ex_parse("Bad number of equations in alignat environment!");
 
-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::alignAt);
+  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::alignAt);
 }
 
 inline macro(alignedATATenv) {
-  auto* arr = new ArrayFormula();
-  TeXParser p(tp.isPartial(), args[1], arr, false);
+  auto arr = sptrOf<ArrayFormula>();
+  TeXParser p(tp.isPartial(), args[1], arr.get(), false);
   p.parse();
   arr->checkDimensions();
-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::aligned);
+  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::aligned);
 }
 
 inline macro(alignedatATATenv) {
-  auto* arr = new ArrayFormula();
-  TeXParser p(tp.isPartial(), args[2], arr, false);
+  auto arr = sptrOf<ArrayFormula>();
+  TeXParser p(tp.isPartial(), args[2], arr.get(), false);
   p.parse();
   arr->checkDimensions();
   size_t n = 0;
@@ -655,12 +667,12 @@ inline macro(alignedatATATenv) {
     throw ex_parse("Bad number of equations in alignedat environment!");
   }
 
-  return sptrOf<MatrixAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MatrixType::alignedAt);
+  return sptrOf<MatrixAtom>(tp.isPartial(), arr, MatrixType::alignedAt);
 }
 
 inline macro(multlineATATenv) {
-  auto* arr = new ArrayFormula();
-  TeXParser p(tp.isPartial(), args[1], arr, false);
+  auto arr = sptrOf<ArrayFormula>();
+  TeXParser p(tp.isPartial(), args[1], arr.get(), false);
   p.parse();
   arr->checkDimensions();
   if (arr->cols() > 1) {
@@ -668,40 +680,42 @@ inline macro(multlineATATenv) {
   }
   if (arr->cols() == 0) return nullptr;
 
-  return sptrOf<MultlineAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MultiLineType::multiline);
+  return sptrOf<MultlineAtom>(tp.isPartial(), arr, MultiLineType::multiline);
 }
 
 inline macro(gatherATATenv) {
-  auto* arr = new ArrayFormula();
-  TeXParser p(tp.isPartial(), args[1], arr, false);
+  auto arr = sptrOf<ArrayFormula>();
+  TeXParser p(tp.isPartial(), args[1], arr.get(), false);
   p.parse();
   arr->checkDimensions();
   if (arr->cols() > 1) throw ex_parse("Requires exact one column in gather envrionment!");
   if (arr->cols() == 0) return nullptr;
 
   return sptrOf<MultlineAtom>(
-    tp.isPartial(), sptr<ArrayFormula>(arr), MultiLineType::gather);
+    tp.isPartial(), arr, MultiLineType::gather);
 }
 
 inline macro(gatheredATATenv) {
-  auto* arr = new ArrayFormula();
-  TeXParser p(tp.isPartial(), args[1], arr, false);
+  auto arr = sptrOf<ArrayFormula>();
+  TeXParser p(tp.isPartial(), args[1], arr.get(), false);
   p.parse();
   arr->checkDimensions();
   if (arr->cols() > 1) throw ex_parse("Requires exact one column in gathered envrionment!");
   if (arr->cols() == 0) return nullptr;
 
-  return sptrOf<MultlineAtom>(tp.isPartial(), sptr<ArrayFormula>(arr), MultiLineType::gathered);
+  return sptrOf<MultlineAtom>(tp.isPartial(), arr, MultiLineType::gathered);
 }
 
 inline macro(shoveright) {
-  auto a = Formula(tp, args[1])._root;
+  auto a = privateCopy(Formula(tp, args[1])._root);
+  if (a == nullptr) return a;
   a->_alignment = Alignment::right;
   return a;
 }
 
 inline macro(shoveleft) {
-  auto a = Formula(tp, args[1])._root;
+  auto a = privateCopy(Formula(tp, args[1])._root);
+  if (a == nullptr) return a;
   a->_alignment = Alignment::left;
   return a;
 }
@@ -983,7 +997,10 @@ inline macro(ovalbox) {
 inline macro(cornersize) {
   float size = 0.5f;
   valueof(args[1], size);
-  if (size <= 0 || size > 0.5f) size = 0.5f;
+  // NaN fails both comparisons, so write the clamp as a range membership
+  // test instead: anything outside (0, 0.5], including NaN and inf, gets
+  // the default rather than flowing into OvalBox's radius arithmetic.
+  if (!(size > 0.f && size <= 0.5f)) size = 0.5f;
   OvalAtom::_multiplier = size;
   OvalAtom::_diameter = 0;
   return nullptr;

@@ -66,6 +66,15 @@ ComposeIcons {
 	menuRecentRemove: icon;
 	menuGifAdd: icon;
 	menuGifRemove: icon;
+	menuGifCaption: icon;
+	menuSetAdd: icon;
+	menuSetShare: icon;
+	menuSetCopyLink: icon;
+	menuSetRemove: icon;
+	menuEmojiStatus: icon;
+	menuEmojiCopy: icon;
+	menuEmojiViewPack: icon;
+	menuEmojiRemoveRecent: icon;
 	menuMute: icon;
 	menuSchedule: icon;
 	menuWhenOnline: icon;
@@ -73,6 +82,8 @@ ComposeIcons {
 	menuBelow: icon;
 	menuAbove: icon;
 	menuQualityHigh: icon;
+	menuCover: icon;
+	menuCoverRemove: icon;
 	menuPrice: icon;
 	menuEditStars: icon;
 
@@ -119,6 +130,7 @@ EmojiPan {
 	fadeLeft: icon;
 	fadeRight: icon;
 	menu: PopupMenu;
+	menuAttention: Menu;
 	expandedSeparator: MenuSeparator;
 	tabs: SettingsSlider;
 	search: TabbedSearch;
@@ -132,6 +144,7 @@ EmojiPan {
 	searchPackTextTop: pixels;
 	searchPackTextPadding: pixels;
 	searchPacksBottom: pixels;
+	searchPackRipple: RippleAnimation;
 	searchResultsHeight: pixels;
 	searchResultsTextTop: pixels;
 	searchSwapDuration: int;
@@ -140,6 +153,9 @@ EmojiPan {
 	searchBackIconTop: pixels;
 	searchBackTextLeft: pixels;
 	searchBackTextTop: pixels;
+	photoButtonIcon: icon;
+	audioButtonIcon: icon;
+	linkButtonIcon: icon;
 	colorAll: IconButton;
 	colorAllLabel: FlatLabel;
 	removeSet: IconButton;
@@ -174,6 +190,8 @@ SendButton {
 	recordSize: size;
 	sendDisabledFg: color;
 	sendIconFg: color;
+	stopSize: size;
+	stopRadius: pixels;
 }
 
 RecordBarLock {
@@ -362,6 +380,7 @@ emojiPanExpand: RoundButton(defaultActiveButton) {
 	height: 19px;
 	textTop: 1px;
 }
+emojiPanExpandTightWidth: -4px;
 
 stickersTrendingAddTop: 14px;
 stickersTrendingAdd: RoundButton(defaultActiveButton) {
@@ -439,6 +458,30 @@ stickersScroll: ScrollArea(boxScroll) {
 	deltat: 19px;
 	deltab: 9px;
 }
+stickerSetBox: Box(defaultBox) {
+	buttonPadding: margins(16px, 12px, 16px, 12px);
+	buttonHeight: 42px;
+	buttonWide: true;
+	button: RoundButton(defaultActiveButton) {
+		height: 42px;
+		textTop: 12px;
+		style: semiboldTextStyle;
+	}
+}
+stickerSetBoxRemoveButton: RoundButton(attentionBoxButton) {
+	height: 42px;
+	textTop: 12px;
+	style: semiboldTextStyle;
+}
+stickerSetBoxMenu: IconButton(boxTitleClose) {
+	width: 40px;
+
+	icon: icon {{ "title_menu_dots", boxTitleCloseFg }};
+	iconOver: icon {{ "title_menu_dots", boxTitleCloseFgOver }};
+
+	rippleAreaPosition: point(0px, 4px);
+}
+stickerSetBoxBadgeSkip: 6px;
 stickersRowDisabledOpacity: 0.4;
 stickersRowDuration: 200;
 
@@ -447,6 +490,7 @@ stickersAddCellPlusThickness: 2px;
 stickersAddCellBgRadius: 28px;
 emojiSetAddCellPlusSize: 13px;
 emojiSetAddCellBgRadius: 16px;
+stickersAddPanelSkip: 8px;
 
 stickersEmojiPickerSelectedBg: windowBgActive;
 
@@ -589,6 +633,13 @@ stickerIconMove: 400;
 stickerPreviewDuration: 150;
 stickerPreviewMin: 0.1;
 stickerPanFirstAfterShortcutsSkip: 4px;
+stickersPhotoRowPadding: margins(0px, 12px, 0px, 12px);
+stickersPhotoButtonHeight: 36px;
+stickersPhotoButtonRadius: 8px;
+stickersPhotoButtonPadding: margins(6px, 0px, 12px, 0px);
+stickersPhotoButtonIconSkip: 4px;
+stickersPhotoButtonFont: font(14px bold);
+stickersPhotoButtonSkip: 10px;
 mediaPreviewPhotoSkip: 48px;
 
 emojiPanColorAll: IconButton(stickerPanRemoveSet) {
@@ -686,6 +737,15 @@ defaultComposeIcons: ComposeIcons {
 	menuRecentRemove: menuIconDelete;
 	menuGifAdd: menuIconGif;
 	menuGifRemove: menuIconDelete;
+	menuGifCaption: menuIconEdit;
+	menuSetAdd: menuIconAdd;
+	menuSetShare: menuIconShare;
+	menuSetCopyLink: menuIconLink;
+	menuSetRemove: menuIconDelete;
+	menuEmojiStatus: menuIconEmoji;
+	menuEmojiCopy: menuIconCopy;
+	menuEmojiViewPack: menuIconShowAll;
+	menuEmojiRemoveRecent: menuIconCancel;
 	menuMute: menuIconMute;
 	menuSchedule: menuIconSchedule;
 	menuWhenOnline: menuIconWhenOnline;
@@ -693,6 +753,8 @@ defaultComposeIcons: ComposeIcons {
 	menuBelow: menuIconBelow;
 	menuAbove: menuIconAbove;
 	menuQualityHigh: menuIconQualityHigh;
+	menuCover: menuIconEdit;
+	menuCoverRemove: menuIconCancel;
 	menuPrice: menuIconEarn;
 
 	stripBubble: icon{
@@ -745,6 +807,7 @@ defaultEmojiPan: EmojiPan {
 	fadeLeft: icon {{ "fade_horizontal-flip_horizontal", emojiPanCategories }};
 	fadeRight: icon {{ "fade_horizontal", emojiPanCategories }};
 	menu: popupMenuWithIcons;
+	menuAttention: menuWithIconsAttention;
 	expandedSeparator: MenuSeparator(defaultMenuSeparator) {
 		padding: margins(0px, 4px, 0px, 4px);
 		width: 6px;
@@ -761,6 +824,7 @@ defaultEmojiPan: EmojiPan {
 	searchPackTextTop: 55px;
 	searchPackTextPadding: 5px;
 	searchPacksBottom: 0px;
+	searchPackRipple: defaultRippleAnimation;
 	searchResultsHeight: 20px;
 	searchResultsTextTop: 3px;
 	searchSwapDuration: 100;
@@ -769,6 +833,9 @@ defaultEmojiPan: EmojiPan {
 	searchBackIconTop: 6px;
 	searchBackTextLeft: 40px;
 	searchBackTextTop: 10px;
+	photoButtonIcon: icon {{ "photo_editor/camera-24x24", windowFg }};
+	audioButtonIcon: icon {{ "photo_editor/widget_music", windowFg }};
+	linkButtonIcon: icon {{ "limits/links", windowFg }};
 	colorAll: emojiPanColorAll;
 	colorAllLabel: emojiPanColorAllLabel;
 	removeSet: stickerPanRemoveSet;
@@ -1037,6 +1104,7 @@ historyBusinessBotPhoto: UserpicButton(defaultUserpicButton) {
 }
 historyBusinessBotName: FlatLabel(defaultFlatLabel) {
 	style: semiboldTextStyle;
+	maxHeight: 20px;
 }
 historyBusinessBotStatus: FlatLabel(historyContactStatusLabel) {
 	textFg: windowSubTextFg;
@@ -1186,6 +1254,16 @@ historyUnreadPollVotes: TwoIconButton(historyToDown) {
 	iconAbove: icon {{ "history_unread_poll_vote-40x40", historyToDownFg, point(6px, 6px) }};
 	iconAboveOver: icon {{ "history_unread_poll_vote-40x40", historyToDownFgOver, point(6px, 6px) }};
 }
+historyStash: TwoIconButton(historyToDown) {
+	iconAbove: icon {{ "history_stash_bubble-40x40", historyToDownFg, point(6px, 6px) }};
+	iconAboveOver: icon {{ "history_stash_bubble-40x40", historyToDownFgOver, point(6px, 6px) }};
+}
+historyStashArrow: icon {{ "history_stash_arrow-40x40", historyToDownFg, point(6px, 6px) }};
+historyStashArrowOver: icon {{ "history_stash_arrow-40x40", historyToDownFgOver, point(6px, 6px) }};
+historyStashArrowClipPosition: point(18px, 28px);
+historyStashArrowClipSize: size(16px, 12px);
+historyStashArrowTravel: 12px;
+historyStashBubbleTravel: 4px;
 historyUnreadThingsSkip: 4px;
 
 historyQuoteStyle: QuoteStyle(defaultQuoteStyle) {
@@ -1234,7 +1312,6 @@ historyComposeField: InputField(defaultInputField) {
 	duration: 100;
 }
 historyComposeFieldMaxHeight: 224px;
-historyRichMessagePreviewHeight: 72px;
 historyComposeFieldFadeHeight: 6px;
 historySendRight: 2px;
 historySendPadding: 9px;
@@ -1379,7 +1456,6 @@ historyRecordMinorBlobMaxRadius: 47px;
 historyRecordMajorBlobMinRadius: 43px;
 historyRecordMajorBlobMaxRadius: 50px;
 
-
 historyRecordLockTopShadow: icon {{ "voice_lock/record_lock_top_shadow", historyToDownShadow }};
 historyRecordLockTop: icon {{ "voice_lock/record_lock_top", historyToDownBg }};
 historyRecordLockBottomShadow: icon {{ "voice_lock/record_lock_bottom_shadow", historyToDownShadow }};
@@ -1394,7 +1470,6 @@ historyRecordDelete: IconButton(historyAttach) {
 	iconPosition: point(10px, 11px);
 }
 historyRecordWaveformBgMargins: margins(5px, 8px, 5px, 9px);
-
 
 historyRecordTooltip: ImportantTooltip(defaultImportantTooltip) {
 	padding: margins(4px, 4px, 4px, 4px);
@@ -1447,6 +1522,8 @@ historySend: SendButton {
 	recordSize: size(26px, 26px);
 	sendDisabledFg: historyComposeIconFg;
 	sendIconFg: historySendIconFg;
+	stopSize: size(14px, 14px);
+	stopRadius: 3px;
 }
 historyAiComposeButton: IconButton(historyAttach) {
 	width: 28px;
@@ -1465,6 +1542,13 @@ historySendAsFileButton: IconButton(historyAiComposeButton) {
 historyExpandComposeButton: IconButton(historyAiComposeButton) {
 	icon: icon {{ "menu/rich/expand-20x20", historyComposeIconFg }};
 	iconOver: icon {{ "menu/rich/expand-20x20", historyComposeIconFgOver }};
+}
+historyDiscardRichDraftButton: IconButton(historyAiComposeButton) {
+	width: 34px;
+	height: 34px;
+	rippleAreaSize: 34px;
+	icon: icon {{ "chat/input_discard-26x26", historyComposeIconFg }};
+	iconOver: icon {{ "chat/input_discard-26x26", historyComposeIconFgOver }};
 }
 historyAiComposeTooltipSkip: 8px;
 importantTooltipHide: IconButton(defaultIconButton) {

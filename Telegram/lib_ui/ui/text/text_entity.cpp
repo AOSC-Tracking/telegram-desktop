@@ -1680,7 +1680,11 @@ void ParseEntities(TextWithEntities &result, int32 flags) {
 		auto mDomain = qthelp::RegExpDomain().match(result.text, matchOffset);
 		auto mExplicitDomain = qthelp::RegExpDomainExplicit().match(result.text, matchOffset);
 		auto mHashtag = withHashtags ? RegExpHashtag(true).match(result.text, matchOffset) : QRegularExpressionMatch();
-		auto mMention = withMentions ? RegExpMention().match(result.text, qMax(mentionSkip, matchOffset)) : QRegularExpressionMatch();
+		auto mMention = withMentions
+			? RegExpMention().match(
+				result.text,
+				std::max(mentionSkip, matchOffset))
+			: QRegularExpressionMatch();
 		auto mBotCommand = withBotCommands ? RegExpBotCommand().match(result.text, matchOffset) : QRegularExpressionMatch();
 
 		auto lnkType = EntityType::Url;
@@ -1725,7 +1729,9 @@ void ParseEntities(TextWithEntities &result, int32 flags) {
 					&& (start + mentionSkip)->isLowSurrogate()) {
 					++mentionSkip;
 				}
-				mMention = RegExpMention().match(result.text, qMax(mentionSkip, matchOffset));
+				mMention = RegExpMention().match(
+					result.text,
+					std::max(mentionSkip, matchOffset));
 				if (mMention.hasMatch()) {
 					mentionStart = mMention.capturedStart();
 					mentionEnd = mMention.capturedEnd();
@@ -2550,6 +2556,8 @@ TextForMimeData TextForMimeData::WithExpandedLinks(
 		for (const auto &entity : text.entities) {
 			if (entity.type() != EntityType::CustomUrl) {
 				continue;
+			} else if (!entity.validForText(text.text.size())) {
+				continue;
 			}
 			// This logic is duplicated in Ui::Text::String::toText.
 			const auto external = UrlClickHandler::ExternalUrlFromInternalUrl(
@@ -2592,9 +2600,10 @@ int EntityInText::FirstMonospaceOffset(
 	auto &&monospace = ranges::make_subrange(
 		entities.begin(),
 		entities.end()
-	) | ranges::views::filter([](const EntityInText & entity) {
-		return (entity.type() == EntityType::Pre)
-			|| (entity.type() == EntityType::Code);
+	) | ranges::views::filter([=](const EntityInText &entity) {
+		return entity.validForText(textLength)
+			&& ((entity.type() == EntityType::Pre)
+				|| (entity.type() == EntityType::Code));
 	});
 	const auto i = ranges::max_element(
 		monospace,

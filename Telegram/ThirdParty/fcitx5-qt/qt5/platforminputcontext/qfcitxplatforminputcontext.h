@@ -35,9 +35,16 @@ public:
     FcitxQtICData(const FcitxQtICData &that) = delete;
     ~FcitxQtICData() override;
 
-    FcitxCandidateWindow *candidateWindow();
+    FcitxCandidateWindow *candidateWindow(bool create);
 
     QWindow *window() { return window_.data(); }
+
+    HybridInputContext *validIC() const {
+        if (proxy && proxy->isValid()) {
+            return proxy;
+        }
+        return nullptr;
+    }
 
     void resetCandidateWindow();
 
@@ -186,8 +193,9 @@ private:
 
     void updateCapability(const FcitxQtICData &data);
     void createICData(QWindow *w);
-    HybridInputContext *validIC() const;
-    HybridInputContext *validICByWindow(QWindow *window) const;
+    HybridInputContext *validIC();
+    HybridInputContext *validICByWindow(QWindow *window);
+    FcitxQtICData *icDataByWindow(QWindow *window);
     bool filterEventFallback(unsigned int keyval, unsigned int keycode,
                              unsigned int state, bool isRelease);
 
@@ -203,8 +211,8 @@ private:
     QString commitPreedit_;
     FcitxQtFormattedPreeditList preeditList_;
     int cursorPos_;
-    bool useSurroundingText_;
-    bool syncMode_;
+    const bool useSurroundingText_;
+    const bool syncMode_;
     std::unordered_map<QWindow *, FcitxQtICData> icMap_;
     QPointer<QWindow> lastWindow_;
     QPointer<QObject> lastObject_;

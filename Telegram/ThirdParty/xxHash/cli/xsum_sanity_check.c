@@ -342,7 +342,7 @@ static XSUM_U32 XSUM_rand(void)
  * Technically, XXH3_64bits_update is identical to XXH3_128bits_update as of
  * v0.8.0, but we treat them as separate.
  */
-typedef XXH_errorcode (*XSUM_XXH3_update_t)(XXH3_state_t* state, const void* input, size_t length);
+typedef XXH_errorcode (*XSUM_XXH3_update_t)(XXH_NOESCAPE XXH3_state_t* state, XXH_NOESCAPE const void* input, size_t length);
 
 /*
  * Runs the passed XXH3_update variant on random lengths. This is to test the
@@ -390,7 +390,17 @@ static void XSUM_testXXH3(const void* data, const XSUM_testdata64_t* testData)
         XXH3_generateSecret_fromSeed(secret, seed);
         {   XSUM_U64 const Dresult = XXH3_64bits_withSecretandSeed(data, len, secret, XXH3_SECRET_DEFAULT_SIZE, seed);
             XSUM_checkResult64(Dresult, Nresult);
-    }   }
+        }
+
+        /* check that XXH3_64bits_withSecretandSeed()
+         * results in exactly the same return value as XXH3_64bits_withSeed()
+         * when len <= XXH3_MIDSIZE_MAX, whatever the content of @secret */
+        memset(secret, 0x99, 9);
+        if (len <= XXH3_MIDSIZE_MAX) {
+            XSUM_U64 const Dresult = XXH3_64bits_withSecretandSeed(data, len, secret, XXH3_SECRET_DEFAULT_SIZE, seed);
+            XSUM_checkResult64(Dresult, Nresult);
+        }
+    }
 
     /* streaming API test */
     {   XXH3_state_t* const state = XXH3_createState();
@@ -402,7 +412,7 @@ static void XSUM_testXXH3(const void* data, const XSUM_testdata64_t* testData)
 
         /* random ingestion */
         (void)XXH3_64bits_reset_withSeed(state, seed);
-        XSUM_XXH3_randomUpdate(state, data, len, &XXH3_64bits_update);
+        XSUM_XXH3_randomUpdate(state, data, len, XXH3_64bits_update);
         XSUM_checkResult64(XXH3_64bits_digest(state), Nresult);
 
         /* byte by byte ingestion */
@@ -423,6 +433,17 @@ static void XSUM_testXXH3(const void* data, const XSUM_testdata64_t* testData)
             (void)XXH3_64bits_reset_withSecretandSeed(state, secret, XXH3_SECRET_DEFAULT_SIZE, seed);
             (void)XXH3_64bits_update(state, data, len);
             XSUM_checkResult64(XXH3_64bits_digest(state), Nresult);
+
+            /* check that XXH3_64bits_withSecretandSeed()
+             * results in exactly the same return value as XXH3_64bits_withSeed()
+             * when len <= XXH3_MIDSIZE_MAX, whatever the content of @secret */
+            if (len <= XXH3_MIDSIZE_MAX) {
+                /* single ingestion */
+                memset(secret, 0x99, 9);
+                (void)XXH3_64bits_reset_withSecretandSeed(state, secret, XXH3_SECRET_DEFAULT_SIZE, seed);
+                (void)XXH3_64bits_update(state, data, len);
+                XSUM_checkResult64(XXH3_64bits_digest(state), Nresult);
+            }
         }
 
         XXH3_freeState(state);
@@ -430,10 +451,6 @@ static void XSUM_testXXH3(const void* data, const XSUM_testdata64_t* testData)
 
 }
 
-
-#ifndef XXH3_MIDSIZE_MAX
-# define XXH3_MIDSIZE_MAX 240
-#endif
 
 static void XSUM_testXXH3_withSecret(const void* data, const void* secret,
                                      size_t secretSize, const XSUM_testdata64_t* testData)
@@ -466,7 +483,7 @@ static void XSUM_testXXH3_withSecret(const void* data, const void* secret,
 
         /* random ingestion */
         (void)XXH3_64bits_reset_withSecret(state, secret, secretSize);
-        XSUM_XXH3_randomUpdate(state, data, len, &XXH3_64bits_update);
+        XSUM_XXH3_randomUpdate(state, data, len, XXH3_64bits_update);
         XSUM_checkResult64(XXH3_64bits_digest(state), Nresult);
 
         /* byte by byte ingestion */
@@ -478,10 +495,11 @@ static void XSUM_testXXH3_withSecret(const void* data, const void* secret,
         }
 
         /* check that XXH3_64bits_reset_withSecretandSeed()
-         * results in exactly the same return value as XXH3_64bits_reset_withSecret() */
+         * results in exactly the same return value as XXH3_64bits_reset_withSecret()
+         * when len > XXH3_MIDSIZE_MAX, whatever the value of @seed */
          if (len > XXH3_MIDSIZE_MAX) {
             /* single ingestion */
-            (void)XXH3_64bits_reset_withSecretandSeed(state, secret, secretSize, 0);
+            (void)XXH3_64bits_reset_withSecretandSeed(state, secret, secretSize, 17);
             (void)XXH3_64bits_update(state, data, len);
             XSUM_checkResult64(XXH3_64bits_digest(state), Nresult);
         }
@@ -524,7 +542,17 @@ static void XSUM_testXXH128(const void* data, const XSUM_testdata128_t* testData
         XXH3_generateSecret_fromSeed(secret, seed);
         {   XXH128_hash_t const Dresult = XXH3_128bits_withSecretandSeed(data, len, secret, XXH3_SECRET_DEFAULT_SIZE, seed);
             XSUM_checkResult128(Dresult, Nresult);
-    }   }
+        }
+
+        /* check that XXH3_128bits_withSecretandSeed()
+         * results in exactly the same return value as XXH3_128bits_withSeed()
+         * if len <= XXH3_MIDSIZE_MAX, whatever the content of @secret */
+        memset(secret, 0x99, 9);
+        if (len <= XXH3_MIDSIZE_MAX) {
+            XXH128_hash_t const Dresult = XXH3_128bits_withSecretandSeed(data, len, secret, XXH3_SECRET_DEFAULT_SIZE, seed);
+            XSUM_checkResult128(Dresult, Nresult);
+        }
+    }
 
     /* streaming API test */
     {   XXH3_state_t *state = XXH3_createState();
@@ -537,7 +565,7 @@ static void XSUM_testXXH128(const void* data, const XSUM_testdata128_t* testData
 
         /* random ingestion */
         (void)XXH3_128bits_reset_withSeed(state, seed);
-        XSUM_XXH3_randomUpdate(state, data, len, &XXH3_128bits_update);
+        XSUM_XXH3_randomUpdate(state, data, len, XXH3_128bits_update);
         XSUM_checkResult128(XXH3_128bits_digest(state), Nresult);
 
         /* byte by byte ingestion */
@@ -558,6 +586,17 @@ static void XSUM_testXXH128(const void* data, const XSUM_testdata128_t* testData
             (void)XXH3_128bits_reset_withSecretandSeed(state, secret, XXH3_SECRET_DEFAULT_SIZE, seed);
             (void)XXH3_128bits_update(state, data, len);
             XSUM_checkResult128(XXH3_128bits_digest(state), Nresult);
+
+            /* check that XXH3_128bits_reset_withSecretandSeed()
+             * results in exactly the same return value as XXH3_128bits_reset_withSeed()
+             * if len <= XXH3_MIDSIZE_MAX, whatever the content of @secret */
+            if (len <= XXH3_MIDSIZE_MAX) {
+                /* single ingestion */
+                memset(secret, 0x99, 9);
+                (void)XXH3_128bits_reset_withSecretandSeed(state, secret, XXH3_SECRET_DEFAULT_SIZE, seed);
+                (void)XXH3_128bits_update(state, data, len);
+                XSUM_checkResult128(XXH3_128bits_digest(state), Nresult);
+            }
         }
 
         XXH3_freeState(state);
@@ -593,7 +632,7 @@ static void XSUM_testXXH128_withSecret(const void* data, const void* secret, siz
 
         /* random ingestion */
         (void)XXH3_128bits_reset_withSecret(state, secret, secretSize);
-        XSUM_XXH3_randomUpdate(state, data, len, &XXH3_128bits_update);
+        XSUM_XXH3_randomUpdate(state, data, len, XXH3_128bits_update);
         XSUM_checkResult128(XXH3_128bits_digest(state), Nresult);
 
         /* byte by byte ingestion */

@@ -17,10 +17,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/random.h"
 #include "base/timer_rpl.h"
 #include "base/unixtime.h"
+#include "boxes/music_attach_box.h"
 #include "boxes/peers/choose_peer_box.h"
 #include "boxes/peers/create_managed_bot_box.h"
 #include "boxes/peer_list_controllers.h"
 #include "boxes/premium_preview_box.h"
+#include "boxes/report_messages_box.h"
 #include "boxes/share_box.h"
 #include "chat_helpers/stickers_lottie.h"
 #include "chat_helpers/tabbed_panel.h"
@@ -76,11 +78,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/text/text_custom_emoji.h"
 #include "ui/text/text_utilities.h"
 #include "ui/toast/toast.h"
+#include "ui/ui_utility.h"
 #include "ui/vertical_list.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/dropdown_menu.h"
+#include "ui/widgets/menu/menu_action.h"
 #include "ui/widgets/menu/menu_item_base.h"
 #include "ui/widgets/popup_menu.h"
+#include "wallet/wallet_panel.h"
+#include "wallet/wallet_session.h"
+#include "wallet/wallet_user_addresses.h"
+#include "webview/webview_dialog.h"
 #include "webview/webview_interface.h"
 #include "window/themes/window_theme.h"
 #include "window/window_controller.h"
@@ -91,6 +99,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_info.h" // infoVerifiedStar.
 #include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
+#include "styles/style_wallet.h"
 
 #include <QSvgRenderer>
 
@@ -258,6 +267,8 @@ constexpr auto kPopularAppBotsLimit = 100;
 	if (strong && strong->windowId().hasChatsList()) {
 		strong->showThread(thread);
 		return strong;
+	} else if (!Window::CanShowSeparateWindow(thread)) {
+		return nullptr;
 	}
 	const auto window = Core::App().ensureSeparateWindowFor(thread);
 	return window ? window->sessionController() : nullptr;
@@ -1107,9 +1118,10 @@ void WebViewInstance::resolveApp(
 }
 
 void WebViewInstance::confirmOpen(Fn<void()> done, bool forceConfirmation) {
-	if (!forceConfirmation
-		&& (_bot->isVerified()
-			|| _session->local().isPeerTrustedOpenWebView(_bot->id))) {
+	if (_bot->isOldWalletBot()
+		|| (!forceConfirmation
+			&& (_bot->isVerified()
+				|| _session->local().isPeerTrustedOpenWebView(_bot->id)))) {
 		done();
 		return;
 	}
@@ -1144,9 +1156,10 @@ void WebViewInstance::confirmAppOpen(
 		bool writeAccess,
 		Fn<void(bool allowWrite)> done,
 		bool forceConfirmation) {
-	if (!forceConfirmation
-		&& (_bot->isVerified()
-			|| _session->local().isPeerTrustedOpenWebView(_bot->id))) {
+	if (_bot->isOldWalletBot()
+		|| (!forceConfirmation
+			&& (_bot->isVerified()
+				|| _session->local().isPeerTrustedOpenWebView(_bot->id)))) {
 		done(writeAccess);
 		return;
 	}
@@ -1447,12 +1460,15 @@ void WebViewInstance::show(ShowArgs &&args) {
 		&& (v::is<WebViewSourceMainMenu>(_source)
 			|| v::is<WebViewSourceAttachMenu>(_source)
 			|| v::is<WebViewSourceLinkAttachMenu>(_source));
-	const auto buttons = (hasOpenBot ? Button::OpenBot : Button::None)
+	auto buttons = (hasOpenBot ? Button::OpenBot : Button::None)
 		| (!hasRemoveFromMenu
 			? Button::None
 			: attached->inMainMenu
 			? Button::RemoveFromMainMenu
 			: Button::RemoveFromMenu);
+	if (Info::Profile::CanReportBot(_bot)) {
+		buttons |= Button::Report;
+	}
 	const auto allowClipboardRead = v::is<WebViewSourceMainMenu>(_source)
 		|| v::is<WebViewSourceAttachMenu>(_source)
 		|| (attached != end(bots)
@@ -1739,6 +1755,24 @@ void WebViewInstance::botHandleMenuButton(
 		} else {
 			_panel->showToast({ tr::lng_message_not_found(tr::now) });
 		}
+	} break;
+	case Button::Report: {
+		const auto bot = _bot;
+		const auto weak = _context.controller;
+		auto resolveController = [=] {
+			const auto controller = weak.get();
+			if (controller && &controller->session() == &bot->session()) {
+				return controller;
+			}
+			return bot->session().tryResolveWindow(bot);
+		};
+		ShowReportMessageBox(
+			uiShow(),
+			bot,
+			{},
+			{},
+			nullptr,
+			std::move(resolveController));
 	} break;
 	}
 }
@@ -2086,69 +2120,71 @@ void WebViewInstance::botRequestChat(
 		MTP_string(requestId)
 	)).done([show, bot, callback, requestId](
 			const MTPKeyboardButton &result) {
-		result.match([&](const MTPDkeyboardButtonRequestPeer &data) {
-			if (!*show) {
-				callback(u"UNKNOWN_ERROR"_q);
-				return;
-			}
-			const auto buttonId = data.vbutton_id();
-			const auto sendPeers = [=](
-					std::vector<not_null<PeerData*>> peers) {
-				using Flag = MTPmessages_SendBotRequestedPeer::Flag;
-				bot->session().api().request(
-					MTPmessages_SendBotRequestedPeer(
-						MTP_flags(Flag::f_webapp_req_id),
-						bot->input(),
-						MTPint(),
-						MTP_string(requestId),
-						buttonId,
-						MTP_vector_from_range(
-							peers | ranges::views::transform([](
-									not_null<PeerData*> peer) {
-								return MTPInputPeer(peer->input());
-							})))
-				).done([=](const MTPUpdates &result) {
-					bot->session().api().applyUpdates(result);
-					callback(QString());
-				}).fail([callback](const MTP::Error &error) {
-					callback(error.type());
-				}).send();
-			};
-			data.vpeer_type().match([&](
-					const MTPDrequestPeerTypeCreateBot &createData) {
-				ShowCreateManagedBotBox({
-					.show = show,
-					.manager = bot,
-					.suggestedName = qs(
-						createData.vsuggested_name().value_or_empty()),
-					.suggestedUsername = qs(
-						createData.vsuggested_username()
-							.value_or_empty()),
-					.done = [=](not_null<UserData*> createdBot) {
-						sendPeers({ createdBot });
-						show->showBox(Ui::MakeInformBox({
-							.text = tr::lng_managed_bot_created_text(
-								tr::now,
-								lt_parent_name,
-								bot->name()),
-							.title = tr::lng_managed_bot_created_title(
-								tr::now,
-								lt_name,
-								createdBot->name()),
-						}));
-					},
-					.cancelled = [=] {
+		result.match([&](const MTPDkeyboardButton &button) {
+			button.vtype().match([&](const MTPDbuttonTypeRequestPeer &data) {
+				if (!*show) {
+					callback(u"UNKNOWN_ERROR"_q);
+					return;
+				}
+				const auto buttonId = data.vbutton_id();
+				const auto sendPeers = [=](
+						std::vector<not_null<PeerData*>> peers) {
+					using Flag = MTPmessages_SendBotRequestedPeer::Flag;
+					bot->session().api().request(
+						MTPmessages_SendBotRequestedPeer(
+							MTP_flags(Flag::f_webapp_req_id),
+							bot->input(),
+							MTPint(),
+							MTP_string(requestId),
+							buttonId,
+							MTP_vector_from_range(
+								peers | ranges::views::transform([](
+										not_null<PeerData*> peer) {
+									return MTPInputPeer(peer->input());
+								})))
+					).done([=](const MTPUpdates &result) {
+						bot->session().api().applyUpdates(result);
+						callback(QString());
+					}).fail([callback](const MTP::Error &error) {
+						callback(error.type());
+					}).send();
+				};
+				data.vpeer_type().match([&](
+						const MTPDrequestPeerTypeCreateBot &createData) {
+					ShowCreateManagedBotBox({
+						.show = show,
+						.manager = bot,
+						.suggestedName = qs(
+							createData.vsuggested_name().value_or_empty()),
+						.suggestedUsername = qs(
+							createData.vsuggested_username()
+								.value_or_empty()),
+						.done = [=](not_null<UserData*> createdBot) {
+							sendPeers({ createdBot });
+							show->showBox(Ui::MakeInformBox({
+								.text = tr::lng_managed_bot_created_text(
+									tr::now,
+									lt_parent_name,
+									bot->name()),
+								.title = tr::lng_managed_bot_created_title(
+									tr::now,
+									lt_name,
+									createdBot->name()),
+							}));
+						},
+						.cancelled = [=] {
+							callback(u"USER_DECLINED"_q);
+						},
+					});
+				}, [&](const auto &) {
+					const auto query = RequestPeerQueryFromTL(data);
+					ShowChoosePeerBox(show, bot, query, sendPeers, [=] {
 						callback(u"USER_DECLINED"_q);
-					},
+					});
 				});
 			}, [&](const auto &) {
-				const auto query = RequestPeerQueryFromTL(data);
-				ShowChoosePeerBox(show, bot, query, sendPeers, [=] {
-					callback(u"USER_DECLINED"_q);
-				});
+				callback(u"UNSUPPORTED_BUTTON_TYPE"_q);
 			});
-		}, [&](const auto &) {
-			callback(u"UNSUPPORTED_BUTTON_TYPE"_q);
 		});
 	}).fail([callback](const MTP::Error &error) {
 		callback(error.type());
@@ -2189,7 +2225,7 @@ void WebViewInstance::botDownloadFile(
 		return;
 	}
 	_confirmingDownload = true;
-	const auto done = [=](QString path) {
+	const auto done = crl::guard(this, [=](QString path) {
 		_confirmingDownload = false;
 		if (path.isEmpty()) {
 			callback(false);
@@ -2201,7 +2237,7 @@ void WebViewInstance::botDownloadFile(
 			.path = path,
 		});
 		callback(true);
-	};
+	});
 	_api.request(MTPbots_CheckDownloadFileParams(
 		_bot->inputUser(),
 		MTP_string(request.name),
@@ -2505,20 +2541,51 @@ void AttachWebView::watchJoinChatWebView(
 	};
 }
 
+void AttachWebView::destroyDeferred(
+		std::vector<std::unique_ptr<WebViewInstance>> instances) {
+	if (instances.empty()) {
+		return;
+	} else if (!Webview::InsideBlockingPopup()) {
+		// Destroyed right here, `instances` goes out of scope.
+		return;
+	}
+
+	// A popup may have been opened from inside a webview callback, so the
+	// frames of that callback, and the closures owning them, are still on
+	// the stack below the popup. Destroy the instances only from a clean
+	// stack, after the popup is finished.
+	const auto was = _closing.size();
+	for (auto &instance : instances) {
+		_closing.push_back(std::move(instance));
+	}
+	if (was > 0) {
+		return;
+	}
+	const auto weak = base::make_weak(this);
+	Webview::RunWhenBlockingPopupFinished([=] {
+		if (const auto strong = weak.get()) {
+			base::take(strong->_closing);
+		}
+	});
+}
+
 void AttachWebView::close(not_null<WebViewInstance*> instance) {
 	const auto i = ranges::find(
 		_instances,
 		instance.get(),
 		&std::unique_ptr<WebViewInstance>::get);
-	if (i != end(_instances)) {
-		const auto taken = base::take(*i);
-		_instances.erase(i);
+	if (i == end(_instances)) {
+		return;
 	}
+	auto taken = std::vector<std::unique_ptr<WebViewInstance>>();
+	taken.push_back(base::take(*i));
+	_instances.erase(i);
+	destroyDeferred(std::move(taken));
 }
 
 void AttachWebView::closeAll() {
 	cancel();
-	base::take(_instances);
+	destroyDeferred(base::take(_instances));
 }
 
 void AttachWebView::loadPopularAppBots() {
@@ -2650,13 +2717,18 @@ void AttachWebView::requestAddToMenu(
 			*i = *parsed;
 		}
 		const auto types = parsed->types;
+		const auto addedCallback = [=](bool added) {
+			const auto result = added
+				? AddToMenuResult::Added
+				: AddToMenuResult::Cancelled;
+			finish(result, types);
+		};
 		if (parsed->inactive) {
-			confirmAddToMenu(*parsed, [=](bool added) {
-				const auto result = added
-					? AddToMenuResult::Added
-					: AddToMenuResult::Cancelled;
-				finish(result, types);
-			});
+			if (bot->isOldWalletBot()) {
+				toggleInMenu(bot, ToggledState::Added, addedCallback);
+			} else {
+				confirmAddToMenu(*parsed, addedCallback);
+			}
 		} else {
 			requestBots();
 			finish(AddToMenuResult::AlreadyInMenu, types);
@@ -2730,7 +2802,9 @@ void AttachWebView::acceptMainMenuDisclaimer(
 	} else if (i->inactive) {
 		requestAddToMenu(bot, std::move(done));
 		return;
-	} else if (!i->disclaimerRequired || disclaimerAccepted(*i)) {
+	} else if (!i->disclaimerRequired
+		|| bot->isOldWalletBot()
+		|| disclaimerAccepted(*i)) {
 		done(AddToMenuResult::AlreadyInMenu, i->types);
 		return;
 	}
@@ -2951,6 +3025,7 @@ std::unique_ptr<Ui::DropdownMenu> MakeAttachBotsMenu(
 			attach(false);
 		}, &st::menuIconFile);
 	}
+	const auto moneyIndex = int(raw->actions().size());
 	if (peer->canCreatePolls(false)) {
 		++minimal;
 		raw->addAction(tr::lng_polls_menu_item(tr::now), [=] {
@@ -2990,12 +3065,6 @@ std::unique_ptr<Ui::DropdownMenu> MakeAttachBotsMenu(
 		&& Data::CanSendAnyOf(peer, ChatRestriction::SendOther, false)) {
 		raw->addAction(tr::lng_article_menu_item(tr::now), [=] {
 			const auto action = actionFactory();
-			if (ShowEphemeralReplyTextOnlyError(
-					controller->uiShow(),
-					&controller->session(),
-					action.replyTo.messageId)) {
-				return;
-			}
 			const auto details = sendMenuDetails();
 			Iv::Editor::ShowComposeBox(
 				controller,
@@ -3016,12 +3085,25 @@ std::unique_ptr<Ui::DropdownMenu> MakeAttachBotsMenu(
 			ChooseAndSendLocation(controller, config, actionFactory());
 		}, &st::menuIconAddress);
 	}
+	if (Data::CanSend(peer, ChatRestriction::SendMusic, false)) {
+		++minimal;
+		raw->addAction(tr::lng_all_music(tr::now), [=] {
+			const auto box = controller->show(
+				Box(MusicAttachBox, controller, peer, actionFactory));
+			if (const auto strong = box.get()) {
+				QObject::connect(parent, &QObject::destroyed, strong, [=] {
+					strong->closeBox();
+				});
+			}
+		}, &st::menuIconSoundOn);
+	}
 	const auto addBots = Data::CanSend(peer, ChatRestriction::SendInline, false)
 		&& !peer->starsPerMessageChecked();
 	for (const auto &bot : bots->attachBots()) {
 		if (!addBots
 			|| !bot.inAttachMenu
-			|| !PeerMatchesTypes(peer, bot.user, bot.types)) {
+			|| !PeerMatchesTypes(peer, bot.user, bot.types)
+			|| bot.user->isOldWalletBot()) {
 			continue;
 		}
 		const auto callback = [=] {
@@ -3057,6 +3139,89 @@ std::unique_ptr<Ui::DropdownMenu> MakeAttachBotsMenu(
 		return nullptr;
 	} else if (actions <= minimal && !onclick) {
 		return nullptr;
+	}
+	if (const auto user = peer->asUser()) {
+		const auto wallet = &session->wallet();
+		const auto userId = peerToUser(user->id);
+		const auto weakSession = base::make_weak(session);
+		const auto weakController = base::make_weak(controller.get());
+		const auto canOffer = [=] {
+			if (!weakSession
+				|| !weakController
+				|| &controller->session() != session
+				|| &user->session() != session
+				|| session->data().userLoaded(userId) != user) {
+				return false;
+			}
+			return Wallet::CanOfferSendMoney(user);
+		};
+		struct MoneyState {
+			QAction *action = nullptr;
+			bool queued = false;
+		};
+		const auto state = raw->lifetime().make_state<MoneyState>();
+		const auto menu = raw->menu();
+		const auto update = [=] {
+			const auto wanted = canOffer();
+			if (wanted == (state->action != nullptr)) {
+				return;
+			}
+			raw->finishAnimating();
+			menu->finishAnimating();
+			menu->clearSelection();
+			if (wanted) {
+				const auto action = Ui::Menu::CreateAction(
+					menu,
+					tr::lng_wallet_menu(tr::now),
+					crl::guard(controller, crl::guard(session, [=] {
+						if (canOffer()) {
+							Wallet::OpenSendMoney(controller, user);
+						}
+					})));
+				state->action = menu->insertAction(
+					moneyIndex,
+					base::make_unique_q<Ui::Menu::Action>(
+						menu,
+						menu->st(),
+						action,
+						&st::walletMenuIcon,
+						&st::walletMenuIcon));
+			} else {
+				state->action = nullptr;
+				menu->removeAction(moneyIndex);
+				const auto &remaining = menu->actions();
+				for (auto i = 0; i != int(remaining.size()); ++i) {
+					menu->itemForAction(remaining[i])->setIndex(i);
+				}
+			}
+		};
+		const auto schedule = [=] {
+			if (state->queued) {
+				return;
+			}
+			state->queued = true;
+			Ui::PostponeCall(raw, [=] {
+				state->queued = false;
+				update();
+			});
+		};
+		wallet->stateKnownValue() | rpl::on_next(schedule, raw->lifetime());
+		session->appConfig().refreshed(
+		) | rpl::on_next(schedule, raw->lifetime());
+		wallet->userAddresses().unavailableValue(
+		) | rpl::on_next(schedule, raw->lifetime());
+		user->flagsValue() | rpl::on_next(schedule, raw->lifetime());
+		session->changes().peerUpdates(
+			user,
+			Data::PeerUpdate::Flag::FullInfo
+				| Data::PeerUpdate::Flag::Name
+				| Data::PeerUpdate::Flag::SupportInfo
+		) | rpl::on_next(schedule, raw->lifetime());
+		raw->setShowStartCallback(update);
+		raw->shownValue() | rpl::filter(rpl::mappers::_1) | rpl::on_next(
+			schedule,
+			raw->lifetime());
+		update();
 	}
 	return result;
 }

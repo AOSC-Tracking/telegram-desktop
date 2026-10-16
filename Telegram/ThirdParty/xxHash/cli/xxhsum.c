@@ -1,6 +1,6 @@
 /*
  * xxhsum - Command line interface for xxhash algorithms
- * Copyright (C) 2013-2021 Yann Collet
+ * Copyright (C) 2013-2023 Yann Collet
  *
  * GPL v2 License
  *
@@ -35,12 +35,6 @@
 #include "xsum_output.h"       /* XSUM_output */
 #include "xsum_sanity_check.h" /* XSUM_sanityCheck */
 #include "xsum_bench.h"        /* NBLOOPS_DEFAULT */
-#ifdef XXH_INLINE_ALL
-#  include "xsum_os_specific.c"
-#  include "xsum_output.c"
-#  include "xsum_sanity_check.c"
-#  include "xsum_bench.c"
-#endif
 
 /* ************************************
  *  Includes
@@ -216,8 +210,7 @@ static int XSUM_algoBitmask_Accepts(XSUM_U32 algoBitmask, AlgoSelected parsedLin
 *  File Hashing
 **********************************************************/
 
-#define XXHSUM32_DEFAULT_SEED 0                   /* Default seed for algo_xxh32 */
-#define XXHSUM64_DEFAULT_SEED 0                   /* Default seed for algo_xxh64 */
+#define XSUM_DEFAULT_SEED 0
 
 /* for support of --little-endian display mode */
 static void XSUM_display_LittleEndian(const void* ptr, size_t length)
@@ -242,24 +235,36 @@ typedef union {
     XXH128_hash_t hash128;
 } Multihash;
 
+typedef enum {
+    LineStatus_hashOk,
+    LineStatus_hashFailed,
+    LineStatus_failedToOpen,
+    LineStatus_failedToRead,
+    LineStatus_isDirectory,
+    LineStatus_memoryError
+} LineStatus;
+
 /*
  * XSUM_hashStream:
  * Reads data from `inFile`, generating an incremental hash of type hashType,
  * using `buffer` of size `blockSize` for temporary storage.
  */
-static Multihash
+static LineStatus
 XSUM_hashStream(FILE* inFile,
                 AlgoSelected hashType,
-                void* buffer, size_t blockSize)
+                XSUM_U64 seed,
+                void* buffer, size_t blockSize,
+                Multihash* finalHash)
 {
     XXH32_state_t state32;
     XXH64_state_t state64;
     XXH3_state_t  state3;
+    memset( &state3, 0, sizeof(state3) );
 
     /* Init */
-    (void)XXH32_reset(&state32, XXHSUM32_DEFAULT_SEED);
-    (void)XXH64_reset(&state64, XXHSUM64_DEFAULT_SEED);
-    (void)XXH3_128bits_reset(&state3);
+    (void)XXH32_reset(&state32, (XSUM_U32)seed);
+    (void)XXH64_reset(&state64, seed);
+    (void)XXH3_128bits_reset_withSeed(&state3, seed);
 
     /* Load file & update hash */
     {   size_t readSize;
@@ -283,30 +288,27 @@ XSUM_hashStream(FILE* inFile,
             }
         }
         if (ferror(inFile)) {
-            XSUM_log("Error: a failure occurred reading the input file.\n");
-            exit(1);
+            return LineStatus_failedToRead;
     }   }
 
-    {   Multihash finalHash = {0};
-        switch(hashType)
-        {
-        case algo_xxh32:
-            finalHash.hash32 = XXH32_digest(&state32);
-            break;
-        case algo_xxh64:
-            finalHash.hash64 = XXH64_digest(&state64);
-            break;
-        case algo_xxh128:
-            finalHash.hash128 = XXH3_128bits_digest(&state3);
-            break;
-        case algo_xxh3:
-            finalHash.hash64 = XXH3_64bits_digest(&state3);
-            break;
-        default:
-            assert(0);
-        }
-        return finalHash;
+    switch(hashType)
+    {
+    case algo_xxh32:
+        finalHash->hash32 = XXH32_digest(&state32);
+        break;
+    case algo_xxh64:
+        finalHash->hash64 = XXH64_digest(&state64);
+        break;
+    case algo_xxh128:
+        finalHash->hash128 = XXH3_128bits_digest(&state3);
+        break;
+    case algo_xxh3:
+        finalHash->hash64 = XXH3_64bits_digest(&state3);
+        break;
+    default:
+        assert(0);
     }
+    return LineStatus_hashOk;
 }
 
                                        /* algo_xxh32, algo_xxh64, algo_xxh128 */
@@ -347,6 +349,14 @@ static void XSUM_printLine_BSD(const char* filename, const void* canonicalHash, 
     XSUM_printLine_BSD_internal(filename, canonicalHash, hashType, XSUM_algoName, XSUM_display_BigEndian);
 }
 
+static void XSUM_displayPrefix(const AlgoSelected hashType)
+{
+    assert(0 <= hashType && (size_t)hashType <= XSUM_TABLE_ELT_SIZE(XSUM_algoName));
+    if (hashType == algo_xxh3) {
+        XSUM_output("XXH3_");
+    }
+}
+
 static void XSUM_printLine_GNU_internal(const char* filename,
                                const void* canonicalHash, const AlgoSelected hashType,
                                XSUM_displayHash_f f_displayHash)
@@ -357,6 +367,7 @@ static void XSUM_printLine_GNU_internal(const char* filename,
         if (needsEscape) {
             XSUM_output("%c", '\\');
         }
+        XSUM_displayPrefix(hashType);
         f_displayHash(canonicalHash, hashLength);
         XSUM_output("  ");
         XSUM_printFilename(filename, needsEscape);
@@ -375,7 +386,7 @@ static void XSUM_printLine_GNU_LE(const char* filename,
     XSUM_printLine_GNU_internal(filename, canonicalHash, hashType, XSUM_display_LittleEndian);
 }
 
-typedef enum { big_endian, little_endian} Display_endianess;
+typedef enum { big_endian, little_endian} Display_endianness;
 
 typedef enum { display_gnu, display_bsd } Display_convention;
 
@@ -386,16 +397,17 @@ static XSUM_displayLine_f XSUM_kDisplayLine_fTable[2][2] = {
     { XSUM_printLine_BSD, XSUM_printLine_BSD_LE }
 };
 
-static int XSUM_hashFile(const char* fileName,
+static LineStatus XSUM_hashFile(const char* fileName,
                          const AlgoSelected hashType,
-                         const Display_endianess displayEndianess,
+                         XSUM_U64 seed,
+                         const Display_endianness displayEndianness,
                          const Display_convention convention)
 {
     size_t const blockSize = 64 KB;
-    XSUM_displayLine_f const f_displayLine = XSUM_kDisplayLine_fTable[convention][displayEndianess];
+    XSUM_displayLine_f const f_displayLine = XSUM_kDisplayLine_fTable[convention][displayEndianness];
     FILE* inFile;
     Multihash hashValue;
-    assert(displayEndianess==big_endian || displayEndianess==little_endian);
+    assert(displayEndianness==big_endian || displayEndianness==little_endian);
     assert(convention==display_gnu || convention==display_bsd);
 
     /* Check file existence */
@@ -405,28 +417,30 @@ static int XSUM_hashFile(const char* fileName,
         XSUM_setBinaryMode(stdin);
     } else {
         if (XSUM_isDirectory(fileName)) {
-            XSUM_log("xxhsum: %s: Is a directory \n", fileName);
-            return 1;
+            return LineStatus_isDirectory;
         }
         inFile = XSUM_fopen( fileName, "rb" );
         if (inFile==NULL) {
-            XSUM_log("Error: Could not open '%s': %s. \n", fileName, strerror(errno));
-            return 1;
+            XSUM_log("Error: unable to open input\n");
+            return LineStatus_failedToOpen;
     }   }
 
     /* Memory allocation & streaming */
-    {   void* const buffer = malloc(blockSize);
+    {   LineStatus hashStatus;
+        void* const buffer = malloc(blockSize);
         if (buffer == NULL) {
             XSUM_log("\nError: Out of memory.\n");
             fclose(inFile);
-            return 1;
+            return LineStatus_memoryError;
         }
 
         /* Stream file & update hash */
-        hashValue = XSUM_hashStream(inFile, hashType, buffer, blockSize);
+        hashStatus = XSUM_hashStream(inFile, hashType, seed, buffer, blockSize, &hashValue);
 
         fclose(inFile);
         free(buffer);
+
+        if (hashStatus != LineStatus_hashOk) return hashStatus;
     }
 
     /* display Hash value in selected format */
@@ -460,7 +474,7 @@ static int XSUM_hashFile(const char* fileName,
         assert(0);  /* not possible */
     }
 
-    return 0;
+    return LineStatus_hashOk;
 }
 
 
@@ -470,18 +484,66 @@ static int XSUM_hashFile(const char* fileName,
  */
 static int XSUM_hashFiles(const char* fnList[], int fnTotal,
                           AlgoSelected hashType,
-                          Display_endianess displayEndianess,
+                          XSUM_U64 seed,
+                          Display_endianness displayEndianness,
                           Display_convention convention)
 {
     int fnNb;
     int result = 0;
 
-    if (fnTotal==0)
-        return XSUM_hashFile(stdinName, hashType, displayEndianess, convention);
+    if (fnTotal == 0)
+    {
+        LineStatus filestatus = XSUM_hashFile(stdinName, hashType, seed, displayEndianness, convention);
+        switch (filestatus)
+        {
+        case LineStatus_hashOk:
+        case LineStatus_hashFailed:
+            break;
+        case LineStatus_isDirectory:
+            XSUM_log("xxhsum: %s: Is a directory \n", stdinName);
+            break;
+        case LineStatus_failedToOpen:
+            XSUM_log("Error: Could not open '%s': %s. \n", stdinName, strerror(errno));
+            break;
+        case LineStatus_failedToRead:
+            XSUM_log("Error: Could not read '%s'. \n", stdinName);
+            break;
+        case LineStatus_memoryError:
+            XSUM_log("\nError: Out of memory.\n");
+            break;
+        }
 
-    for (fnNb=0; fnNb<fnTotal; fnNb++)
-        result |= XSUM_hashFile(fnList[fnNb], hashType, displayEndianess, convention);
-    XSUM_logVerbose(2, "\r%70s\r", "");
+        if (filestatus != LineStatus_hashOk)
+            result = 1;
+    }
+
+
+    for (fnNb = 0; fnNb < fnTotal; fnNb++)
+    {
+        LineStatus filestatus = XSUM_hashFile(fnList[fnNb], hashType, seed, displayEndianness, convention);
+        switch (filestatus)
+        {
+        case LineStatus_hashOk:
+        case LineStatus_hashFailed:
+            break;
+        case LineStatus_isDirectory:
+            XSUM_log("xxhsum: %s: Is a directory \n", fnList[fnNb]);
+            break;
+        case LineStatus_failedToOpen:
+            XSUM_log("Error: Could not open '%s': %s. \n", fnList[fnNb], strerror(errno));
+            break;
+        case LineStatus_failedToRead:
+            XSUM_log("Error: Could not read '%s'. \n", fnList[fnNb]);
+            break;
+        case LineStatus_memoryError:
+            XSUM_log("\nError: Out of memory.\n");
+            break;
+        }
+
+        if (filestatus != LineStatus_hashOk)
+            result = 1;
+    }
+
     return result;
 }
 
@@ -503,12 +565,6 @@ typedef enum {
     ParseLine_ok,
     ParseLine_invalidFormat
 } ParseLineResult;
-
-typedef enum {
-    LineStatus_hashOk,
-    LineStatus_hashFailed,
-    LineStatus_failedToOpen
-} LineStatus;
 
 typedef union {
     XXH32_canonical_t xxh32;
@@ -534,18 +590,19 @@ typedef struct {
 } ParseFileReport;
 
 typedef struct {
-    const char*     inFileName;
-    FILE*           inFile;
-    int             lineMax;
-    char*           lineBuf;
-    size_t          blockSize;
-    char*           blockBuf;
-    XSUM_U32        strictMode;
-    XSUM_U32        statusOnly;
-    XSUM_U32        ignoreMissing;
-    XSUM_U32        warn;
-    XSUM_U32        quiet;
-    XSUM_U32        algoBitmask;
+    const char*  inFileName;
+    FILE*        inFile;
+    int          lineMax;
+    char*        lineBuf;
+    size_t       blockSize;
+    char*        blockBuf;
+    int          strictMode;
+    int          statusOnly;
+    int          ignoreMissing;
+    int          warn;
+    int          quiet;
+    XSUM_U32     algoBitmask;
+    XSUM_U64     seed;
     ParseFileReport report;
 } ParseFileArg;
 
@@ -707,6 +764,7 @@ static ParseLineResult XSUM_parseLine1(ParsedLine* parsedLine, char* line, int r
         hash_len = (size_t)(firstSpace - line);
         if (hash_len==8) parsedLine->algo = algo_xxh32;
         if (hash_len==16) parsedLine->algo = algo_xxh64;
+        if (hash_len==21) parsedLine->algo = algo_xxh3;
         if (hash_len==32) parsedLine->algo = algo_xxh128;
     }
 
@@ -731,6 +789,18 @@ static ParseLineResult XSUM_parseLine1(ParsedLine* parsedLine, char* line, int r
         if (parsedLine->algo != algo_xxh64 && parsedLine->algo != algo_xxh3) return ParseLine_invalidFormat;
         {   XXH64_canonical_t* xxh64c = &parsedLine->canonical.xxh64;
             if (XSUM_canonicalFromString(xxh64c->digest, sizeof(xxh64c->digest), hash_ptr, rev)
+                != CanonicalFromString_ok) {
+                return ParseLine_invalidFormat;
+            }
+            break;
+        }
+
+    case 21:
+        if (parsedLine->algo != algo_xxh3) return ParseLine_invalidFormat;
+        /* check XXH3 prefix*/
+        if (memcmp(hash_ptr, "XXH3_", 5) != 0) return ParseLine_invalidFormat;
+        {   XXH64_canonical_t* xxh64c = &parsedLine->canonical.xxh64;
+            if (XSUM_canonicalFromString(xxh64c->digest, sizeof(xxh64c->digest), (const char*)hash_ptr+5, rev)
                 != CanonicalFromString_ok) {
                 return ParseLine_invalidFormat;
             }
@@ -802,9 +872,10 @@ static void XSUM_parseFile1(ParseFileArg* XSUM_parseFileArg, int rev)
             break;
         }
 
-        {   GetLineResult const XSUM_getLineResult = XSUM_getLine(&XSUM_parseFileArg->lineBuf,
-                                                        &XSUM_parseFileArg->lineMax,
-                                                         XSUM_parseFileArg->inFile);
+        {   GetLineResult const XSUM_getLineResult =
+                XSUM_getLine(&XSUM_parseFileArg->lineBuf,
+                    &XSUM_parseFileArg->lineMax,
+                    XSUM_parseFileArg->inFile);
 
             /* Ignore comment lines */
             if (XSUM_getLineResult == GetLine_comment) {
@@ -861,31 +932,36 @@ static void XSUM_parseFile1(ParseFileArg* XSUM_parseFileArg, int rev)
                 lineStatus = LineStatus_failedToOpen;
                 break;
             }
-            lineStatus = LineStatus_hashFailed;
-            {   Multihash const xxh = XSUM_hashStream(fp, parsedLine.algo, XSUM_parseFileArg->blockBuf, XSUM_parseFileArg->blockSize);
-                switch (parsedLine.algo)
-                {
-                case algo_xxh32:
-                    if (xxh.hash32 == XXH32_hashFromCanonical(&parsedLine.canonical.xxh32)) {
-                        lineStatus = LineStatus_hashOk;
-                    }
-                    break;
+            {   Multihash xxh;
+                lineStatus = XSUM_hashStream(fp, parsedLine.algo,
+                    XSUM_parseFileArg->seed,
+                    XSUM_parseFileArg->blockBuf, XSUM_parseFileArg->blockSize, &xxh);
+                if (lineStatus == LineStatus_hashOk) {
+                    lineStatus = LineStatus_hashFailed;
+                    switch (parsedLine.algo)
+                    {
+                    case algo_xxh32:
+                        if (xxh.hash32 == XXH32_hashFromCanonical(&parsedLine.canonical.xxh32)) {
+                            lineStatus = LineStatus_hashOk;
+                        }
+                        break;
 
-                case algo_xxh64:
-                case algo_xxh3:
-                    if (xxh.hash64 == XXH64_hashFromCanonical(&parsedLine.canonical.xxh64)) {
-                        lineStatus = LineStatus_hashOk;
-                    }
-                    break;
+                    case algo_xxh64:
+                    case algo_xxh3:
+                        if (xxh.hash64 == XXH64_hashFromCanonical(&parsedLine.canonical.xxh64)) {
+                            lineStatus = LineStatus_hashOk;
+                        }
+                        break;
 
-                case algo_xxh128:
-                    if (XXH128_isEqual(xxh.hash128, XXH128_hashFromCanonical(&parsedLine.canonical.xxh128))) {
-                        lineStatus = LineStatus_hashOk;
-                    }
-                    break;
+                    case algo_xxh128:
+                        if (XXH128_isEqual(xxh.hash128, XXH128_hashFromCanonical(&parsedLine.canonical.xxh128))) {
+                            lineStatus = LineStatus_hashOk;
+                        }
+                        break;
 
-                default:
-                    break;
+                    default:
+                        break;
+                    }
                 }
             }
             if (fp != stdin) fclose(fp);
@@ -898,6 +974,11 @@ static void XSUM_parseFile1(ParseFileArg* XSUM_parseFileArg, int rev)
             report->quit = 1;
             break;
 
+        case LineStatus_memoryError:
+        case LineStatus_isDirectory:
+            assert(0); /* Never happens on these paths */
+            break;
+
         case LineStatus_failedToOpen:
             if (XSUM_parseFileArg->ignoreMissing) {
                 report->nMissing++;
@@ -907,6 +988,14 @@ static void XSUM_parseFile1(ParseFileArg* XSUM_parseFileArg, int rev)
                     XSUM_output("%s:%lu: Could not open or read '%s': %s.\n",
                         inFileName, lineNumber, parsedLine.filename, strerror(errno));
                 }
+            }
+            break;
+
+        case LineStatus_failedToRead:
+            report->nOpenOrReadFailures++;
+            if (!XSUM_parseFileArg->statusOnly) {
+                XSUM_output("%s:%lu: Could not read '%s'.\n",
+                    inFileName, lineNumber, parsedLine.filename);
             }
             break;
 
@@ -952,12 +1041,13 @@ static void XSUM_parseFile1(ParseFileArg* XSUM_parseFileArg, int rev)
  *    - (strict mode) All lines in checksum file are consistent and well formatted.
  */
 static int XSUM_checkFile(const char* inFileName,
-                          const Display_endianess displayEndianess,
-                          XSUM_U32 strictMode,
-                          XSUM_U32 statusOnly,
-                          XSUM_U32 ignoreMissing,
-                          XSUM_U32 warn,
-                          XSUM_U32 quiet,
+                          const Display_endianness displayEndianness,
+                          XSUM_U64 seed,
+                          int strictMode,
+                          int statusOnly,
+                          int ignoreMissing,
+                          int warn,
+                          int quiet,
                           XSUM_U32 algoBitmask)
 {
     int result = 0;
@@ -995,13 +1085,14 @@ static int XSUM_checkFile(const char* inFileName,
     XSUM_parseFileArg->warn        = warn;
     XSUM_parseFileArg->quiet       = quiet;
     XSUM_parseFileArg->algoBitmask = algoBitmask;
+    XSUM_parseFileArg->seed        = seed;
 
     if ( (XSUM_parseFileArg->lineBuf == NULL)
       || (XSUM_parseFileArg->blockBuf == NULL) ) {
         XSUM_log("Error: : memory allocation failed \n");
         exit(1);
     }
-    XSUM_parseFile1(XSUM_parseFileArg, displayEndianess != big_endian);
+    XSUM_parseFile1(XSUM_parseFileArg, displayEndianness != big_endian);
 
     free(XSUM_parseFileArg->blockBuf);
     free(XSUM_parseFileArg->lineBuf);
@@ -1049,12 +1140,13 @@ static int XSUM_checkFile(const char* inFileName,
 
 
 static int XSUM_checkFiles(const char* fnList[], int fnTotal,
-                           const Display_endianess displayEndianess,
-                           XSUM_U32 strictMode,
-                           XSUM_U32 statusOnly,
-                           XSUM_U32 ignoreMissing,
-                           XSUM_U32 warn,
-                           XSUM_U32 quiet,
+                           const Display_endianness displayEndianness,
+                           XSUM_U64 seed,
+                           int strictMode,
+                           int statusOnly,
+                           int ignoreMissing,
+                           int warn,
+                           int quiet,
                            XSUM_U32 algoBitmask)
 {
     int ok = 1;
@@ -1062,11 +1154,266 @@ static int XSUM_checkFiles(const char* fnList[], int fnTotal,
     /* Special case for stdinName "-",
      * note: stdinName is not a string.  It's special pointer. */
     if (fnTotal==0) {
-        ok &= XSUM_checkFile(stdinName, displayEndianess, strictMode, statusOnly, ignoreMissing, warn, quiet, algoBitmask);
+        ok &= XSUM_checkFile(stdinName, displayEndianness, seed, strictMode, statusOnly, ignoreMissing, warn, quiet, algoBitmask);
     } else {
         int fnNb;
         for (fnNb=0; fnNb<fnTotal; fnNb++)
-            ok &= XSUM_checkFile(fnList[fnNb], displayEndianess, strictMode, statusOnly, ignoreMissing, warn, quiet, algoBitmask);
+            ok &= XSUM_checkFile(fnList[fnNb], displayEndianness, seed, strictMode, statusOnly, ignoreMissing, warn, quiet, algoBitmask);
+    }
+    return ok ? 0 : 1;
+}
+
+
+/*
+*
+* Parse single filename from list to generate hashes for.
+* Returns ParseLine_invalidFormat if the filename is not well formatted.
+* Returns ParseLine_ok if the filename is parsed successfully.
+*/
+static ParseLineResult XSUM_parseGenLine(ParsedLine * parsedLine,
+    char* filename)
+{
+    if (XSUM_lineNeedsUnescape(filename)) {
+        size_t filenameLen;
+        ++filename;
+        filenameLen = strlen(filename);
+
+        if (XSUM_filenameUnescape(filename, filenameLen) == NULL) {
+            parsedLine->filename = NULL;
+            return ParseLine_invalidFormat;
+        }
+    }
+
+    parsedLine->filename = filename;
+
+    return ParseLine_ok;
+}
+
+/*
+ * Parse gen source file.
+ */
+static void XSUM_parseGenFile1(ParseFileArg* XSUM_parseGenArg,
+    AlgoSelected hashType,
+    Display_endianness displayEndianness,
+    Display_convention convention)
+{
+    const char* const inFileName = XSUM_parseGenArg->inFileName;
+    ParseFileReport* const report = &XSUM_parseGenArg->report;
+
+    unsigned long lineNumber = 0;
+    memset(report, 0, sizeof(*report));
+
+    while (!report->quit) {
+        LineStatus lineStatus = LineStatus_hashFailed;
+        ParsedLine parsedLine;
+        memset(&parsedLine, 0, sizeof(parsedLine));
+
+        lineNumber++;
+        if (lineNumber == 0) {
+            /* This is unlikely happen, but md5sum.c has this error check. */
+            XSUM_log("%s: Error: Too many generate lines\n", inFileName);
+            report->quit = 1;
+            break;
+        }
+
+        {   GetLineResult const XSUM_getLineResult = XSUM_getLine(&XSUM_parseGenArg->lineBuf,
+            &XSUM_parseGenArg->lineMax,
+            XSUM_parseGenArg->inFile);
+
+        /* Ignore comment lines */
+        if (XSUM_getLineResult == GetLine_comment) {
+            continue;
+        }
+
+        if (XSUM_getLineResult != GetLine_ok) {
+            if (XSUM_getLineResult == GetLine_eof) break;
+
+            switch (XSUM_getLineResult)
+            {
+            case GetLine_ok:
+            case GetLine_comment:
+            case GetLine_eof:
+                /* These cases never happen.  See above XSUM_getLineResult related "if"s.
+                   They exist just for make gcc's -Wswitch-enum happy. */
+                assert(0);
+                break;
+
+            default:
+                XSUM_log("%s:%lu: Error: Unknown error.\n", inFileName, lineNumber);
+                break;
+
+            case GetLine_exceedMaxLineLength:
+                XSUM_log("%s:%lu: Error: Line too long.\n", inFileName, lineNumber);
+                break;
+
+            case GetLine_outOfMemory:
+                XSUM_log("%s:%lu: Error: Out of memory.\n", inFileName, lineNumber);
+                break;
+            }
+            report->quit = 1;
+            break;
+        }   }
+
+        if (XSUM_parseGenLine(&parsedLine, XSUM_parseGenArg->lineBuf) != ParseLine_ok) {
+            report->nImproperlyFormattedLines++;
+            if (XSUM_parseGenArg->warn) {
+                XSUM_log("%s:%lu: Error: Improperly formatted line.\n",
+                    inFileName, lineNumber);
+            }
+            continue;
+        }
+
+        report->nProperlyFormattedLines++;
+
+        lineStatus = XSUM_hashFile(parsedLine.filename, hashType, XSUM_parseGenArg->seed, displayEndianness, convention);
+
+        switch (lineStatus)
+        {
+        default:
+            XSUM_log("%s: Error: Unknown error.\n", parsedLine.filename);
+            report->quit = 1;
+            break;
+
+        case LineStatus_memoryError:
+            XSUM_log("\nError: Out of memory.\n");
+            break;
+
+        case LineStatus_failedToOpen:
+        case LineStatus_isDirectory:
+            if (XSUM_parseGenArg->ignoreMissing) {
+                report->nMissing++;
+            }
+            else {
+                report->nOpenOrReadFailures++;
+                if (!XSUM_parseGenArg->statusOnly) {
+                    XSUM_output(
+                        lineStatus == LineStatus_failedToOpen ?
+                            "%s:%lu: Could not open or read '%s': %s.\n" :
+                            "%s:%lu: Target is a directory '%s'.\n", /* Leaves errno argument unconsumed */
+                        inFileName, lineNumber, parsedLine.filename, strerror(errno));
+                }
+            }
+            break;
+
+        case LineStatus_failedToRead:
+            report->nOpenOrReadFailures++;
+            if (!XSUM_parseGenArg->statusOnly) {
+                XSUM_output("%s:%lu: Could not read '%s'.\n",
+                    inFileName, lineNumber, parsedLine.filename);
+            }
+            break;
+
+        case LineStatus_hashOk:
+        case LineStatus_hashFailed:
+        break;
+        }
+    }   /* while (!report->quit) */
+}
+
+
+/*  Parse text file for list of targets.
+ */
+static int XSUM_generateFile(const char* inFileName,
+    AlgoSelected hashType,
+    XSUM_U64 seed,
+    Display_endianness displayEndianness,
+    Display_convention convention,
+    int statusOnly,
+    int ignoreMissing,
+    int warn)
+{
+    int result = 0;
+    FILE* inFile = NULL;
+    ParseFileArg XSUM_parseGenArgBody;
+    ParseFileArg* const XSUM_parseGenArg = &XSUM_parseGenArgBody;
+    ParseFileReport* const report = &XSUM_parseGenArg->report;
+
+    /* note: stdinName is special constant pointer.  It is not a string. */
+    if (inFileName == stdinName) {
+        /*
+         * Note: Since we expect text input for xxhash -c mode,
+         * we don't set binary mode for stdin.
+         */
+        inFileName = stdinFileName; /* "stdin" */
+        inFile = stdin;
+    }
+    else {
+        inFile = XSUM_fopen(inFileName, "rt");
+    }
+
+    if (inFile == NULL) {
+        XSUM_log("Error: Could not open '%s': %s\n", inFileName, strerror(errno));
+        return 0;
+    }
+
+    XSUM_parseGenArg->inFileName = inFileName;
+    XSUM_parseGenArg->inFile = inFile;
+    XSUM_parseGenArg->lineMax = DEFAULT_LINE_LENGTH;
+    XSUM_parseGenArg->lineBuf = (char*)malloc((size_t)XSUM_parseGenArg->lineMax);
+    XSUM_parseGenArg->blockSize = 64 * 1024;
+    XSUM_parseGenArg->blockBuf = (char*)malloc(XSUM_parseGenArg->blockSize);
+    XSUM_parseGenArg->statusOnly = statusOnly;
+    XSUM_parseGenArg->ignoreMissing = ignoreMissing;
+    XSUM_parseGenArg->warn = warn;
+    XSUM_parseGenArg->seed = seed;
+
+    if ((XSUM_parseGenArg->lineBuf == NULL)
+        || (XSUM_parseGenArg->blockBuf == NULL)) {
+        XSUM_log("Error: : memory allocation failed \n");
+        exit(1);
+    }
+    XSUM_parseGenFile1(XSUM_parseGenArg, hashType, displayEndianness, convention);
+
+    free(XSUM_parseGenArg->blockBuf);
+    free(XSUM_parseGenArg->lineBuf);
+
+    if (inFile != stdin) fclose(inFile);
+
+    /* Show error/warning messages.  All messages are copied from md5sum.c
+     */
+    if (report->nProperlyFormattedLines == 0) {
+        XSUM_log("%s: no properly formatted filename lines found\n", inFileName);
+    }
+    if (report->nImproperlyFormattedLines) {
+        XSUM_output("%lu %s improperly formatted\n"
+            , report->nImproperlyFormattedLines
+            , report->nImproperlyFormattedLines == 1 ? "line is" : "lines are");
+    }
+    if (report->nOpenOrReadFailures) {
+        XSUM_output("%lu listed %s could not be read\n"
+            , report->nOpenOrReadFailures
+            , report->nOpenOrReadFailures == 1 ? "file" : "files");
+    }
+    /* Result (exit) code logic is copied from
+     * gnu coreutils/src/md5sum.c digest_check() */
+    result = report->nProperlyFormattedLines != 0
+        && report->nOpenOrReadFailures == 0
+        && (report->nImproperlyFormattedLines == 0)
+        && report->quit == 0;
+
+    return result;
+}
+
+static int XSUM_generateFiles(const char* fnList[], int fnTotal,
+    AlgoSelected hashType,
+    XSUM_U64 seed,
+    Display_endianness displayEndianness,
+    Display_convention convention,
+    int statusOnly,
+    int ignoreMissing,
+    int warn)
+{
+    int ok = 1;
+
+    /* Special case for stdinName "-",
+     * note: stdinName is not a string.  It's special pointer. */
+    if (fnTotal == 0) {
+        ok &= XSUM_generateFile(stdinName, hashType, seed, displayEndianness, convention, statusOnly, ignoreMissing, warn);
+    }
+    else {
+        int fnNb;
+        for (fnNb = 0; fnNb < fnTotal; fnNb++)
+            ok &= XSUM_generateFile(fnList[fnNb], hashType, seed, displayEndianness, convention, statusOnly, ignoreMissing, warn);
     }
     return ok ? 0 : 1;
 }
@@ -1079,35 +1426,45 @@ static int XSUM_checkFiles(const char* fnList[], int fnTotal,
 static int XSUM_usage(const char* exename)
 {
     XSUM_log( WELCOME_MESSAGE(exename) );
-    XSUM_log( "Print or verify checksums using fast non-cryptographic algorithm xxHash \n\n" );
+    XSUM_log( "Create or verify checksums using fast non-cryptographic algorithm xxHash \n\n" );
     XSUM_log( "Usage: %s [options] [files] \n\n", exename);
     XSUM_log( "When no filename provided or when '-' is provided, uses stdin as input. \n");
-    XSUM_log( "Options: \n");
-    XSUM_log( "  -H#         algorithm selection: 0,1,2,3 or 32,64,128 (default: %i) \n", (int)g_defaultAlgo);
-    XSUM_log( "  -c, --check read xxHash checksum from [files] and check them \n");
-    XSUM_log( "  -h, --help  display a long help page about advanced options \n");
+    XSUM_log( "\nOptions: \n");
+    XSUM_log( "  -H#                  select an xxhash algorithm (default: %i) \n", (int)g_defaultAlgo);
+    XSUM_log( "                       0: XXH32 \n");
+    XSUM_log( "                       1: XXH64 \n");
+    XSUM_log( "                       2: XXH128 (also called XXH3_128bits) \n");
+    XSUM_log( "                       3: XXH3   (also called XXH3_64bits) \n");
+    XSUM_log( "  -c, --check          read xxHash checksum from [files] and check them \n");
+    XSUM_log( "      --files-from     generate hashes for files listed in [files] \n");
+    XSUM_log( "      --filelist       generate hashes for files listed in [files] \n");
+    XSUM_log( "  -                    forces stdin as input, even if it's the console \n");
+    XSUM_log( "  -h, --help           display a long help page about advanced options \n");
     return 0;
 }
-
 
 static int XSUM_usage_advanced(const char* exename)
 {
     XSUM_usage(exename);
-    XSUM_log( "Advanced :\n");
+    XSUM_log( "\nAdvanced: \n");
     XSUM_log( "  -V, --version        Display version information \n");
     XSUM_log( "      --tag            Produce BSD-style checksum lines \n");
     XSUM_log( "      --little-endian  Checksum values use little endian convention (default: big endian) \n");
     XSUM_log( "      --binary         Read in binary mode \n");
+    XSUM_log( "  -s#, --seed #        Set seed (default: 0) \n");
     XSUM_log( "  -b                   Run benchmark \n");
     XSUM_log( "  -b#                  Bench only algorithm variant # \n");
     XSUM_log( "  -i#                  Number of times to run the benchmark (default: %i) \n", NBLOOPS_DEFAULT);
+    XSUM_log( "  -B#                  Block size to hash per benchmark iteration "
+                                     "(default: %llu B) \n",
+                                     (unsigned long long)XSUM_DEFAULT_SAMPLE_SIZE);
     XSUM_log( "  -q, --quiet          Don't display version header in benchmark mode \n");
     XSUM_log( "\n");
-    XSUM_log( "The following five options are useful only when verifying checksums (-c): \n");
-    XSUM_log( "  -q, --quiet          Don't print OK for each successfully verified file \n");
+    XSUM_log( "The following five options are useful only when using lists in [files] to verify or generate checksums: \n");
+    XSUM_log( "  -q, --quiet          Don't print OK for each successfully verified hash \n");
     XSUM_log( "      --status         Don't output anything, status code shows success \n");
-    XSUM_log( "      --strict         Exit non-zero for improperly formatted checksum lines \n");
-    XSUM_log( "      --warn           Warn about improperly formatted checksum lines \n");
+    XSUM_log( "      --strict         Exit non-zero for improperly formatted lines in [files] \n");
+    XSUM_log( "      --warn           Warn about improperly formatted lines in [files] \n");
     XSUM_log( "      --ignore-missing Don't fail or report status for missing files \n");
     return 0;
 }
@@ -1136,7 +1493,7 @@ static const char* XSUM_lastNameFromPath(const char* path)
 /*!
  * XSUM_readU32FromCharChecked():
  * @return 0 if success, and store the result in *value.
- * Allows and interprets K, KB, KiB, M, MB and MiB suffix.
+ * Allows K, KB, KiB, M, MB and MiB as binary suffixes.
  * Will also modify `*stringPtr`, advancing it to position where it stopped reading.
  * @return 1 if an overflow error occurs
  */
@@ -1169,7 +1526,7 @@ static int XSUM_readU32FromCharChecked(const char** stringPtr, XSUM_U32* value)
 /*!
  * XSUM_readU32FromChar():
  * @return: unsigned integer value read from input in `char` format.
- *  allows and interprets K, KB, KiB, M, MB and MiB suffix.
+ *  Allows K, KB, KiB, M, MB and MiB as binary suffixes.
  *  Will also modify `*stringPtr`, advancing it to position where it stopped reading.
  *  Note: function will exit() program if digit sequence overflows
  */
@@ -1182,23 +1539,47 @@ static XSUM_U32 XSUM_readU32FromChar(const char** stringPtr) {
     return result;
 }
 
+/* Similar to XSUM_readU32FromCharChecked but for XSUM_U64 */
+static XSUM_U64 XSUM_readU64FromChar( const char** number_str ){
+
+    static const XSUM_U64 max = (((XSUM_U64)(-1)) / 10) - 1;
+    XSUM_U64 res = 0;
+
+    if ( **number_str == '-' ) /* check negative value */
+        errorOut("Error: numeric value cannot be negative");
+
+    if ((**number_str < '0') || (**number_str > '9'))
+        errorOut("Error: invalid numeric value");
+
+    while ( **number_str >= '0' && **number_str <= '9' ){
+        if ( res > max ) errorOut("Error: numeric value too large"); /* overflow */
+        res *= 10;
+        res += (XSUM_U64)(**number_str - '0');
+        (*number_str)++;
+    }
+
+    return res;
+}
+
 XSUM_API int XSUM_main(int argc, const char* argv[])
 {
-    int i, filenamesStart = 0;
+    int i, filenamesCount = 0;
     const char* const exename = XSUM_lastNameFromPath(argv[0]);
-    XSUM_U32 benchmarkMode = 0;
-    XSUM_U32 fileCheckMode = 0;
-    XSUM_U32 strictMode    = 0;
-    XSUM_U32 statusOnly    = 0;
-    XSUM_U32 warn          = 0;
-    XSUM_U32 ignoreMissing = 0;
+    int benchmarkMode = 0;
+    int fileCheckMode = 0;
+    int readFilenamesMode = 0;
+    int strictMode    = 0;
+    int statusOnly    = 0;
+    int warn          = 0;
+    int ignoreMissing = 0;
     XSUM_U32 algoBitmask   = algo_bitmask_all;
     int explicitStdin = 0;
     XSUM_U32 selectBenchIDs= 0;  /* 0 == use default k_testIDs_default, kBenchAll == bench all */
     static const XSUM_U32 kBenchAll = 99;
     size_t keySize    = XSUM_DEFAULT_SAMPLE_SIZE;
+    XSUM_U64 seed     = XSUM_DEFAULT_SEED;
     AlgoSelected algo     = g_defaultAlgo;
-    Display_endianess displayEndianess = big_endian;
+    Display_endianness displayEndianness = big_endian;
     Display_convention convention = display_gnu;
     int nbIterations = NBLOOPS_DEFAULT;
 
@@ -1206,16 +1587,34 @@ XSUM_API int XSUM_main(int argc, const char* argv[])
     if (strstr(exename,  "xxh32sum") != NULL) { algo = g_defaultAlgo = algo_xxh32;  algoBitmask = algo_bitmask_xxh32;  }
     if (strstr(exename,  "xxh64sum") != NULL) { algo = g_defaultAlgo = algo_xxh64;  algoBitmask = algo_bitmask_xxh64;  }
     if (strstr(exename, "xxh128sum") != NULL) { algo = g_defaultAlgo = algo_xxh128; algoBitmask = algo_bitmask_xxh128; }
+    if (strstr(exename,   "xxh3sum") != NULL) { algo = g_defaultAlgo = algo_xxh3;   algoBitmask = algo_bitmask_xxh3;  }
 
     for (i=1; i<argc; i++) {
         const char* argument = argv[i];
         assert(argument != NULL);
 
+        if (!strcmp(argument, "--")) {
+            while (++i < argc) {
+                const char* const filename = argv[i];
+                argv[i] = argv[1 + filenamesCount];
+                argv[1 + filenamesCount++] = filename;
+            }
+            break;  /* treat rest of arguments as strictly file names */
+        }
+        if (*argument != '-') {
+            /* Swap to preserve every argv entry for callers which free them. */
+            argv[i] = argv[1 + filenamesCount];
+            argv[1 + filenamesCount++] = argument;
+            continue;
+        }
+
         if (!strcmp(argument, "--check")) { fileCheckMode = 1; continue; }
+        if (!strcmp(argument, "--files-from")) { readFilenamesMode = 1; continue; }
+        if (!strcmp(argument, "--filelist")) { readFilenamesMode = 1; continue; }
         if (!strcmp(argument, "--benchmark-all")) { benchmarkMode = 1; selectBenchIDs = kBenchAll; continue; }
         if (!strcmp(argument, "--bench-all")) { benchmarkMode = 1; selectBenchIDs = kBenchAll; continue; }
         if (!strcmp(argument, "--quiet")) { XSUM_logLevel--; continue; }
-        if (!strcmp(argument, "--little-endian")) { displayEndianess = little_endian; continue; }
+        if (!strcmp(argument, "--little-endian")) { displayEndianness = little_endian; continue; }
         if (!strcmp(argument, "--strict")) { strictMode = 1; continue; }
         if (!strcmp(argument, "--status")) { statusOnly = 1; continue; }
         if (!strcmp(argument, "--warn")) { warn = 1; continue; }
@@ -1224,18 +1623,17 @@ XSUM_API int XSUM_main(int argc, const char* argv[])
         if (!strcmp(argument, "--help")) { return XSUM_usage_advanced(exename); }
         if (!strcmp(argument, "--version")) { XSUM_log(FULL_WELCOME_MESSAGE(exename)); XSUM_sanityCheck(); return 0; }
         if (!strcmp(argument, "--tag")) { convention = display_bsd; continue; }
-
-        if (!strcmp(argument, "--")) {
-            if (filenamesStart==0 && i!=argc-1) filenamesStart=i+1; /* only supports a continuous list of filenames */
-            break;  /* treat rest of arguments as strictly file names */
-        }
-        if (*argument != '-') {
-            if (filenamesStart==0) filenamesStart=i;   /* only supports a continuous list of filenames */
-            break;  /* treat rest of arguments as strictly file names */
+        if (!strcmp(argument, "--seed") ){
+            const char* seed_str;
+            i++;
+            if (i >= argc) return XSUM_badusage(exename);
+            seed_str = argv[i];
+            seed = XSUM_readU64FromChar(&seed_str);
+            continue;
         }
 
         /* command selection */
-        argument++;   /* note: *argument=='-' */
+        argument++;   /* note: argument[0] was =='-' */
         if (*argument == 0) explicitStdin = 1;
 
         while (*argument != 0) {
@@ -1260,10 +1658,8 @@ XSUM_API int XSUM_main(int argc, const char* argv[])
                     case 64: algo = algo_xxh64; break;
                     case 2 :
                     case 128: algo = algo_xxh128; break;
-                    case 3 : /* xxh3 - necessarily uses BSD convention to avoid confusion with XXH64 */
-                        algo = algo_xxh3;
-                        convention = display_bsd;
-                        break;
+                    case 3 :
+                        algo = algo_xxh3; break;
                     default:
                         return XSUM_badusage(exename);
                 }
@@ -1274,6 +1670,12 @@ XSUM_API int XSUM_main(int argc, const char* argv[])
                 fileCheckMode=1;
                 argument++;
                 break;
+
+            /* Generate hash mode (tar style short form of --files-from)
+            case 'T':
+                readFilenamesMode = 2;
+                argument++;
+                break; */
 
             /* Warning mode (file check mode only, alias of "--warning") */
             case 'w':
@@ -1308,6 +1710,12 @@ XSUM_API int XSUM_main(int argc, const char* argv[])
                 keySize = XSUM_readU32FromChar(&argument);
                 break;
 
+            /* Modify seed */
+            case 's':
+                argument++;
+                seed = XSUM_readU64FromChar(&argument);
+                break;
+
             /* Modify verbosity of benchmark output (hidden option) */
             case 'q':
                 argument++;
@@ -1327,19 +1735,25 @@ XSUM_API int XSUM_main(int argc, const char* argv[])
         g_nbIterations = nbIterations;
         if (selectBenchIDs == 0) memcpy(g_testIDs, k_testIDs_default, (size_t)g_nbTestFunctions);
         if (selectBenchIDs == kBenchAll) memset(g_testIDs, 1, (size_t)g_nbTestFunctions);
-        if (filenamesStart==0) return XSUM_benchInternal(keySize);
-        return XSUM_benchFiles(argv+filenamesStart, argc-filenamesStart);
+        if (filenamesCount==0) return XSUM_benchInternal(keySize);
+        return XSUM_benchFiles(argv+1, filenamesCount);
     }
 
     /* Check if input is defined as console; trigger an error in this case */
-    if ( (filenamesStart==0) && XSUM_isConsole(stdin) && !explicitStdin)
-        return XSUM_badusage(exename);
-
-    if (filenamesStart==0) filenamesStart = argc;
-    if (fileCheckMode) {
-        return XSUM_checkFiles(argv+filenamesStart, argc-filenamesStart,
-                          displayEndianess, strictMode, statusOnly, ignoreMissing, warn, (XSUM_logLevel < 2) /*quiet*/, algoBitmask);
-    } else {
-        return XSUM_hashFiles(argv+filenamesStart, argc-filenamesStart, algo, displayEndianess, convention);
+    if ( (filenamesCount==0) && XSUM_isConsole(stdin) && !explicitStdin) {
+        XSUM_log("No input provided \n");
+        return 1;
     }
+
+    if (fileCheckMode) {
+        return XSUM_checkFiles(argv+1, filenamesCount,
+                          displayEndianness, seed, strictMode, statusOnly, ignoreMissing, warn, (XSUM_logLevel < 2) /*quiet*/, algoBitmask);
+    }
+
+    if (readFilenamesMode) {
+        return XSUM_generateFiles(argv + 1, filenamesCount, algo, seed, displayEndianness, convention, statusOnly, ignoreMissing, warn);
+    }
+
+    return XSUM_hashFiles(argv+1, filenamesCount, algo, seed, displayEndianness, convention);
+
 }
